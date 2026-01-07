@@ -36,6 +36,9 @@
   <a href="/" style="color: white; margin-right: 20px;">Home</a>
   <a href="/log" style="color: white; margin-right: 20px;">Log Exercise</a>
   <a href="/programs" style="color: white; margin-right: 20px;">Programs</a>
+  {#if userRole === 'admin'}
+    <a href="/exercises" style="color: white; margin-right: 20px;">Exercises</a>
+  {/if}
 
   {#if user}
     <span style="color: #aaa; margin-right: 10px;">
