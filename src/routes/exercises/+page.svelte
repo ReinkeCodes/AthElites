@@ -21,11 +21,13 @@
   const defaultTypes = ['Compound', 'Isolation', 'Warm-up', 'Stretch', 'Cardio', 'Mobility', 'Core'];
   let customTypes = $state([]);
 
-  // Combined list for dropdowns
-  let allTypes = $derived([...defaultTypes, ...customTypes, 'Other']);
+  // Combined list for dropdowns (computed)
+  function getAllTypes() {
+    return [...defaultTypes, ...customTypes, 'Other'];
+  }
 
-  // Filtered and sorted exercises
-  let filteredExercises = $derived(() => {
+  // Filtered and sorted exercises (computed)
+  function getFilteredExercises() {
     let result = [...exercises];
 
     // Filter by type
@@ -35,15 +37,19 @@
 
     // Sort
     if (sortBy === 'alphabetical') {
-      result.sort((a, b) => a.name.localeCompare(b.name));
+      result.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     } else if (sortBy === 'date') {
-      result.sort((a, b) => b.createdAt?.toDate?.() - a.createdAt?.toDate?.() || 0);
+      result.sort((a, b) => {
+        const dateA = a.createdAt?.toDate?.() || new Date(0);
+        const dateB = b.createdAt?.toDate?.() || new Date(0);
+        return dateB - dateA;
+      });
     } else if (sortBy === 'type') {
-      result.sort((a, b) => a.type.localeCompare(b.type));
+      result.sort((a, b) => (a.type || '').localeCompare(b.type || ''));
     }
 
     return result;
-  });
+  }
 
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
@@ -52,6 +58,8 @@
         if (userDoc.exists()) {
           userRole = userDoc.data().role;
         }
+      } else {
+        userRole = null;
       }
     });
 
@@ -121,7 +129,7 @@
       <label>
         Type:
         <select bind:value={newType} style="padding: 8px;">
-          {#each allTypes as type}
+          {#each getAllTypes() as type}
             <option value={type}>{type}</option>
           {/each}
         </select>
@@ -163,17 +171,17 @@
     Filter:
     <select bind:value={filterType} style="padding: 5px;">
       <option value="all">All Types</option>
-      {#each allTypes.filter(t => t !== 'Other') as type}
+      {#each getAllTypes().filter(t => t !== 'Other') as type}
         <option value={type}>{type}</option>
       {/each}
     </select>
   </label>
 </div>
 
-{#if filteredExercises().length === 0}
+{#if getFilteredExercises().length === 0}
   <p>No exercises found.</p>
 {:else}
-  {#each filteredExercises() as exercise}
+  {#each getFilteredExercises() as exercise}
     <div style="border: 1px solid #ccc; padding: 10px; margin: 10px 0;">
       <strong>{exercise.name}</strong>
       <span style="background: #eee; padding: 2px 6px; border-radius: 3px; margin-left: 10px; font-size: 0.8em;">{exercise.type}</span>
