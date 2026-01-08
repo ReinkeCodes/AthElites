@@ -181,6 +181,7 @@
             repRanges: repRanges
           };
         } catch (e) {
+          console.log('Could not load exercise history:', e.message || e);
           history[exerciseId] = { entries: [], lastTwo: [], e1rm: null, repRanges: {} };
         }
       }
