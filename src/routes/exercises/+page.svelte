@@ -301,6 +301,7 @@
         </div>
       {:else}
         <!-- View mode -->
+        {@const usingPrograms = getProgramsUsingExercise(exercise.id)}
         <div style="display: flex; justify-content: space-between; align-items: start;">
           <div>
             <strong style="font-size: 1.1em;">{exercise.name}</strong>
@@ -308,7 +309,6 @@
             {#if exercise.notes}
               <p style="margin: 8px 0 0 0; color: #666; font-style: italic;">{exercise.notes}</p>
             {/if}
-            {@const usingPrograms = getProgramsUsingExercise(exercise.id)}
             {#if usingPrograms.length > 0}
               <p style="margin: 8px 0 0 0; font-size: 0.8em; color: #888;">
                 Used in: {usingPrograms.join(', ')}

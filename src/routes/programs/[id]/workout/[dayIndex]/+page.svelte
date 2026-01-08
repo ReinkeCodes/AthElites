@@ -431,6 +431,7 @@
       <!-- Full tracking mode: targets at top, inputs below -->
       {#each getCurrentSection().exercises || [] as exercise}
         {@const history = exerciseHistory[exercise.exerciseId]}
+        {@const log = exerciseLogs[exercise.exerciseId]}
         {@const hasData = hasExerciseData(exercise.exerciseId)}
         {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !hasData}
         {@const repsLabel = exercise.repsMetric === 'distance' ? '' : 'reps'}
@@ -500,7 +501,6 @@
           {/if}
 
           <!-- Per-set input fields -->
-          {@const log = exerciseLogs[exercise.exerciseId]}
           {#if log && log.sets}
             <div style="background: #fafafa; padding: 12px; border-radius: 8px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
