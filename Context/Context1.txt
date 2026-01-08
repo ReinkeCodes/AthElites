@@ -1,0 +1,13 @@
+Context
+
+Project: Web App for my personal clients and friends to track fitness 
+
+Key decisions: We have an admin and a client role
+
+Structure: Programs or splits -> Days (upper, lower, speed) -> Sections (warmup, Main Lift, Mobility, Cool down/stretching) -> Exercises 
+
+Implementation in progress: admin need to be able change the parameter reps -> distance and the parameter weight -> time when they want. Client UI when picking a program the next screen talks about days in that I want the UI to have the number of sections and then a nice concise summary of the workout for the day.
+
+Assumptions: You don't need to print out all the code you are changing every time, just a concise summary of what you are changing. I will ask why if need be. When it comes to testing the code lets try to come up with edge cases and problems we might need to solve for before we start implementing code to save usage, anything else you can think of without using a bunch of your already limited usage, that will save a large amount of usage suggest ASAP.
+
+Requirements: You have written code for a large chunk of the web app already, help me reconnect you to what we were working on. At 90% usage help me come up with this context text file again so we don't lost our progress.

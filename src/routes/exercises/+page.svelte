@@ -1,10 +1,11 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore';
+  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, setDoc, updateDoc, getDocs } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
 
   let exercises = $state([]);
+  let programs = $state([]);
   let userRole = $state(null);
 
   // New exercise form
@@ -12,6 +13,13 @@
   let newType = $state('Compound');
   let customType = $state('');
   let newNotes = $state('');
+
+  // Edit mode
+  let editingId = $state(null);
+  let editName = $state('');
+  let editType = $state('');
+  let editCustomType = $state('');
+  let editNotes = $state('');
 
   // Filter/sort
   let sortBy = $state('alphabetical');
@@ -68,6 +76,11 @@
       exercises = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     });
 
+    // Load programs (to check exercise usage)
+    onSnapshot(collection(db, 'programs'), (snapshot) => {
+      programs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    });
+
     // Load custom types
     onSnapshot(doc(db, 'settings', 'exerciseTypes'), (snapshot) => {
       if (snapshot.exists()) {
@@ -75,6 +88,64 @@
       }
     });
   });
+
+  // Find which programs use a specific exercise
+  function getProgramsUsingExercise(exerciseId) {
+    const usingPrograms = [];
+    for (const program of programs) {
+      const days = program.days || [];
+      for (const day of days) {
+        for (const section of day.sections || []) {
+          for (const exercise of section.exercises || []) {
+            if (exercise.exerciseId === exerciseId) {
+              usingPrograms.push(program.name);
+              break;
+            }
+          }
+          if (usingPrograms.includes(program.name)) break;
+        }
+        if (usingPrograms.includes(program.name)) break;
+      }
+    }
+    return [...new Set(usingPrograms)]; // Remove duplicates
+  }
+
+  // Start editing an exercise
+  function startEdit(exercise) {
+    editingId = exercise.id;
+    editName = exercise.name || '';
+    editType = getAllTypes().includes(exercise.type) ? exercise.type : 'Other';
+    editCustomType = getAllTypes().includes(exercise.type) ? '' : exercise.type;
+    editNotes = exercise.notes || '';
+  }
+
+  // Cancel editing
+  function cancelEdit() {
+    editingId = null;
+    editName = '';
+    editType = '';
+    editCustomType = '';
+    editNotes = '';
+  }
+
+  // Save edited exercise
+  async function saveEdit() {
+    if (!editName.trim()) return;
+
+    let finalType = editType;
+    if (editType === 'Other' && editCustomType.trim()) {
+      finalType = editCustomType.trim();
+      await saveCustomType(finalType);
+    }
+
+    await updateDoc(doc(db, 'exercises', editingId), {
+      name: editName,
+      type: finalType,
+      notes: editNotes
+    });
+
+    cancelEdit();
+  }
 
   async function saveCustomType(typeName) {
     if (!typeName.trim()) return;
@@ -109,9 +180,16 @@
     newNotes = '';
   }
 
-  async function deleteExercise(id) {
-    if (confirm('Delete this exercise?')) {
-      await deleteDoc(doc(db, 'exercises', id));
+  async function deleteExercise(exercise) {
+    const usingPrograms = getProgramsUsingExercise(exercise.id);
+
+    let confirmMessage = `Delete "${exercise.name}"?`;
+    if (usingPrograms.length > 0) {
+      confirmMessage = `⚠️ WARNING: "${exercise.name}" is currently used in:\n\n• ${usingPrograms.join('\n• ')}\n\nThe exercise will remain in these programs but be removed from the library.\n\nDelete anyway?`;
+    }
+
+    if (confirm(confirmMessage)) {
+      await deleteDoc(doc(db, 'exercises', exercise.id));
     }
   }
 </script>
@@ -182,13 +260,78 @@
   <p>No exercises found.</p>
 {:else}
   {#each getFilteredExercises() as exercise}
-    <div style="border: 1px solid #ccc; padding: 10px; margin: 10px 0;">
-      <strong>{exercise.name}</strong>
-      <span style="background: #eee; padding: 2px 6px; border-radius: 3px; margin-left: 10px; font-size: 0.8em;">{exercise.type}</span>
-      {#if exercise.notes}<br /><em>{exercise.notes}</em>{/if}
-      {#if userRole === 'admin'}
-        <br />
-        <button onclick={() => deleteExercise(exercise.id)}>Delete</button>
+    <div style="border: 1px solid #ccc; padding: 15px; margin: 10px 0; border-radius: 8px;">
+      {#if editingId === exercise.id}
+        <!-- Edit mode -->
+        <div style="display: grid; gap: 10px;">
+          <input
+            type="text"
+            bind:value={editName}
+            placeholder="Exercise name"
+            style="padding: 8px; font-size: 1em;"
+          />
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <select bind:value={editType} style="padding: 8px; flex: 1;">
+              {#each getAllTypes() as type}
+                <option value={type}>{type}</option>
+              {/each}
+            </select>
+            {#if editType === 'Other'}
+              <input
+                type="text"
+                bind:value={editCustomType}
+                placeholder="Custom type"
+                style="padding: 8px; flex: 1;"
+              />
+            {/if}
+          </div>
+          <textarea
+            bind:value={editNotes}
+            placeholder="Notes/cues (optional)"
+            style="padding: 8px;"
+          ></textarea>
+          <div style="display: flex; gap: 10px;">
+            <button onclick={saveEdit} style="padding: 8px 16px; background: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 4px;">
+              Save
+            </button>
+            <button onclick={cancelEdit} style="padding: 8px 16px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 4px;">
+              Cancel
+            </button>
+          </div>
+        </div>
+      {:else}
+        <!-- View mode -->
+        <div style="display: flex; justify-content: space-between; align-items: start;">
+          <div>
+            <strong style="font-size: 1.1em;">{exercise.name}</strong>
+            <span style="background: #e3f2fd; color: #1976D2; padding: 3px 8px; border-radius: 12px; margin-left: 10px; font-size: 0.8em;">{exercise.type}</span>
+            {#if exercise.notes}
+              <p style="margin: 8px 0 0 0; color: #666; font-style: italic;">{exercise.notes}</p>
+            {/if}
+            {@const usingPrograms = getProgramsUsingExercise(exercise.id)}
+            {#if usingPrograms.length > 0}
+              <p style="margin: 8px 0 0 0; font-size: 0.8em; color: #888;">
+                Used in: {usingPrograms.join(', ')}
+              </p>
+            {/if}
+          </div>
+          {#if userRole === 'admin'}
+            <div style="display: flex; gap: 8px;">
+              <button
+                onclick={() => startEdit(exercise)}
+                style="padding: 6px 12px; background: #fff; border: 1px solid #2196F3; color: #2196F3; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
+              >
+                Edit
+              </button>
+              <button
+                onclick={() => deleteExercise(exercise)}
+                style="padding: 6px 12px; background: #fff; border: 1px solid #f44336; color: #f44336; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
+              >
+                Delete
+              </button>
+            </div>
+          {/if}
+        </div>
       {/if}
     </div>
   {/each}

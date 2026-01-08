@@ -306,10 +306,11 @@
                 weight: set.weight,
                 rir: set.rir,
                 notes: set.notes,
-                // Store targets for reference
                 targetReps: log.targetReps,
                 targetWeight: log.targetWeight,
                 targetRir: log.targetRir,
+                repsMetric: exercise.repsMetric || 'reps',
+                weightMetric: exercise.weightMetric || 'weight',
                 loggedAt: loggedAt
               }));
             }
@@ -432,6 +433,10 @@
         {@const history = exerciseHistory[exercise.exerciseId]}
         {@const hasData = hasExerciseData(exercise.exerciseId)}
         {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !hasData}
+        {@const repsLabel = exercise.repsMetric === 'distance' ? '' : 'reps'}
+        {@const weightLabel = exercise.weightMetric === 'time' ? '' : 'lbs'}
+        {@const repsHeader = exercise.repsMetric === 'distance' ? 'Distance' : 'Reps'}
+        {@const weightHeader = exercise.weightMetric === 'time' ? 'Time' : 'Weight'}
         <div style="border: 2px solid {hasData ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: {showIncompleteHint ? '#fffde7' : 'white'}; transition: all 0.3s;">
 
           <!-- Exercise name -->
@@ -440,8 +445,8 @@
           <!-- Target details box -->
           <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 15px; border-radius: 8px; margin-bottom: 12px;">
             <div style="font-size: 1.2em; font-weight: bold; margin-bottom: 5px;">
-              {exercise.sets || '?'} sets × {exercise.reps || '?'} reps
-              {#if exercise.weight} @ {exercise.weight}{/if}
+              {exercise.sets || '?'} sets × {exercise.reps || '?'} {repsLabel}
+              {#if exercise.weight} @ {exercise.weight} {weightLabel}{/if}
             </div>
             {#if exercise.rir}
               <div style="font-size: 0.9em; opacity: 0.9;">Target RIR: {exercise.rir}</div>
@@ -511,8 +516,8 @@
               <!-- Column headers -->
               <div style="display: grid; grid-template-columns: 40px 1fr 1fr 60px 1fr 30px; gap: 6px; margin-bottom: 6px; padding: 0 2px;">
                 <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Set</span>
-                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Reps</span>
-                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Weight</span>
+                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">{repsHeader}</span>
+                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">{weightHeader}</span>
                 <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">RIR</span>
                 <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Notes</span>
                 <span></span>
@@ -525,19 +530,19 @@
                   <!-- Set number -->
                   <div style="font-weight: bold; color: #667eea; text-align: center;">{setIndex + 1}</div>
 
-                  <!-- Reps -->
+                  <!-- Reps/Distance -->
                   <input
                     type="text"
                     bind:value={set.reps}
-                    placeholder={log.targetReps || '0'}
+                    placeholder={log.targetReps || (exercise.repsMetric === 'distance' ? 'dist' : '0')}
                     style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
                   />
 
-                  <!-- Weight -->
+                  <!-- Weight/Time -->
                   <input
                     type="text"
                     bind:value={set.weight}
-                    placeholder={log.targetWeight || 'lbs'}
+                    placeholder={log.targetWeight || (exercise.weightMetric === 'time' ? 'time' : 'lbs')}
                     style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
                   />
 

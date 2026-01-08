@@ -31,11 +31,11 @@
   // Exercise in section
   let addingExerciseToSection = $state(null);
   let selectedExerciseId = $state('');
-  let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [] });
+  let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' });
 
   // Editing exercise in section
   let editingExercise = $state(null); // format: "dayIndex-sectionIndex-exerciseIndex"
-  let editExerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [] });
+  let editExerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' });
 
   // Drag and drop
   let draggedExercise = $state(null); // { dayIndex, sectionIndex, exerciseIndex, exercise }
@@ -172,13 +172,15 @@
       weight: exerciseDetails.weight,
       rir: exerciseDetails.rir,
       notes: exerciseDetails.notes,
-      customReqs: exerciseDetails.customReqs || []
+      customReqs: exerciseDetails.customReqs || [],
+      repsMetric: exerciseDetails.repsMetric || 'reps',
+      weightMetric: exerciseDetails.weightMetric || 'weight'
     };
     updatedDays[dayIndex].sections[sectionIndex].exercises.push(exerciseEntry);
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
 
     selectedExerciseId = '';
-    exerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [] };
+    exerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' };
     addingExerciseToSection = null;
   }
 
@@ -198,13 +200,15 @@
       weight: ex.weight || '',
       rir: ex.rir || '',
       notes: ex.notes || '',
-      customReqs: ex.customReqs ? [...ex.customReqs] : []
+      customReqs: ex.customReqs ? [...ex.customReqs] : [],
+      repsMetric: ex.repsMetric || 'reps',
+      weightMetric: ex.weightMetric || 'weight'
     };
   }
 
   function cancelEditExercise() {
     editingExercise = null;
-    editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [] };
+    editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' };
   }
 
   async function saveEditExercise(dayIndex, sectionIndex, exerciseIndex) {
@@ -216,9 +220,11 @@
     ex.rir = editExerciseDetails.rir;
     ex.notes = editExerciseDetails.notes;
     ex.customReqs = editExerciseDetails.customReqs;
+    ex.repsMetric = editExerciseDetails.repsMetric;
+    ex.weightMetric = editExerciseDetails.weightMetric;
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
     editingExercise = null;
-    editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [] };
+    editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' };
   }
 
   // Custom requirements for adding new exercise
@@ -570,10 +576,27 @@
                         <!-- Edit Mode -->
                         <strong>{ex.name}</strong>
                         <span style="color: #888; font-size: 0.8em;">({ex.type})</span>
+                        <!-- Metric selectors -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; padding: 10px; background: #f0f7ff; border-radius: 5px;">
+                          <div>
+                            <label style="font-size: 0.8em; color: #666;">Reps measured as:</label>
+                            <select bind:value={editExerciseDetails.repsMetric} style="width: 100%; padding: 5px; margin-top: 3px;">
+                              <option value="reps">Reps (count)</option>
+                              <option value="distance">Distance</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label style="font-size: 0.8em; color: #666;">Weight measured as:</label>
+                            <select bind:value={editExerciseDetails.weightMetric} style="width: 100%; padding: 5px; margin-top: 3px;">
+                              <option value="weight">Weight (lbs)</option>
+                              <option value="time">Time</option>
+                            </select>
+                          </div>
+                        </div>
                         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 10px 0;">
                           <input type="text" bind:value={editExerciseDetails.sets} placeholder="Sets" style="padding: 5px;" />
-                          <input type="text" bind:value={editExerciseDetails.reps} placeholder="Reps" style="padding: 5px;" />
-                          <input type="text" bind:value={editExerciseDetails.weight} placeholder="Weight" style="padding: 5px;" />
+                          <input type="text" bind:value={editExerciseDetails.reps} placeholder={editExerciseDetails.repsMetric === 'distance' ? 'Distance' : 'Reps'} style="padding: 5px;" />
+                          <input type="text" bind:value={editExerciseDetails.weight} placeholder={editExerciseDetails.weightMetric === 'time' ? 'Time' : 'Weight'} style="padding: 5px;" />
                         </div>
                         <div style="margin-bottom: 8px;">
                           <input type="text" bind:value={editExerciseDetails.rir} placeholder="RIR" style="padding: 5px; width: 100%;" />
@@ -601,29 +624,36 @@
                         </div>
                       {:else}
                         <!-- View Mode -->
+                        {@const repsLabel = ex.repsMetric === 'distance' ? '' : 'reps'}
+                        {@const weightLabel = ex.weightMetric === 'time' ? '' : ''}
                         <div style="display: flex; justify-content: space-between; align-items: start;">
                           <div style="display: flex; align-items: start; gap: 10px;">
                             <span style="color: #999; cursor: grab; font-size: 1.2em; user-select: none;" title="Drag to move">⋮⋮</span>
                             <div>
                               <strong>{ex.name}</strong>
-                            <span style="color: #888; font-size: 0.8em;">({ex.type})</span>
-                            <br />
-                            {#if ex.sets}{ex.sets} sets{/if}
-                            {#if ex.reps} × {ex.reps} reps{/if}
-                            {#if ex.weight} @ {ex.weight}{/if}
-                            {#if ex.rir} (RIR: {ex.rir}){/if}
-                            {#if ex.notes}<br /><em style="color: #666;">{ex.notes}</em>{/if}
-                            {#if ex.customReqs && ex.customReqs.length > 0}
-                              <div style="margin-top: 5px;">
-                                {#each ex.customReqs as req}
-                                  {#if req.name && req.value}
-                                    <span style="display: inline-block; background: #e3f2fd; padding: 2px 6px; border-radius: 3px; font-size: 0.8em; margin-right: 5px;">
-                                      {req.name}: {req.value}
-                                    </span>
-                                  {/if}
-                                {/each}
-                              </div>
-                            {/if}
+                              <span style="color: #888; font-size: 0.8em;">({ex.type})</span>
+                              {#if ex.repsMetric === 'distance' || ex.weightMetric === 'time'}
+                                <span style="background: #e8f5e9; color: #2e7d32; padding: 2px 6px; border-radius: 3px; font-size: 0.7em; margin-left: 5px;">
+                                  {ex.repsMetric === 'distance' ? 'Distance' : ''}{ex.repsMetric === 'distance' && ex.weightMetric === 'time' ? '/' : ''}{ex.weightMetric === 'time' ? 'Time' : ''}
+                                </span>
+                              {/if}
+                              <br />
+                              {#if ex.sets}{ex.sets} sets{/if}
+                              {#if ex.reps} × {ex.reps} {ex.repsMetric === 'distance' ? '' : 'reps'}{/if}
+                              {#if ex.weight} @ {ex.weight}{ex.weightMetric === 'time' ? '' : ''}{/if}
+                              {#if ex.rir} (RIR: {ex.rir}){/if}
+                              {#if ex.notes}<br /><em style="color: #666;">{ex.notes}</em>{/if}
+                              {#if ex.customReqs && ex.customReqs.length > 0}
+                                <div style="margin-top: 5px;">
+                                  {#each ex.customReqs as req}
+                                    {#if req.name && req.value}
+                                      <span style="display: inline-block; background: #e3f2fd; padding: 2px 6px; border-radius: 3px; font-size: 0.8em; margin-right: 5px;">
+                                        {req.name}: {req.value}
+                                      </span>
+                                    {/if}
+                                  {/each}
+                                </div>
+                              {/if}
                             </div>
                           </div>
                           <div style="display: flex; gap: 5px;">
@@ -651,10 +681,27 @@
                         {/each}
                       </select>
                     </div>
+                    <!-- Metric selectors -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; padding: 10px; background: #f0f7ff; border-radius: 5px;">
+                      <div>
+                        <label style="font-size: 0.8em; color: #666;">Reps measured as:</label>
+                        <select bind:value={exerciseDetails.repsMetric} style="width: 100%; padding: 5px; margin-top: 3px;">
+                          <option value="reps">Reps (count)</option>
+                          <option value="distance">Distance</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label style="font-size: 0.8em; color: #666;">Weight measured as:</label>
+                        <select bind:value={exerciseDetails.weightMetric} style="width: 100%; padding: 5px; margin-top: 3px;">
+                          <option value="weight">Weight (lbs)</option>
+                          <option value="time">Time</option>
+                        </select>
+                      </div>
+                    </div>
                     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 8px;">
                       <input type="text" bind:value={exerciseDetails.sets} placeholder="Sets" style="padding: 5px;" />
-                      <input type="text" bind:value={exerciseDetails.reps} placeholder="Reps" style="padding: 5px;" />
-                      <input type="text" bind:value={exerciseDetails.weight} placeholder="Weight" style="padding: 5px;" />
+                      <input type="text" bind:value={exerciseDetails.reps} placeholder={exerciseDetails.repsMetric === 'distance' ? 'Distance' : 'Reps'} style="padding: 5px;" />
+                      <input type="text" bind:value={exerciseDetails.weight} placeholder={exerciseDetails.weightMetric === 'time' ? 'Time' : 'Weight'} style="padding: 5px;" />
                     </div>
                     <div style="margin-bottom: 8px;">
                       <input type="text" bind:value={exerciseDetails.rir} placeholder="RIR (Reps in Reserve)" style="padding: 5px; width: 100%;" />

@@ -77,7 +77,9 @@
           reps: log.reps,
           weight: log.weight,
           rir: log.rir,
-          notes: log.notes
+          notes: log.notes,
+          repsMetric: log.repsMetric || 'reps',
+          weightMetric: log.weightMetric || 'weight'
         });
       });
 
@@ -132,8 +134,8 @@
                 <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: #f8f9fa; border-radius: 5px; font-size: 0.95em;">
                   <span style="font-weight: bold; color: #667eea; min-width: 35px;">Set {set.setNumber}</span>
                   <span style="color: #333;">
-                    <strong>{set.reps || '-'}</strong> reps
-                    {#if set.weight} @ <strong>{set.weight}</strong> lbs{/if}
+                    <strong>{set.reps || '-'}</strong> {set.repsMetric === 'distance' ? '' : 'reps'}
+                    {#if set.weight} @ <strong>{set.weight}</strong> {set.weightMetric === 'time' ? '' : 'lbs'}{/if}
                     {#if set.rir} <span style="color: #888;">(RIR: {set.rir})</span>{/if}
                   </span>
                 </div>
