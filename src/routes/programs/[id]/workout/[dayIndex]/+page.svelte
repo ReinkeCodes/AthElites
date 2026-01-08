@@ -582,7 +582,7 @@
               </div>
 
               <!-- Set rows -->
-              {#each log.sets as set, setIndex}
+              {#each log.sets.filter(s => s) as set, setIndex}
                 {@const setHasData = set.reps || set.weight}
                 <div style="margin-bottom: 8px;">
                   <div style="display: grid; grid-template-columns: 40px 1fr 1fr 60px 1fr 30px; gap: 6px; align-items: center; background: {setHasData ? '#e8f5e9' : 'white'}; padding: 8px; border-radius: 6px; border: 1px solid {setHasData ? '#c8e6c9' : '#e0e0e0'};">
