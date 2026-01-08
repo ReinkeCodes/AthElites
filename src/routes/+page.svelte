@@ -104,7 +104,10 @@
   </div>
 
   <!-- Recent Workouts -->
-  <h2>Recent Workouts</h2>
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+    <h2 style="margin: 0;">Recent Workouts</h2>
+    <a href="/history" style="font-size: 0.9em; color: #667eea;">View All</a>
+  </div>
   {#if recentSessions.length === 0}
     <p style="color: #888;">No workouts completed yet. Start your first workout!</p>
   {:else}
@@ -127,4 +130,14 @@
       {/each}
     </div>
   {/if}
+
+  <!-- Navigation Links -->
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 30px;">
+    <a href="/history" style="display: block; padding: 15px; background: #f5f5f5; border-radius: 8px; text-align: center; text-decoration: none; color: #333;">
+      <strong>History & PRs</strong>
+    </a>
+    <a href="/profile" style="display: block; padding: 15px; background: #f5f5f5; border-radius: 8px; text-align: center; text-decoration: none; color: #333;">
+      <strong>Profile</strong>
+    </a>
+  </div>
 {/if}

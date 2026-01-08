@@ -137,6 +137,101 @@
     return exerciseCompleted[key] || false;
   }
 
+  // Check if a section is complete
+  function isSectionComplete(sectionIndex) {
+    const section = day?.sections?.[sectionIndex];
+    if (!section || !section.exercises || section.exercises.length === 0) return false;
+
+    if (section.mode === 'checkbox') {
+      // All exercises must be checked
+      return section.exercises.every(ex =>
+        exerciseCompleted[`${section.name}-${ex.exerciseId}`]
+      );
+    } else {
+      // For full tracking, at least weight or reps entered for all exercises
+      return section.exercises.every(ex => {
+        const log = exerciseLogs[ex.exerciseId];
+        return log && (log.weight || log.reps);
+      });
+    }
+  }
+
+  // Check if a section is started (has some data but not complete)
+  function isSectionStarted(sectionIndex) {
+    const section = day?.sections?.[sectionIndex];
+    if (!section || !section.exercises || section.exercises.length === 0) return false;
+
+    if (section.mode === 'checkbox') {
+      return section.exercises.some(ex =>
+        exerciseCompleted[`${section.name}-${ex.exerciseId}`]
+      );
+    } else {
+      return section.exercises.some(ex => {
+        const log = exerciseLogs[ex.exerciseId];
+        return log && (log.weight || log.reps || log.sets);
+      });
+    }
+  }
+
+  // Get progress bar color: red = not started, yellow = in progress, green = complete
+  function getSectionColor(sectionIndex) {
+    if (isSectionComplete(sectionIndex)) return '#4CAF50'; // green
+    if (isSectionStarted(sectionIndex)) return '#FFC107'; // yellow
+    return '#ef5350'; // red
+  }
+
+  // Check if an exercise in full tracking mode has data
+  function hasExerciseData(exerciseId) {
+    const log = exerciseLogs[exerciseId];
+    return log && (log.weight || log.reps || log.sets);
+  }
+
+  // Count incomplete exercises in current section
+  function getIncompleteCount() {
+    const section = getCurrentSection();
+    if (!section || !section.exercises) return 0;
+
+    if (section.mode === 'checkbox') {
+      return section.exercises.filter(ex =>
+        !exerciseCompleted[`${section.name}-${ex.exerciseId}`]
+      ).length;
+    } else {
+      return section.exercises.filter(ex => {
+        const log = exerciseLogs[ex.exerciseId];
+        return !log || (!log.weight && !log.reps);
+      }).length;
+    }
+  }
+
+  // Mark all incomplete exercises as DNC
+  function markIncompleteAsDNC() {
+    const section = getCurrentSection();
+    if (!section || !section.exercises) return;
+
+    if (section.mode === 'checkbox') {
+      section.exercises.forEach(ex => {
+        const key = `${section.name}-${ex.exerciseId}`;
+        if (!exerciseCompleted[key]) {
+          exerciseCompleted[key] = true;
+        }
+      });
+      // Trigger reactivity
+      exerciseCompleted = { ...exerciseCompleted };
+    } else {
+      section.exercises.forEach(ex => {
+        const log = exerciseLogs[ex.exerciseId];
+        if (log && !log.weight && !log.reps) {
+          log.sets = 'DNC';
+          log.reps = 'DNC';
+          log.weight = 'DNC';
+          log.notes = 'Did not complete';
+        }
+      });
+      // Trigger reactivity
+      exerciseLogs = { ...exerciseLogs };
+    }
+  }
+
   function nextSection() {
     if (currentSectionIndex < getTotalSections() - 1) {
       currentSectionIndex++;
@@ -211,26 +306,49 @@
     <p style="color: #666; margin: 0;">{program.name}</p>
   </div>
 
-  <!-- Progress indicator -->
-  <div style="display: flex; gap: 5px; margin-bottom: 20px;">
+  <!-- Progress indicator: red = not started, yellow = in progress, green = complete -->
+  <div style="display: flex; gap: 5px; margin-bottom: 10px;">
     {#each day.sections || [] as section, i}
-      <div style="flex: 1; height: 8px; border-radius: 4px; background: {i <= currentSectionIndex ? '#4CAF50' : '#ddd'};"></div>
+      <div
+        style="flex: 1; height: 12px; border-radius: 6px; background: {getSectionColor(i)}; opacity: {i === currentSectionIndex ? 1 : 0.6}; transition: all 0.3s; {i === currentSectionIndex ? 'box-shadow: 0 2px 6px rgba(0,0,0,0.25);' : ''} cursor: pointer;"
+        onclick={() => currentSectionIndex = i}
+      ></div>
     {/each}
+  </div>
+  <div style="display: flex; justify-content: center; gap: 15px; font-size: 0.75em; color: #888; margin-bottom: 15px;">
+    <span><span style="display: inline-block; width: 10px; height: 10px; background: #ef5350; border-radius: 50%; margin-right: 4px;"></span>Not started</span>
+    <span><span style="display: inline-block; width: 10px; height: 10px; background: #FFC107; border-radius: 50%; margin-right: 4px;"></span>In progress</span>
+    <span><span style="display: inline-block; width: 10px; height: 10px; background: #4CAF50; border-radius: 50%; margin-right: 4px;"></span>Complete</span>
   </div>
 
   <!-- Current section -->
   {#if getCurrentSection()}
     <div style="background: #f5f5f5; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
-      <h2 style="margin: 0 0 15px 0;">{getCurrentSection().name}</h2>
-      <p style="color: #888; margin: 0;">Section {currentSectionIndex + 1} of {getTotalSections()}</p>
+      <div style="display: flex; justify-content: space-between; align-items: start;">
+        <div>
+          <h2 style="margin: 0 0 5px 0;">{getCurrentSection().name}</h2>
+          <p style="color: #888; margin: 0;">Section {currentSectionIndex + 1} of {getTotalSections()}</p>
+        </div>
+        {#if isSectionStarted(currentSectionIndex) && !isSectionComplete(currentSectionIndex)}
+          <button
+            onclick={markIncompleteAsDNC}
+            style="background: #f5f5f5; border: 1px solid #ccc; padding: 8px 12px; border-radius: 6px; font-size: 0.8em; color: #666; cursor: pointer;"
+            title="Mark all incomplete exercises as 'Did Not Complete'"
+          >
+            Skip {getIncompleteCount()} remaining
+          </button>
+        {/if}
+      </div>
     </div>
 
     <!-- Exercises in this section -->
     {#if isCheckboxSection(getCurrentSection())}
       <!-- Checkbox-only mode: show all exercises with just checkboxes -->
       {#each getCurrentSection().exercises || [] as exercise}
+        {@const isComplete = isExerciseComplete(getCurrentSection().name, exercise.exerciseId)}
+        {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !isComplete}
         <div
-          style="border: 1px solid {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? '#4CAF50' : '#ddd'}; padding: 15px; margin-bottom: 10px; border-radius: 8px; background: {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? '#f1f8e9' : 'white'}; cursor: pointer; transition: all 0.2s;"
+          style="border: 2px solid {isComplete ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; padding: 15px; margin-bottom: 10px; border-radius: 8px; background: {isComplete ? '#f1f8e9' : showIncompleteHint ? '#fffde7' : 'white'}; cursor: pointer; transition: all 0.2s;"
           onclick={() => toggleExerciseComplete(getCurrentSection().name, exercise.exerciseId)}
         >
           <div style="display: flex; align-items: center; gap: 15px;">
@@ -264,21 +382,36 @@
         </div>
       {/each}
     {:else}
-      <!-- Full tracking mode: show input fields -->
+      <!-- Full tracking mode: targets at top, inputs below -->
       {#each getCurrentSection().exercises || [] as exercise}
         {@const history = exerciseHistory[exercise.exerciseId]}
-        <div style="border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: white;">
-          <h3 style="margin: 0 0 5px 0;">{exercise.name}</h3>
-          <p style="color: #888; margin: 0 0 10px 0; font-size: 0.9em;">
-            Target: {exercise.sets} sets × {exercise.reps}
-            {#if exercise.weight} @ {exercise.weight}{/if}
-            {#if exercise.rir} (RIR: {exercise.rir}){/if}
-          </p>
+        {@const hasData = hasExerciseData(exercise.exerciseId)}
+        {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !hasData}
+        <div style="border: 2px solid {hasData ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: {showIncompleteHint ? '#fffde7' : 'white'}; transition: all 0.3s;">
+
+          <!-- Exercise name -->
+          <h3 style="margin: 0 0 10px 0; font-size: 1.1em;">{exercise.name}</h3>
+
+          <!-- Target details box -->
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 15px; border-radius: 8px; margin-bottom: 12px;">
+            <div style="font-size: 1.2em; font-weight: bold; margin-bottom: 5px;">
+              {exercise.sets || '?'} sets × {exercise.reps || '?'} reps
+              {#if exercise.weight} @ {exercise.weight}{/if}
+            </div>
+            {#if exercise.rir}
+              <div style="font-size: 0.9em; opacity: 0.9;">Target RIR: {exercise.rir}</div>
+            {/if}
+            {#if exercise.notes}
+              <div style="font-size: 0.85em; opacity: 0.85; margin-top: 5px; font-style: italic;">{exercise.notes}</div>
+            {/if}
+          </div>
+
+          <!-- Custom requirements -->
           {#if exercise.customReqs && exercise.customReqs.length > 0}
-            <div style="margin-bottom: 10px;">
+            <div style="margin-bottom: 12px;">
               {#each exercise.customReqs as req}
                 {#if req.name && req.value}
-                  <span style="display: inline-block; background: #fff3e0; padding: 3px 8px; border-radius: 4px; font-size: 0.85em; margin-right: 5px; margin-bottom: 3px;">
+                  <span style="display: inline-block; background: #fff3e0; padding: 4px 10px; border-radius: 15px; font-size: 0.85em; margin-right: 5px; margin-bottom: 5px;">
                     <strong>{req.name}:</strong> {req.value}
                   </span>
                 {/if}
@@ -286,69 +419,87 @@
             </div>
           {/if}
 
-          <!-- History section -->
+          <!-- PR and History -->
           {#if history && (history.lastTwo?.length > 0 || history.pr)}
-            <div style="background: #f0f8ff; padding: 10px; margin-bottom: 10px; border-radius: 5px; font-size: 0.85em;">
+            <div style="background: #f8f9fa; padding: 12px; margin-bottom: 12px; border-radius: 8px;">
               {#if history.pr}
-                <div style="color: #ff9800; font-weight: bold;">
-                  PR: {history.pr.weight} × {history.pr.reps}
+                <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px;">
+                  <div style="font-weight: bold; font-size: 0.9em;">🏆 Personal Record</div>
+                  <div style="font-size: 1.1em; margin-top: 3px;">{history.pr.weight} lbs × {history.pr.reps} reps</div>
+                  <div style="font-size: 0.8em; opacity: 0.9; margin-top: 2px;">Set on {formatDate(history.pr.date)}</div>
                 </div>
               {/if}
               {#if history.lastTwo?.length > 0}
-                <div style="color: #666; margin-top: 5px;">
-                  <strong>Recent:</strong>
+                <div style="font-size: 0.85em;">
+                  <strong style="color: #555;">Previous Sessions:</strong>
                   {#each history.lastTwo as entry, i}
-                    <div>{formatDate(entry.loggedAt)}: {entry.weight || '-'} × {entry.reps || '-'}</div>
+                    <div style="background: white; padding: 8px 10px; margin-top: 6px; border-radius: 5px; border: 1px solid #eee;">
+                      <div style="color: #888; font-size: 0.85em; margin-bottom: 3px;">{formatDate(entry.loggedAt)}</div>
+                      <div style="color: #333;">
+                        <strong>{entry.sets || '-'}</strong> sets × <strong>{entry.reps || '-'}</strong> reps @ <strong>{entry.weight || '-'}</strong> lbs
+                        {#if entry.rir} <span style="color: #888;">(RIR: {entry.rir})</span>{/if}
+                      </div>
+                      {#if entry.notes}
+                        <div style="color: #888; font-style: italic; margin-top: 3px; font-size: 0.9em;">"{entry.notes}"</div>
+                      {/if}
+                    </div>
                   {/each}
                 </div>
               {/if}
             </div>
           {/if}
 
-          <!-- Input fields -->
-          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;">
-            <div>
-              <label style="font-size: 0.8em; color: #666;">Sets</label>
-              <input
-                type="text"
-                bind:value={exerciseLogs[exercise.exerciseId].sets}
-                style="width: 100%; padding: 8px; box-sizing: border-box;"
-              />
+          <!-- Input fields section -->
+          <div style="background: #fafafa; padding: 12px; border-radius: 8px;">
+            <p style="margin: 0 0 10px 0; font-size: 0.85em; color: #666; font-weight: 500;">Log your performance:</p>
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px;">
+              <div>
+                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Sets</label>
+                <input
+                  type="text"
+                  bind:value={exerciseLogs[exercise.exerciseId].sets}
+                  placeholder={exercise.sets || '0'}
+                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em; text-align: center;"
+                />
+              </div>
+              <div>
+                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Reps</label>
+                <input
+                  type="text"
+                  bind:value={exerciseLogs[exercise.exerciseId].reps}
+                  placeholder={exercise.reps || '0'}
+                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em; text-align: center;"
+                />
+              </div>
+              <div>
+                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Weight</label>
+                <input
+                  type="text"
+                  bind:value={exerciseLogs[exercise.exerciseId].weight}
+                  placeholder={exercise.weight || 'lbs'}
+                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em; text-align: center;"
+                />
+              </div>
             </div>
-            <div>
-              <label style="font-size: 0.8em; color: #666;">Reps</label>
-              <input
-                type="text"
-                bind:value={exerciseLogs[exercise.exerciseId].reps}
-                style="width: 100%; padding: 8px; box-sizing: border-box;"
-              />
-            </div>
-            <div>
-              <label style="font-size: 0.8em; color: #666;">Weight</label>
-              <input
-                type="text"
-                bind:value={exerciseLogs[exercise.exerciseId].weight}
-                style="width: 100%; padding: 8px; box-sizing: border-box;"
-              />
-            </div>
-          </div>
-          <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 8px;">
-            <div>
-              <label style="font-size: 0.8em; color: #666;">RIR</label>
-              <input
-                type="text"
-                bind:value={exerciseLogs[exercise.exerciseId].rir}
-                style="width: 100%; padding: 8px; box-sizing: border-box;"
-              />
-            </div>
-            <div>
-              <label style="font-size: 0.8em; color: #666;">Notes</label>
-              <input
-                type="text"
-                bind:value={exerciseLogs[exercise.exerciseId].notes}
-                placeholder="How did it feel?"
-                style="width: 100%; padding: 8px; box-sizing: border-box;"
-              />
+            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 10px;">
+              <div>
+                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">RIR</label>
+                <input
+                  type="text"
+                  bind:value={exerciseLogs[exercise.exerciseId].rir}
+                  placeholder={exercise.rir || '0'}
+                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em; text-align: center;"
+                />
+              </div>
+              <div>
+                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Notes</label>
+                <input
+                  type="text"
+                  bind:value={exerciseLogs[exercise.exerciseId].notes}
+                  placeholder="How did it feel?"
+                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em;"
+                />
+              </div>
             </div>
           </div>
         </div>

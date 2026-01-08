@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, getDoc, collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+  import { doc, onSnapshot, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
 
@@ -10,10 +10,12 @@
   let currentUserId = $state(null);
   let todaysLogs = $state([]);
   let duration = $state(0);
+  let loading = $state(true);
+  let dayIndex = $state(0);
 
   onMount(() => {
     const urlParams = new URLSearchParams(window.location.search);
-    const dayIndex = parseInt(urlParams.get('day') || '0');
+    dayIndex = parseInt(urlParams.get('day') || '0');
     duration = parseInt(urlParams.get('duration') || '0');
 
     onAuthStateChanged(auth, async (user) => {
@@ -21,13 +23,17 @@
         currentUserId = user.uid;
         await loadTodaysLogs();
       }
+      loading = false;
     });
 
     const programId = $page.params.id;
     onSnapshot(doc(db, 'programs', programId), (snapshot) => {
       if (snapshot.exists()) {
-        program = { id: snapshot.id, ...snapshot.data() };
-        day = program.days?.[dayIndex];
+        const data = snapshot.data();
+        program = { id: snapshot.id, ...data };
+        // Use published days for clients
+        const days = data.publishedDays || data.days;
+        day = days?.[dayIndex];
       }
     });
   });
@@ -38,71 +44,95 @@
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const logsQuery = query(
-      collection(db, 'workoutLogs'),
-      where('userId', '==', currentUserId),
-      where('programId', '==', $page.params.id),
-      orderBy('loggedAt', 'desc'),
-      limit(50)
-    );
-
     try {
+      // Simpler query without orderBy to avoid index requirement
+      const logsQuery = query(
+        collection(db, 'workoutLogs'),
+        where('userId', '==', currentUserId),
+        where('programId', '==', $page.params.id)
+      );
+
       const snapshot = await getDocs(logsQuery);
-      todaysLogs = snapshot.docs
-        .map(d => d.data())
+      const allLogs = snapshot.docs.map(d => d.data());
+
+      // Filter to today and sort client-side
+      todaysLogs = allLogs
         .filter(log => {
           const logDate = log.loggedAt?.toDate ? log.loggedAt.toDate() : new Date(log.loggedAt);
           return logDate >= today;
+        })
+        .sort((a, b) => {
+          const dateA = a.loggedAt?.toDate ? a.loggedAt.toDate() : new Date(a.loggedAt);
+          const dateB = b.loggedAt?.toDate ? b.loggedAt.toDate() : new Date(b.loggedAt);
+          return dateB - dateA;
         });
     } catch (e) {
       console.log('Could not load logs:', e);
+      todaysLogs = [];
     }
   }
 </script>
 
-<div style="text-align: center; padding: 20px;">
-  <h1 style="color: #4CAF50;">Workout Complete!</h1>
-
-  {#if program && day}
-    <h2>{day.name}</h2>
-    <p style="color: #666;">{program.name}</p>
-  {/if}
-
-  {#if duration > 0}
-    <div style="background: #f5f5f5; padding: 20px; border-radius: 10px; margin: 20px auto; max-width: 300px;">
-      <p style="font-size: 2em; margin: 0; font-weight: bold;">{duration}</p>
-      <p style="margin: 5px 0 0 0; color: #666;">minutes</p>
+{#if loading}
+  <div style="text-align: center; padding: 40px;">
+    <p>Loading summary...</p>
+  </div>
+{:else}
+  <div style="text-align: center; padding: 20px;">
+    <!-- Success animation -->
+    <div style="width: 80px; height: 80px; background: linear-gradient(135deg, #4CAF50, #8BC34A); border-radius: 50%; margin: 0 auto 20px; display: flex; align-items: center; justify-content: center;">
+      <span style="color: white; font-size: 2.5em;">✓</span>
     </div>
-  {/if}
 
-  <h3>Today's Summary</h3>
+    <h1 style="color: #4CAF50; margin-bottom: 5px;">Workout Complete!</h1>
 
-  {#if todaysLogs.length === 0}
-    <p style="color: #888;">No exercises logged.</p>
-  {:else}
-    <div style="text-align: left; max-width: 500px; margin: 0 auto;">
-      {#each todaysLogs as log}
-        <div style="border-bottom: 1px solid #eee; padding: 10px 0;">
-          <strong>{log.exerciseName}</strong>
-          <div style="color: #666;">
-            {log.sets} sets × {log.reps}
-            {#if log.weight} @ {log.weight}{/if}
-            {#if log.rir} (RIR: {log.rir}){/if}
+    {#if program && day}
+      <h2 style="margin: 10px 0 5px 0;">{day.name}</h2>
+      <p style="color: #666; margin: 0;">{program.name}</p>
+    {/if}
+
+    {#if duration > 0}
+      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; margin: 25px auto; max-width: 200px;">
+        <p style="font-size: 2.5em; margin: 0; font-weight: bold;">{duration}</p>
+        <p style="margin: 5px 0 0 0; opacity: 0.9;">minutes</p>
+      </div>
+    {/if}
+
+    <h3 style="margin-top: 30px; margin-bottom: 15px;">Today's Performance</h3>
+
+    {#if todaysLogs.length === 0}
+      <p style="color: #888;">No exercises logged for this workout.</p>
+    {:else}
+      <div style="text-align: left; max-width: 500px; margin: 0 auto;">
+        {#each todaysLogs as log}
+          <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px; margin-bottom: 10px;">
+            <strong style="font-size: 1.05em;">{log.exerciseName}</strong>
+            <div style="color: #333; margin-top: 5px; font-size: 1.1em;">
+              <strong>{log.sets || '-'}</strong> sets × <strong>{log.reps || '-'}</strong> reps
+              {#if log.weight} @ <strong>{log.weight}</strong> lbs{/if}
+            </div>
+            {#if log.rir}
+              <div style="color: #888; font-size: 0.9em; margin-top: 3px;">RIR: {log.rir}</div>
+            {/if}
+            {#if log.notes}
+              <div style="color: #666; font-style: italic; font-size: 0.9em; margin-top: 5px; padding-top: 5px; border-top: 1px solid #eee;">"{log.notes}"</div>
+            {/if}
           </div>
-          {#if log.notes}
-            <div style="color: #888; font-style: italic; font-size: 0.9em;">{log.notes}</div>
-          {/if}
-        </div>
-      {/each}
-    </div>
-  {/if}
-</div>
+        {/each}
+      </div>
 
-<nav style="text-align: center; margin-top: 30px;">
-  <a href="/" style="display: inline-block; padding: 12px 24px; background: #4CAF50; color: white; text-decoration: none; border-radius: 5px; margin-right: 10px;">
-    Home
-  </a>
-  <a href="/programs" style="display: inline-block; padding: 12px 24px; background: #2196F3; color: white; text-decoration: none; border-radius: 5px;">
-    Programs
-  </a>
-</nav>
+      <p style="color: #888; font-size: 0.9em; margin-top: 20px;">
+        {todaysLogs.length} exercise{todaysLogs.length !== 1 ? 's' : ''} logged
+      </p>
+    {/if}
+  </div>
+
+  <nav style="text-align: center; margin-top: 30px; padding-bottom: 30px;">
+    <a href="/" style="display: inline-block; padding: 14px 28px; background: #4CAF50; color: white; text-decoration: none; border-radius: 8px; margin-right: 10px; font-weight: 500;">
+      Home
+    </a>
+    <a href="/programs" style="display: inline-block; padding: 14px 28px; background: #2196F3; color: white; text-decoration: none; border-radius: 8px; font-weight: 500;">
+      Programs
+    </a>
+  </nav>
+{/if}
