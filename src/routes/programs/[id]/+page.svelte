@@ -609,9 +609,13 @@
                         <div style="margin: 10px 0; padding: 10px; background: #fff3e0; border-radius: 5px;">
                           <strong style="font-size: 0.9em;">Custom Requirements:</strong>
                           {#each editExerciseDetails.customReqs as req, reqIndex}
-                            <div style="display: flex; gap: 5px; margin-top: 5px;">
+                            <div style="display: flex; gap: 5px; margin-top: 5px; align-items: center;">
                               <input type="text" bind:value={editExerciseDetails.customReqs[reqIndex].name} placeholder="Category (e.g. Tempo)" style="flex: 1; padding: 5px;" />
                               <input type="text" bind:value={editExerciseDetails.customReqs[reqIndex].value} placeholder="Value (e.g. 3-1-2)" style="flex: 1; padding: 5px;" />
+                              <label style="display: flex; align-items: center; gap: 3px; font-size: 0.75em; white-space: nowrap;">
+                                <input type="checkbox" bind:checked={editExerciseDetails.customReqs[reqIndex].clientInput} />
+                                Client input
+                              </label>
                               <button onclick={() => removeEditCustomReq(reqIndex)} style="padding: 5px 10px;">✕</button>
                             </div>
                           {/each}
@@ -714,9 +718,13 @@
                     <div style="margin: 10px 0; padding: 10px; background: #fff3e0; border-radius: 5px;">
                       <strong style="font-size: 0.9em;">Custom Requirements (optional):</strong>
                       {#each exerciseDetails.customReqs as req, reqIndex}
-                        <div style="display: flex; gap: 5px; margin-top: 5px;">
-                          <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].name} placeholder="Category (e.g. Tempo, Pause)" style="flex: 1; padding: 5px;" />
-                          <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].value} placeholder="Value (e.g. 3-1-2, 2 sec)" style="flex: 1; padding: 5px;" />
+                        <div style="display: flex; gap: 5px; margin-top: 5px; align-items: center;">
+                          <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].name} placeholder="Category (e.g. Tempo)" style="flex: 1; padding: 5px;" />
+                          <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].value} placeholder="Value (e.g. 3-1-2)" style="flex: 1; padding: 5px;" />
+                          <label style="display: flex; align-items: center; gap: 3px; font-size: 0.75em; white-space: nowrap;">
+                            <input type="checkbox" bind:checked={exerciseDetails.customReqs[reqIndex].clientInput} />
+                            Client input
+                          </label>
                           <button onclick={() => removeCustomReq(reqIndex)} style="padding: 5px 10px;">✕</button>
                         </div>
                       {/each}

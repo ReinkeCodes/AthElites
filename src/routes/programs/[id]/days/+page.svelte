@@ -32,18 +32,13 @@
     });
   });
 
-  function getExerciseNames(day) {
-    const names = [];
-    if (day.sections) {
-      day.sections.forEach(section => {
-        if (section.exercises) {
-          section.exercises.forEach(ex => {
-            if (ex.name) names.push(ex.name);
-          });
-        }
-      });
-    }
-    return names;
+  function getSectionSummaries(day) {
+    if (!day.sections) return [];
+    return day.sections.map(section => ({
+      name: section.name,
+      mode: section.mode || 'full',
+      exercises: section.exercises || []
+    }));
   }
 </script>
 
@@ -60,18 +55,41 @@
   {:else}
     <div style="display: grid; gap: 15px;">
       {#each program.days as day, dayIndex}
-        {@const exercises = getExerciseNames(day)}
+        {@const sections = getSectionSummaries(day)}
         <a href="/programs/{program.id}/workout/{dayIndex}" style="text-decoration: none; color: inherit;">
           <div style="border: 2px solid #4CAF50; padding: 20px; border-radius: 10px; background: #f9fff9; cursor: pointer; transition: all 0.2s;" onmouseenter={(e) => e.currentTarget.style.background = '#e8f5e9'} onmouseleave={(e) => e.currentTarget.style.background = '#f9fff9'}>
             <div style="display: flex; justify-content: space-between; align-items: start;">
               <h3 style="margin: 0;">{day.name}</h3>
-              {#if day.sections}
-                <span style="background: #e8f5e9; color: #4CAF50; padding: 3px 8px; border-radius: 12px; font-size: 0.75em;">{day.sections.length} section{day.sections.length !== 1 ? 's' : ''}</span>
+              {#if sections.length > 0}
+                <span style="background: #e8f5e9; color: #4CAF50; padding: 3px 8px; border-radius: 12px; font-size: 0.75em;">{sections.length} section{sections.length !== 1 ? 's' : ''}</span>
               {/if}
             </div>
-            {#if exercises.length > 0}
-              <div style="margin-top: 10px; color: #555; font-size: 0.9em; line-height: 1.5;">
-                {exercises.join(' • ')}
+
+            {#if sections.length > 0}
+              <div style="margin-top: 12px;">
+                {#each sections as section}
+                  <div style="margin-bottom: 10px;">
+                    <div style="font-weight: 600; color: #333; font-size: 0.85em; margin-bottom: 4px;">{section.name}</div>
+                    {#if section.mode === 'checkbox'}
+                      <!-- Checkbox sections: brief list -->
+                      <div style="color: #888; font-size: 0.8em;">
+                        {section.exercises.map(e => e.name).join(' • ')}
+                      </div>
+                    {:else}
+                      <!-- Full-detail sections: show sets/reps -->
+                      {#each section.exercises as ex}
+                        <div style="color: #555; font-size: 0.85em; padding: 4px 0 4px 10px; border-left: 2px solid #e0e0e0; margin: 3px 0;">
+                          <strong>{ex.name}</strong>
+                          {#if ex.sets || ex.reps || ex.weight}
+                            <span style="color: #888;">
+                              — {ex.sets || '?'}×{ex.reps || '?'}{#if ex.weight} @ {ex.weight}{/if}
+                            </span>
+                          {/if}
+                        </div>
+                      {/each}
+                    {/if}
+                  </div>
+                {/each}
               </div>
             {:else}
               <p style="margin: 10px 0 0 0; color: #888; font-size: 0.9em;">No exercises yet</p>

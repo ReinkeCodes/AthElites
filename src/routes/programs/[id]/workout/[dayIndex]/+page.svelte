@@ -19,8 +19,48 @@
   // Checkbox completions for checkbox-mode sections
   let exerciseCompleted = $state({});
 
+  // Track which sections user has passed (for marking as complete even if skipped)
+  let visitedSections = $state(new Set());
+
+  // Custom requirement inputs from client
+  // Structure: { exerciseId: { reqIndex: value, ... } }
+  let customReqInputs = $state({});
+
   // History data for each exercise (last 2 entries + PR)
   let exerciseHistory = $state({});
+
+  // Notes modal state
+  let notesModal = $state({ open: false, exerciseId: null, setIndex: null, exerciseName: '' });
+
+  // History modal state
+  let historyModal = $state({ open: false, exerciseId: null, exerciseName: '' });
+
+  function openHistoryModal(exerciseId, exerciseName) {
+    historyModal = { open: true, exerciseId, exerciseName };
+  }
+
+  function closeHistoryModal() {
+    historyModal = { open: false, exerciseId: null, exerciseName: '' };
+  }
+
+  function openNotesModal(exerciseId, setIndex, exerciseName) {
+    notesModal = { open: true, exerciseId, setIndex, exerciseName };
+  }
+
+  function closeNotesModal() {
+    notesModal = { open: false, exerciseId: null, setIndex: null, exerciseName: '' };
+  }
+
+  function getNotesValue() {
+    if (!notesModal.exerciseId) return '';
+    return exerciseLogs[notesModal.exerciseId]?.sets?.[notesModal.setIndex]?.notes || '';
+  }
+
+  function setNotesValue(value) {
+    if (notesModal.exerciseId && exerciseLogs[notesModal.exerciseId]?.sets?.[notesModal.setIndex]) {
+      exerciseLogs[notesModal.exerciseId].sets[notesModal.setIndex].notes = value;
+    }
+  }
 
   onMount(() => {
     workoutStartTime = new Date();
@@ -183,9 +223,9 @@
     }
   }
 
-  // Get progress bar color: red = not started, yellow = in progress, green = complete
+  // Get progress bar color: red = not started, yellow = in progress, green = complete/visited
   function getSectionColor(sectionIndex) {
-    if (isSectionComplete(sectionIndex)) return '#4CAF50'; // green
+    if (visitedSections.has(sectionIndex) || isSectionComplete(sectionIndex)) return '#4CAF50'; // green
     if (isSectionStarted(sectionIndex)) return '#FFC107'; // yellow
     return '#ef5350'; // red
   }
@@ -268,6 +308,8 @@
 
   function nextSection() {
     if (currentSectionIndex < getTotalSections() - 1) {
+      visitedSections.add(currentSectionIndex);
+      visitedSections = new Set(visitedSections); // trigger reactivity
       currentSectionIndex++;
     }
   }
@@ -281,6 +323,9 @@
   async function finishWorkout() {
     if (!currentUserId || !day) return;
 
+    // Mark current section as visited
+    visitedSections.add(currentSectionIndex);
+
     // Save all exercise logs to Firestore - one entry per SET
     const logPromises = [];
     const loggedAt = new Date();
@@ -293,6 +338,9 @@
           log.sets.forEach((set, setIndex) => {
             // Only save sets that have data
             if (set.weight || set.reps) {
+              // Build custom req input data if any
+              const customReqData = customReqInputs[exercise.exerciseId] || {};
+
               logPromises.push(addDoc(collection(db, 'workoutLogs'), {
                 userId: currentUserId,
                 programId: program.id,
@@ -311,6 +359,7 @@
                 targetRir: log.targetRir,
                 repsMetric: exercise.repsMetric || 'reps',
                 weightMetric: exercise.weightMetric || 'weight',
+                customReqInputs: Object.keys(customReqData).length > 0 ? customReqData : null,
                 loggedAt: loggedAt
               }));
             }
@@ -457,47 +506,48 @@
             {/if}
           </div>
 
-          <!-- Custom requirements -->
+          <!-- Custom requirements with client input -->
           {#if exercise.customReqs && exercise.customReqs.length > 0}
-            <div style="margin-bottom: 12px;">
-              {#each exercise.customReqs as req}
+            <div style="background: #fff8e1; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px;">
+              <div style="font-size: 0.8em; color: #666; margin-bottom: 8px; font-weight: 500;">Custom Requirements</div>
+              {#each exercise.customReqs as req, reqIndex}
                 {#if req.name && req.value}
-                  <span style="display: inline-block; background: #fff3e0; padding: 4px 10px; border-radius: 15px; font-size: 0.85em; margin-right: 5px; margin-bottom: 5px;">
-                    <strong>{req.name}:</strong> {req.value}
-                  </span>
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                    <span style="font-size: 0.85em; color: #333; min-width: 80px;"><strong>{req.name}:</strong></span>
+                    <span style="font-size: 0.85em; color: #888; padding: 4px 8px; background: white; border-radius: 4px;">{req.value}</span>
+                    {#if req.clientInput}
+                      <input
+                        type="text"
+                        placeholder="Your value..."
+                        value={customReqInputs[exercise.exerciseId]?.[reqIndex] || ''}
+                        oninput={(e) => {
+                          if (!customReqInputs[exercise.exerciseId]) customReqInputs[exercise.exerciseId] = {};
+                          customReqInputs[exercise.exerciseId][reqIndex] = e.target.value;
+                          customReqInputs = { ...customReqInputs };
+                        }}
+                        style="flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.85em; max-width: 120px;"
+                      />
+                    {/if}
+                  </div>
                 {/if}
               {/each}
             </div>
           {/if}
 
-          <!-- PR and History -->
+          <!-- PR and History Button -->
           {#if history && (history.lastTwo?.length > 0 || history.pr)}
-            <div style="background: #f8f9fa; padding: 12px; margin-bottom: 12px; border-radius: 8px;">
+            <button
+              onclick={() => openHistoryModal(exercise.exerciseId, exercise.name)}
+              style="display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; margin-bottom: 12px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; text-align: left;"
+            >
               {#if history.pr}
-                <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px;">
-                  <div style="font-weight: bold; font-size: 0.9em;">🏆 Personal Record</div>
-                  <div style="font-size: 1.1em; margin-top: 3px;">{history.pr.weight} lbs × {history.pr.reps} reps</div>
-                  <div style="font-size: 0.8em; opacity: 0.9; margin-top: 2px;">Set on {formatDate(history.pr.date)}</div>
-                </div>
+                <span style="background: linear-gradient(135deg, #ff9800, #f57c00); color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold;">PR: {history.pr.weight} lbs</span>
               {/if}
-              {#if history.lastTwo?.length > 0}
-                <div style="font-size: 0.85em;">
-                  <strong style="color: #555;">Previous Sessions:</strong>
-                  {#each history.lastTwo as entry, i}
-                    <div style="background: white; padding: 8px 10px; margin-top: 6px; border-radius: 5px; border: 1px solid #eee;">
-                      <div style="color: #888; font-size: 0.85em; margin-bottom: 3px;">{formatDate(entry.loggedAt)}</div>
-                      <div style="color: #333;">
-                        <strong>{entry.sets || '-'}</strong> sets × <strong>{entry.reps || '-'}</strong> reps @ <strong>{entry.weight || '-'}</strong> lbs
-                        {#if entry.rir} <span style="color: #888;">(RIR: {entry.rir})</span>{/if}
-                      </div>
-                      {#if entry.notes}
-                        <div style="color: #888; font-style: italic; margin-top: 3px; font-size: 0.9em;">"{entry.notes}"</div>
-                      {/if}
-                    </div>
-                  {/each}
-                </div>
-              {/if}
-            </div>
+              <span style="color: #666; font-size: 0.85em; flex: 1;">
+                {#if history.lastTwo?.length > 0}Last: {formatDate(history.lastTwo[0].loggedAt)}{/if}
+              </span>
+              <span style="color: #999; font-size: 0.9em;">View →</span>
+            </button>
           {/if}
 
           <!-- Per-set input fields -->
@@ -554,13 +604,13 @@
                     style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
                   />
 
-                  <!-- Notes -->
-                  <input
-                    type="text"
-                    bind:value={set.notes}
-                    placeholder="Notes..."
-                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; background: white;"
-                  />
+                  <!-- Notes button -->
+                  <button
+                    onclick={() => openNotesModal(exercise.exerciseId, setIndex, exercise.name)}
+                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid {set.notes ? '#4CAF50' : '#ddd'}; border-radius: 4px; font-size: 0.85em; background: {set.notes ? '#e8f5e9' : 'white'}; cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                  >
+                    {set.notes || '+ Note'}
+                  </button>
 
                   <!-- Remove button -->
                   {#if log.sets.length > 1}
@@ -608,3 +658,73 @@
 <nav style="margin-top: 30px;">
   <a href="/programs/{$page.params.id}/days">← Back to Day Selection</a>
 </nav>
+
+<!-- Notes Modal -->
+{#if notesModal.open}
+  <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;" onclick={closeNotesModal}>
+    <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; display: flex; flex-direction: column;" onclick={(e) => e.stopPropagation()}>
+      <div style="padding: 15px 20px; border-bottom: 1px solid #eee;">
+        <h3 style="margin: 0;">{notesModal.exerciseName} - Set {notesModal.setIndex + 1}</h3>
+        <p style="margin: 5px 0 0 0; color: #888; font-size: 0.9em;">Add notes for this set</p>
+      </div>
+      <div style="padding: 20px; flex: 1;">
+        <textarea
+          value={getNotesValue()}
+          oninput={(e) => setNotesValue(e.target.value)}
+          placeholder="Enter notes... (form cues, how it felt, adjustments, etc.)"
+          style="width: 100%; height: 150px; padding: 12px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 8px; font-size: 1em; resize: vertical; font-family: inherit;"
+        ></textarea>
+      </div>
+      <div style="padding: 15px 20px; border-top: 1px solid #eee; display: flex; justify-content: flex-end; gap: 10px;">
+        <button onclick={closeNotesModal} style="padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1em;">
+          Done
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- History Modal -->
+{#if historyModal.open}
+  {@const history = exerciseHistory[historyModal.exerciseId]}
+  <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;" onclick={closeHistoryModal}>
+    <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto;" onclick={(e) => e.stopPropagation()}>
+      <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white;">
+        <h3 style="margin: 0;">{historyModal.exerciseName}</h3>
+        <p style="margin: 5px 0 0 0; color: #888; font-size: 0.9em;">PR & Recent History</p>
+      </div>
+      <div style="padding: 20px;">
+        {#if history?.pr}
+          <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+            <div style="font-weight: bold; font-size: 0.9em; opacity: 0.9;">Personal Record</div>
+            <div style="font-size: 1.5em; font-weight: bold; margin: 5px 0;">{history.pr.weight} lbs × {history.pr.reps} reps</div>
+            <div style="font-size: 0.85em; opacity: 0.9;">Set on {formatDate(history.pr.date)}</div>
+          </div>
+        {/if}
+
+        {#if history?.lastTwo?.length > 0}
+          <div style="font-weight: 600; color: #333; margin-bottom: 10px;">Recent Sessions</div>
+          {#each history.lastTwo as entry}
+            <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 3px solid #667eea;">
+              <div style="color: #888; font-size: 0.8em; margin-bottom: 5px;">{formatDate(entry.loggedAt)}</div>
+              <div style="font-size: 1.1em; color: #333;">
+                <strong>{entry.reps || '-'}</strong> reps @ <strong>{entry.weight || '-'}</strong> lbs
+                {#if entry.rir}<span style="color: #888; font-size: 0.9em;"> (RIR: {entry.rir})</span>{/if}
+              </div>
+              {#if entry.notes}
+                <div style="color: #666; font-style: italic; margin-top: 5px; font-size: 0.9em;">"{entry.notes}"</div>
+              {/if}
+            </div>
+          {/each}
+        {:else}
+          <p style="color: #888; text-align: center;">No previous sessions recorded.</p>
+        {/if}
+      </div>
+      <div style="padding: 15px 20px; border-top: 1px solid #eee; display: flex; justify-content: flex-end;">
+        <button onclick={closeHistoryModal} style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
