@@ -55,17 +55,37 @@
       const snapshot = await getDocs(logsQuery);
       const allLogs = snapshot.docs.map(d => d.data());
 
-      // Filter to today and sort client-side
-      todaysLogs = allLogs
-        .filter(log => {
-          const logDate = log.loggedAt?.toDate ? log.loggedAt.toDate() : new Date(log.loggedAt);
-          return logDate >= today;
-        })
-        .sort((a, b) => {
-          const dateA = a.loggedAt?.toDate ? a.loggedAt.toDate() : new Date(a.loggedAt);
-          const dateB = b.loggedAt?.toDate ? b.loggedAt.toDate() : new Date(b.loggedAt);
-          return dateB - dateA;
+      // Filter to today's logs
+      const filteredLogs = allLogs.filter(log => {
+        const logDate = log.loggedAt?.toDate ? log.loggedAt.toDate() : new Date(log.loggedAt);
+        return logDate >= today;
+      });
+
+      // Group logs by exercise (since each set is now a separate entry)
+      const groupedByExercise = {};
+      filteredLogs.forEach(log => {
+        const key = log.exerciseId;
+        if (!groupedByExercise[key]) {
+          groupedByExercise[key] = {
+            exerciseId: log.exerciseId,
+            exerciseName: log.exerciseName,
+            sets: []
+          };
+        }
+        groupedByExercise[key].sets.push({
+          setNumber: log.setNumber || 1,
+          reps: log.reps,
+          weight: log.weight,
+          rir: log.rir,
+          notes: log.notes
         });
+      });
+
+      // Sort sets within each exercise and convert to array
+      todaysLogs = Object.values(groupedByExercise).map(exercise => {
+        exercise.sets.sort((a, b) => a.setNumber - b.setNumber);
+        return exercise;
+      });
     } catch (e) {
       console.log('Could not load logs:', e);
       todaysLogs = [];
@@ -104,19 +124,24 @@
       <p style="color: #888;">No exercises logged for this workout.</p>
     {:else}
       <div style="text-align: left; max-width: 500px; margin: 0 auto;">
-        {#each todaysLogs as log}
-          <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px; margin-bottom: 10px;">
-            <strong style="font-size: 1.05em;">{log.exerciseName}</strong>
-            <div style="color: #333; margin-top: 5px; font-size: 1.1em;">
-              <strong>{log.sets || '-'}</strong> sets × <strong>{log.reps || '-'}</strong> reps
-              {#if log.weight} @ <strong>{log.weight}</strong> lbs{/if}
+        {#each todaysLogs as exercise}
+          <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px; margin-bottom: 12px;">
+            <strong style="font-size: 1.1em;">{exercise.exerciseName}</strong>
+            <div style="margin-top: 10px;">
+              {#each exercise.sets as set}
+                <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: #f8f9fa; border-radius: 5px; font-size: 0.95em;">
+                  <span style="font-weight: bold; color: #667eea; min-width: 35px;">Set {set.setNumber}</span>
+                  <span style="color: #333;">
+                    <strong>{set.reps || '-'}</strong> reps
+                    {#if set.weight} @ <strong>{set.weight}</strong> lbs{/if}
+                    {#if set.rir} <span style="color: #888;">(RIR: {set.rir})</span>{/if}
+                  </span>
+                </div>
+                {#if set.notes && set.notes !== 'Did not complete'}
+                  <div style="color: #666; font-style: italic; font-size: 0.85em; margin: 0 0 8px 45px;">"{set.notes}"</div>
+                {/if}
+              {/each}
             </div>
-            {#if log.rir}
-              <div style="color: #888; font-size: 0.9em; margin-top: 3px;">RIR: {log.rir}</div>
-            {/if}
-            {#if log.notes}
-              <div style="color: #666; font-style: italic; font-size: 0.9em; margin-top: 5px; padding-top: 5px; border-top: 1px solid #eee;">"{log.notes}"</div>
-            {/if}
           </div>
         {/each}
       </div>

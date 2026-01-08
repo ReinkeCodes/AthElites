@@ -98,19 +98,40 @@
     const endOfDay = new Date(sessionDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    return allLogs
-      .filter(log => {
-        const logDate = log.loggedAt?.toDate ? log.loggedAt.toDate() : new Date(log.loggedAt);
-        return log.programId === session.programId &&
-               log.dayName === session.dayName &&
-               logDate >= startOfDay &&
-               logDate <= endOfDay;
-      })
-      .sort((a, b) => {
-        const dateA = a.loggedAt?.toDate ? a.loggedAt.toDate() : new Date(a.loggedAt);
-        const dateB = b.loggedAt?.toDate ? b.loggedAt.toDate() : new Date(b.loggedAt);
-        return dateA - dateB;
+    // Filter logs for this session
+    const sessionLogs = allLogs.filter(log => {
+      const logDate = log.loggedAt?.toDate ? log.loggedAt.toDate() : new Date(log.loggedAt);
+      return log.programId === session.programId &&
+             log.dayName === session.dayName &&
+             logDate >= startOfDay &&
+             logDate <= endOfDay;
+    });
+
+    // Group by exercise (since each set is now a separate entry)
+    const groupedByExercise = {};
+    sessionLogs.forEach(log => {
+      const key = log.exerciseId;
+      if (!groupedByExercise[key]) {
+        groupedByExercise[key] = {
+          exerciseId: log.exerciseId,
+          exerciseName: log.exerciseName,
+          sets: []
+        };
+      }
+      groupedByExercise[key].sets.push({
+        setNumber: log.setNumber || 1,
+        reps: log.reps,
+        weight: log.weight,
+        rir: log.rir,
+        notes: log.notes
       });
+    });
+
+    // Sort sets within each exercise
+    return Object.values(groupedByExercise).map(exercise => {
+      exercise.sets.sort((a, b) => a.setNumber - b.setNumber);
+      return exercise;
+    });
   }
 
   function getPRsList() {
@@ -162,16 +183,23 @@
       </div>
 
       <h3>Exercises</h3>
-      {#each getSessionLogs(selectedSession) as log}
-        <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px; margin-bottom: 10px;">
-          <strong>{log.exerciseName}</strong>
-          <div style="color: #333; margin-top: 5px;">
-            <strong>{log.sets || '-'}</strong> sets × <strong>{log.reps || '-'}</strong> reps @ <strong>{log.weight || '-'}</strong> lbs
-            {#if log.rir} <span style="color: #888;">(RIR: {log.rir})</span>{/if}
+      {#each getSessionLogs(selectedSession) as exercise}
+        <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px; margin-bottom: 12px;">
+          <strong style="font-size: 1.05em;">{exercise.exerciseName}</strong>
+          <div style="margin-top: 8px;">
+            {#each exercise.sets as set}
+              <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: #f8f9fa; border-radius: 5px; font-size: 0.9em;">
+                <span style="font-weight: bold; color: #667eea; min-width: 35px;">Set {set.setNumber}</span>
+                <span style="color: #333;">
+                  <strong>{set.reps || '-'}</strong> reps @ <strong>{set.weight || '-'}</strong> lbs
+                  {#if set.rir} <span style="color: #888;">(RIR: {set.rir})</span>{/if}
+                </span>
+              </div>
+              {#if set.notes && set.notes !== 'Did not complete'}
+                <div style="color: #666; font-style: italic; font-size: 0.85em; margin: 0 0 6px 45px;">"{set.notes}"</div>
+              {/if}
+            {/each}
           </div>
-          {#if log.notes}
-            <div style="color: #666; font-style: italic; font-size: 0.9em; margin-top: 5px;">"{log.notes}"</div>
-          {/if}
         </div>
       {/each}
 

@@ -32,14 +32,18 @@
     });
   });
 
-  function countExercises(day) {
-    let total = 0;
+  function getExerciseNames(day) {
+    const names = [];
     if (day.sections) {
       day.sections.forEach(section => {
-        total += section.exercises?.length || 0;
+        if (section.exercises) {
+          section.exercises.forEach(ex => {
+            if (ex.name) names.push(ex.name);
+          });
+        }
       });
     }
-    return total;
+    return names;
   }
 </script>
 
@@ -56,15 +60,22 @@
   {:else}
     <div style="display: grid; gap: 15px;">
       {#each program.days as day, dayIndex}
+        {@const exercises = getExerciseNames(day)}
         <a href="/programs/{program.id}/workout/{dayIndex}" style="text-decoration: none; color: inherit;">
-          <div style="border: 2px solid #4CAF50; padding: 20px; border-radius: 10px; background: #f9fff9; cursor: pointer;">
-            <h3 style="margin: 0 0 10px 0;">{day.name}</h3>
-            <p style="margin: 0; color: #666;">
-              {countExercises(day)} exercise{countExercises(day) !== 1 ? 's' : ''}
+          <div style="border: 2px solid #4CAF50; padding: 20px; border-radius: 10px; background: #f9fff9; cursor: pointer; transition: all 0.2s;" onmouseenter={(e) => e.currentTarget.style.background = '#e8f5e9'} onmouseleave={(e) => e.currentTarget.style.background = '#f9fff9'}>
+            <div style="display: flex; justify-content: space-between; align-items: start;">
+              <h3 style="margin: 0;">{day.name}</h3>
               {#if day.sections}
-                • {day.sections.length} section{day.sections.length !== 1 ? 's' : ''}
+                <span style="background: #e8f5e9; color: #4CAF50; padding: 3px 8px; border-radius: 12px; font-size: 0.75em;">{day.sections.length} section{day.sections.length !== 1 ? 's' : ''}</span>
               {/if}
-            </p>
+            </div>
+            {#if exercises.length > 0}
+              <div style="margin-top: 10px; color: #555; font-size: 0.9em; line-height: 1.5;">
+                {exercises.join(' • ')}
+              </div>
+            {:else}
+              <p style="margin: 10px 0 0 0; color: #888; font-size: 0.9em;">No exercises yet</p>
+            {/if}
           </div>
         </a>
       {/each}

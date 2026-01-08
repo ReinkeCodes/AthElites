@@ -12,7 +12,8 @@
   let currentUserId = $state(null);
   let workoutStartTime = $state(null);
 
-  // Exercise logging - tracks what user enters for each exercise
+  // Exercise logging - tracks what user enters for each SET of each exercise
+  // Structure: { exerciseId: { targetSets, targetReps, targetWeight, targetRir, sets: [{reps, weight, rir, notes}, ...] } }
   let exerciseLogs = $state({});
 
   // Checkbox completions for checkbox-mode sections
@@ -50,12 +51,19 @@
               if (section.mode === 'checkbox') {
                 completed[key] = false;
               } else {
+                // Create per-set tracking
+                const numSets = parseInt(exercise.sets) || 3;
                 logs[exercise.exerciseId] = {
-                  sets: exercise.sets || '',
-                  reps: exercise.reps || '',
-                  weight: exercise.weight || '',
-                  rir: exercise.rir || '',
-                  notes: ''
+                  targetSets: numSets,
+                  targetReps: exercise.reps || '',
+                  targetWeight: exercise.weight || '',
+                  targetRir: exercise.rir || '',
+                  sets: Array(numSets).fill(null).map(() => ({
+                    reps: '',
+                    weight: '',
+                    rir: '',
+                    notes: ''
+                  }))
                 };
               }
             }
@@ -148,10 +156,11 @@
         exerciseCompleted[`${section.name}-${ex.exerciseId}`]
       );
     } else {
-      // For full tracking, at least weight or reps entered for all exercises
+      // For full tracking, at least one set with reps or weight for all exercises
       return section.exercises.every(ex => {
         const log = exerciseLogs[ex.exerciseId];
-        return log && (log.weight || log.reps);
+        if (!log || !log.sets) return false;
+        return log.sets.some(set => set.weight || set.reps);
       });
     }
   }
@@ -168,7 +177,8 @@
     } else {
       return section.exercises.some(ex => {
         const log = exerciseLogs[ex.exerciseId];
-        return log && (log.weight || log.reps || log.sets);
+        if (!log || !log.sets) return false;
+        return log.sets.some(set => set.weight || set.reps);
       });
     }
   }
@@ -180,10 +190,11 @@
     return '#ef5350'; // red
   }
 
-  // Check if an exercise in full tracking mode has data
+  // Check if an exercise in full tracking mode has data (at least one set filled)
   function hasExerciseData(exerciseId) {
     const log = exerciseLogs[exerciseId];
-    return log && (log.weight || log.reps || log.sets);
+    if (!log || !log.sets) return false;
+    return log.sets.some(set => set.weight || set.reps);
   }
 
   // Count incomplete exercises in current section
@@ -198,7 +209,8 @@
     } else {
       return section.exercises.filter(ex => {
         const log = exerciseLogs[ex.exerciseId];
-        return !log || (!log.weight && !log.reps);
+        if (!log || !log.sets) return true;
+        return !log.sets.some(set => set.weight || set.reps);
       }).length;
     }
   }
@@ -220,14 +232,36 @@
     } else {
       section.exercises.forEach(ex => {
         const log = exerciseLogs[ex.exerciseId];
-        if (log && !log.weight && !log.reps) {
-          log.sets = 'DNC';
-          log.reps = 'DNC';
-          log.weight = 'DNC';
-          log.notes = 'Did not complete';
+        if (log && log.sets) {
+          // Mark empty sets as DNC
+          log.sets.forEach(set => {
+            if (!set.weight && !set.reps) {
+              set.reps = 'DNC';
+              set.weight = 'DNC';
+              set.notes = 'Did not complete';
+            }
+          });
         }
       });
       // Trigger reactivity
+      exerciseLogs = { ...exerciseLogs };
+    }
+  }
+
+  // Add another set to an exercise
+  function addSet(exerciseId) {
+    const log = exerciseLogs[exerciseId];
+    if (log && log.sets) {
+      log.sets.push({ reps: '', weight: '', rir: '', notes: '' });
+      exerciseLogs = { ...exerciseLogs };
+    }
+  }
+
+  // Remove a set from an exercise (keep at least 1)
+  function removeSet(exerciseId, setIndex) {
+    const log = exerciseLogs[exerciseId];
+    if (log && log.sets && log.sets.length > 1) {
+      log.sets.splice(setIndex, 1);
       exerciseLogs = { ...exerciseLogs };
     }
   }
@@ -247,28 +281,39 @@
   async function finishWorkout() {
     if (!currentUserId || !day) return;
 
-    // Save all exercise logs to Firestore
+    // Save all exercise logs to Firestore - one entry per SET
     const logPromises = [];
+    const loggedAt = new Date();
+
     for (const section of day.sections || []) {
       for (const exercise of section.exercises || []) {
-        const key = exercise.exerciseId;
-        const log = exerciseLogs[key];
+        const log = exerciseLogs[exercise.exerciseId];
 
-        if (log && (log.weight || log.reps)) {
-          logPromises.push(addDoc(collection(db, 'workoutLogs'), {
-            userId: currentUserId,
-            programId: program.id,
-            programName: program.name,
-            dayName: day.name,
-            exerciseId: exercise.exerciseId,
-            exerciseName: exercise.name,
-            sets: log.sets,
-            reps: log.reps,
-            weight: log.weight,
-            rir: log.rir,
-            notes: log.notes,
-            loggedAt: new Date()
-          }));
+        if (log && log.sets) {
+          log.sets.forEach((set, setIndex) => {
+            // Only save sets that have data
+            if (set.weight || set.reps) {
+              logPromises.push(addDoc(collection(db, 'workoutLogs'), {
+                userId: currentUserId,
+                programId: program.id,
+                programName: program.name,
+                dayName: day.name,
+                exerciseId: exercise.exerciseId,
+                exerciseName: exercise.name,
+                setNumber: setIndex + 1,
+                totalSets: log.sets.length,
+                reps: set.reps,
+                weight: set.weight,
+                rir: set.rir,
+                notes: set.notes,
+                // Store targets for reference
+                targetReps: log.targetReps,
+                targetWeight: log.targetWeight,
+                targetRir: log.targetRir,
+                loggedAt: loggedAt
+              }));
+            }
+          });
         }
       }
     }
@@ -449,59 +494,83 @@
             </div>
           {/if}
 
-          <!-- Input fields section -->
-          <div style="background: #fafafa; padding: 12px; border-radius: 8px;">
-            <p style="margin: 0 0 10px 0; font-size: 0.85em; color: #666; font-weight: 500;">Log your performance:</p>
-            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 10px;">
-              <div>
-                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Sets</label>
-                <input
-                  type="text"
-                  bind:value={exerciseLogs[exercise.exerciseId].sets}
-                  placeholder={exercise.sets || '0'}
-                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em; text-align: center;"
-                />
+          <!-- Per-set input fields -->
+          {@const log = exerciseLogs[exercise.exerciseId]}
+          {#if log && log.sets}
+            <div style="background: #fafafa; padding: 12px; border-radius: 8px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <p style="margin: 0; font-size: 0.85em; color: #666; font-weight: 500;">Log each set:</p>
+                <button
+                  onclick={() => addSet(exercise.exerciseId)}
+                  style="background: #e8f5e9; border: 1px solid #4CAF50; color: #4CAF50; padding: 4px 10px; border-radius: 4px; font-size: 0.8em; cursor: pointer;"
+                >
+                  + Add Set
+                </button>
               </div>
-              <div>
-                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Reps</label>
-                <input
-                  type="text"
-                  bind:value={exerciseLogs[exercise.exerciseId].reps}
-                  placeholder={exercise.reps || '0'}
-                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em; text-align: center;"
-                />
+
+              <!-- Column headers -->
+              <div style="display: grid; grid-template-columns: 40px 1fr 1fr 60px 1fr 30px; gap: 6px; margin-bottom: 6px; padding: 0 2px;">
+                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Set</span>
+                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Reps</span>
+                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Weight</span>
+                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">RIR</span>
+                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Notes</span>
+                <span></span>
               </div>
-              <div>
-                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Weight</label>
-                <input
-                  type="text"
-                  bind:value={exerciseLogs[exercise.exerciseId].weight}
-                  placeholder={exercise.weight || 'lbs'}
-                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em; text-align: center;"
-                />
-              </div>
+
+              <!-- Set rows -->
+              {#each log.sets as set, setIndex}
+                {@const setHasData = set.reps || set.weight}
+                <div style="display: grid; grid-template-columns: 40px 1fr 1fr 60px 1fr 30px; gap: 6px; margin-bottom: 8px; align-items: center; background: {setHasData ? '#e8f5e9' : 'white'}; padding: 8px; border-radius: 6px; border: 1px solid {setHasData ? '#c8e6c9' : '#e0e0e0'};">
+                  <!-- Set number -->
+                  <div style="font-weight: bold; color: #667eea; text-align: center;">{setIndex + 1}</div>
+
+                  <!-- Reps -->
+                  <input
+                    type="text"
+                    bind:value={set.reps}
+                    placeholder={log.targetReps || '0'}
+                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
+                  />
+
+                  <!-- Weight -->
+                  <input
+                    type="text"
+                    bind:value={set.weight}
+                    placeholder={log.targetWeight || 'lbs'}
+                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
+                  />
+
+                  <!-- RIR -->
+                  <input
+                    type="text"
+                    bind:value={set.rir}
+                    placeholder={log.targetRir || '0'}
+                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
+                  />
+
+                  <!-- Notes -->
+                  <input
+                    type="text"
+                    bind:value={set.notes}
+                    placeholder="Notes..."
+                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; background: white;"
+                  />
+
+                  <!-- Remove button -->
+                  {#if log.sets.length > 1}
+                    <button
+                      onclick={() => removeSet(exercise.exerciseId, setIndex)}
+                      style="background: none; border: none; color: #999; cursor: pointer; font-size: 1.2em; padding: 0;"
+                      title="Remove set"
+                    >×</button>
+                  {:else}
+                    <div></div>
+                  {/if}
+                </div>
+              {/each}
             </div>
-            <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 10px;">
-              <div>
-                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">RIR</label>
-                <input
-                  type="text"
-                  bind:value={exerciseLogs[exercise.exerciseId].rir}
-                  placeholder={exercise.rir || '0'}
-                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em; text-align: center;"
-                />
-              </div>
-              <div>
-                <label style="font-size: 0.75em; color: #888; text-transform: uppercase; letter-spacing: 0.5px;">Notes</label>
-                <input
-                  type="text"
-                  bind:value={exerciseLogs[exercise.exerciseId].notes}
-                  placeholder="How did it feel?"
-                  style="width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; font-size: 1em;"
-                />
-              </div>
-            </div>
-          </div>
+          {/if}
         </div>
       {/each}
     {/if}
