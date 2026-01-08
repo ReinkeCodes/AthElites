@@ -1,0 +1,39 @@
+Context
+
+Project: Web App for my personal clients and friends to track fitness 
+
+Structure: We have an admin and a client role Programs or splits -> Days (upper, lower, speed) -> Sections (warmup, Main Lift, Mobility, Cool down/stretching) -> Exercises 
+
+Implementation in progress: Update the client interface with the following changes:
+
+1. PR Section (Exercise Performance):
+
+Show main PR as 1RM.
+
+Display rep-range PR badges: 1–5, 6–8, 9–12 reps; each badge shows weight + reps.
+
+Optional peak velocity badge if available.
+
+Collapsible headers per exercise type.
+
+Hover / expand badges → show full history, last workout, date, notes.
+
+Highlight badges for new PRs.
+
+2. Custom Requirements UI:
+
+Remove “Custom Requirements” title.
+
+Display all non-input requirements in the same flag as set/rep requirements.
+
+Fields requiring client input appear separately and can be logged differently for each set.
+
+Constraints: concise, actionable, minimal explanation; focus on design/code guidance for implementation.
+
+Assumptions: You don't need to print out all the code you are changing every time, just a concise summary of what you are changing. I will ask why if need be. When it comes to testing the code lets try to come up with edge cases and problems we might need to solve for before we start implementing code to save usage, anything else you can think of without using a bunch of your already limited usage, that will save a large amount of usage suggest ASAP.
+
+Requirements: You have written code for a large chunk of the web app already, help me reconnect you to what we were working on. At 90% usage REMIND ME and help generate this context text file again so we don't lost our progress.
+
+File path for the project: C:\Users\alecr\AthElites
+
+File path for the context: C:\Users\alecr\AthElites\Context and is in the file called Context1.txt

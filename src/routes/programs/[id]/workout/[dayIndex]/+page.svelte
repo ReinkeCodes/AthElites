@@ -141,22 +141,47 @@
           const snapshot = await getDocs(logsQuery);
           const entries = snapshot.docs.map(d => d.data());
 
-          // Find PR (highest weight)
-          let pr = null;
+          // Calculate estimated 1RM using Epley formula: weight × (1 + reps/30)
+          let best1RM = null;
+          // Rep-range PRs: track best weight for each range
+          const repRanges = {
+            '1-5': null,   // strength
+            '6-8': null,   // hypertrophy-strength
+            '9-12': null   // hypertrophy
+          };
+
           entries.forEach(entry => {
             const weight = parseFloat(entry.weight) || 0;
-            if (!pr || weight > pr.weight) {
-              pr = { weight, reps: entry.reps, date: entry.loggedAt };
+            const reps = parseInt(entry.reps) || 0;
+            if (weight <= 0 || reps <= 0) return;
+
+            // Calculate estimated 1RM
+            const e1rm = weight * (1 + reps / 30);
+            if (!best1RM || e1rm > best1RM.e1rm) {
+              best1RM = { e1rm: Math.round(e1rm), weight, reps, date: entry.loggedAt, notes: entry.notes };
+            }
+
+            // Categorize by rep range
+            let range = null;
+            if (reps >= 1 && reps <= 5) range = '1-5';
+            else if (reps >= 6 && reps <= 8) range = '6-8';
+            else if (reps >= 9 && reps <= 12) range = '9-12';
+
+            if (range) {
+              if (!repRanges[range] || weight > repRanges[range].weight) {
+                repRanges[range] = { weight, reps, date: entry.loggedAt, notes: entry.notes };
+              }
             }
           });
 
           history[exerciseId] = {
+            entries: entries, // full history
             lastTwo: entries.slice(0, 2),
-            pr: pr
+            e1rm: best1RM,
+            repRanges: repRanges
           };
         } catch (e) {
-          // Index might not exist yet, that's ok
-          history[exerciseId] = { lastTwo: [], pr: null };
+          history[exerciseId] = { entries: [], lastTwo: [], e1rm: null, repRanges: {} };
         }
       }
     }
@@ -338,9 +363,6 @@
           log.sets.forEach((set, setIndex) => {
             // Only save sets that have data
             if (set.weight || set.reps) {
-              // Build custom req input data if any
-              const customReqData = customReqInputs[exercise.exerciseId] || {};
-
               logPromises.push(addDoc(collection(db, 'workoutLogs'), {
                 userId: currentUserId,
                 programId: program.id,
@@ -359,7 +381,7 @@
                 targetRir: log.targetRir,
                 repsMetric: exercise.repsMetric || 'reps',
                 weightMetric: exercise.weightMetric || 'weight',
-                customReqInputs: Object.keys(customReqData).length > 0 ? customReqData : null,
+                customInputs: set.customInputs || null,
                 loggedAt: loggedAt
               }));
             }
@@ -487,66 +509,51 @@
         {@const weightLabel = exercise.weightMetric === 'time' ? '' : 'lbs'}
         {@const repsHeader = exercise.repsMetric === 'distance' ? 'Distance' : 'Reps'}
         {@const weightHeader = exercise.weightMetric === 'time' ? 'Time' : 'Weight'}
+        {@const nonInputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && !r.clientInput)}
+        {@const inputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && r.clientInput)}
         <div style="border: 2px solid {hasData ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: {showIncompleteHint ? '#fffde7' : 'white'}; transition: all 0.3s;">
 
           <!-- Exercise name -->
           <h3 style="margin: 0 0 10px 0; font-size: 1.1em;">{exercise.name}</h3>
 
-          <!-- Target details box -->
+          <!-- Target details box (includes non-input custom reqs) -->
           <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 15px; border-radius: 8px; margin-bottom: 12px;">
             <div style="font-size: 1.2em; font-weight: bold; margin-bottom: 5px;">
               {exercise.sets || '?'} sets × {exercise.reps || '?'} {repsLabel}
               {#if exercise.weight} @ {exercise.weight} {weightLabel}{/if}
+              {#if exercise.rir} • RIR {exercise.rir}{/if}
             </div>
-            {#if exercise.rir}
-              <div style="font-size: 0.9em; opacity: 0.9;">Target RIR: {exercise.rir}</div>
+            {#if nonInputReqs.length > 0}
+              <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
+                {#each nonInputReqs as req}
+                  <span style="background: rgba(255,255,255,0.2); padding: 3px 8px; border-radius: 4px; font-size: 0.8em;">{req.name}: {req.value}</span>
+                {/each}
+              </div>
             {/if}
             {#if exercise.notes}
-              <div style="font-size: 0.85em; opacity: 0.85; margin-top: 5px; font-style: italic;">{exercise.notes}</div>
+              <div style="font-size: 0.85em; opacity: 0.85; margin-top: 8px; font-style: italic;">{exercise.notes}</div>
             {/if}
           </div>
 
-          <!-- Custom requirements with client input -->
-          {#if exercise.customReqs && exercise.customReqs.length > 0}
-            <div style="background: #fff8e1; padding: 10px 12px; border-radius: 8px; margin-bottom: 12px;">
-              <div style="font-size: 0.8em; color: #666; margin-bottom: 8px; font-weight: 500;">Custom Requirements</div>
-              {#each exercise.customReqs as req, reqIndex}
-                {#if req.name && req.value}
-                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                    <span style="font-size: 0.85em; color: #333; min-width: 80px;"><strong>{req.name}:</strong></span>
-                    <span style="font-size: 0.85em; color: #888; padding: 4px 8px; background: white; border-radius: 4px;">{req.value}</span>
-                    {#if req.clientInput}
-                      <input
-                        type="text"
-                        placeholder="Your value..."
-                        value={customReqInputs[exercise.exerciseId]?.[reqIndex] || ''}
-                        oninput={(e) => {
-                          if (!customReqInputs[exercise.exerciseId]) customReqInputs[exercise.exerciseId] = {};
-                          customReqInputs[exercise.exerciseId][reqIndex] = e.target.value;
-                          customReqInputs = { ...customReqInputs };
-                        }}
-                        style="flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.85em; max-width: 120px;"
-                      />
-                    {/if}
-                  </div>
-                {/if}
-              {/each}
-            </div>
-          {/if}
-
-          <!-- PR and History Button -->
-          {#if history && (history.lastTwo?.length > 0 || history.pr)}
+          <!-- PR Badges Row -->
+          {#if history && (history.e1rm || history.lastTwo?.length > 0)}
             <button
               onclick={() => openHistoryModal(exercise.exerciseId, exercise.name)}
-              style="display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; margin-bottom: 12px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; text-align: left;"
+              style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; padding: 10px 12px; margin-bottom: 12px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; text-align: left;"
             >
-              {#if history.pr}
-                <span style="background: linear-gradient(135deg, #ff9800, #f57c00); color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold;">PR: {history.pr.weight} lbs</span>
+              {#if history.e1rm}
+                <span style="background: linear-gradient(135deg, #ff9800, #f57c00); color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.75em; font-weight: bold;">1RM: {history.e1rm.e1rm}</span>
               {/if}
-              <span style="color: #666; font-size: 0.85em; flex: 1;">
-                {#if history.lastTwo?.length > 0}Last: {formatDate(history.lastTwo[0].loggedAt)}{/if}
-              </span>
-              <span style="color: #999; font-size: 0.9em;">View →</span>
+              {#if history.repRanges?.['1-5']}
+                <span style="background: #e3f2fd; color: #1565c0; padding: 3px 6px; border-radius: 4px; font-size: 0.7em;">1-5: {history.repRanges['1-5'].weight}×{history.repRanges['1-5'].reps}</span>
+              {/if}
+              {#if history.repRanges?.['6-8']}
+                <span style="background: #f3e5f5; color: #7b1fa2; padding: 3px 6px; border-radius: 4px; font-size: 0.7em;">6-8: {history.repRanges['6-8'].weight}×{history.repRanges['6-8'].reps}</span>
+              {/if}
+              {#if history.repRanges?.['9-12']}
+                <span style="background: #e8f5e9; color: #2e7d32; padding: 3px 6px; border-radius: 4px; font-size: 0.7em;">9-12: {history.repRanges['9-12'].weight}×{history.repRanges['9-12'].reps}</span>
+              {/if}
+              <span style="color: #999; font-size: 0.8em; margin-left: auto;">Tap for details →</span>
             </button>
           {/if}
 
@@ -576,51 +583,74 @@
               <!-- Set rows -->
               {#each log.sets as set, setIndex}
                 {@const setHasData = set.reps || set.weight}
-                <div style="display: grid; grid-template-columns: 40px 1fr 1fr 60px 1fr 30px; gap: 6px; margin-bottom: 8px; align-items: center; background: {setHasData ? '#e8f5e9' : 'white'}; padding: 8px; border-radius: 6px; border: 1px solid {setHasData ? '#c8e6c9' : '#e0e0e0'};">
-                  <!-- Set number -->
-                  <div style="font-weight: bold; color: #667eea; text-align: center;">{setIndex + 1}</div>
+                <div style="margin-bottom: 8px;">
+                  <div style="display: grid; grid-template-columns: 40px 1fr 1fr 60px 1fr 30px; gap: 6px; align-items: center; background: {setHasData ? '#e8f5e9' : 'white'}; padding: 8px; border-radius: 6px; border: 1px solid {setHasData ? '#c8e6c9' : '#e0e0e0'};">
+                    <!-- Set number -->
+                    <div style="font-weight: bold; color: #667eea; text-align: center;">{setIndex + 1}</div>
 
-                  <!-- Reps/Distance -->
-                  <input
-                    type="text"
-                    bind:value={set.reps}
-                    placeholder={log.targetReps || (exercise.repsMetric === 'distance' ? 'dist' : '0')}
-                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
-                  />
+                    <!-- Reps/Distance -->
+                    <input
+                      type="text"
+                      bind:value={set.reps}
+                      placeholder={log.targetReps || (exercise.repsMetric === 'distance' ? 'dist' : '0')}
+                      style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
+                    />
 
-                  <!-- Weight/Time -->
-                  <input
-                    type="text"
-                    bind:value={set.weight}
-                    placeholder={log.targetWeight || (exercise.weightMetric === 'time' ? 'time' : 'lbs')}
-                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
-                  />
+                    <!-- Weight/Time -->
+                    <input
+                      type="text"
+                      bind:value={set.weight}
+                      placeholder={log.targetWeight || (exercise.weightMetric === 'time' ? 'time' : 'lbs')}
+                      style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
+                    />
 
-                  <!-- RIR -->
-                  <input
-                    type="text"
-                    bind:value={set.rir}
-                    placeholder={log.targetRir || '0'}
-                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
-                  />
+                    <!-- RIR -->
+                    <input
+                      type="text"
+                      bind:value={set.rir}
+                      placeholder={log.targetRir || '0'}
+                      style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
+                    />
 
-                  <!-- Notes button -->
-                  <button
-                    onclick={() => openNotesModal(exercise.exerciseId, setIndex, exercise.name)}
-                    style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid {set.notes ? '#4CAF50' : '#ddd'}; border-radius: 4px; font-size: 0.85em; background: {set.notes ? '#e8f5e9' : 'white'}; cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                  >
-                    {set.notes || '+ Note'}
-                  </button>
-
-                  <!-- Remove button -->
-                  {#if log.sets.length > 1}
+                    <!-- Notes button -->
                     <button
-                      onclick={() => removeSet(exercise.exerciseId, setIndex)}
-                      style="background: none; border: none; color: #999; cursor: pointer; font-size: 1.2em; padding: 0;"
+                      onclick={() => openNotesModal(exercise.exerciseId, setIndex, exercise.name)}
+                      style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid {set.notes ? '#4CAF50' : '#ddd'}; border-radius: 4px; font-size: 0.85em; background: {set.notes ? '#e8f5e9' : 'white'}; cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                    >
+                      {set.notes || '+ Note'}
+                    </button>
+
+                    <!-- Remove button -->
+                    {#if log.sets.length > 1}
+                      <button
+                        onclick={() => removeSet(exercise.exerciseId, setIndex)}
+                        style="background: none; border: none; color: #999; cursor: pointer; font-size: 1.2em; padding: 0;"
                       title="Remove set"
                     >×</button>
-                  {:else}
-                    <div></div>
+                    {:else}
+                      <div></div>
+                    {/if}
+                  </div>
+                  <!-- Per-set client input fields -->
+                  {#if inputReqs.length > 0}
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; padding-left: 46px;">
+                      {#each inputReqs as req, reqIndex}
+                        <div style="display: flex; align-items: center; gap: 4px; background: #fff8e1; padding: 4px 8px; border-radius: 4px;">
+                          <span style="font-size: 0.75em; color: #666;">{req.name}:</span>
+                          <input
+                            type="text"
+                            placeholder={req.value}
+                            value={set.customInputs?.[reqIndex] || ''}
+                            oninput={(e) => {
+                              if (!set.customInputs) set.customInputs = {};
+                              set.customInputs[reqIndex] = e.target.value;
+                              exerciseLogs = { ...exerciseLogs };
+                            }}
+                            style="width: 60px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 3px; font-size: 0.8em; text-align: center;"
+                          />
+                        </div>
+                      {/each}
+                    </div>
                   {/if}
                 </div>
               {/each}
@@ -689,38 +719,82 @@
   {@const history = exerciseHistory[historyModal.exerciseId]}
   <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;" onclick={closeHistoryModal}>
     <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto;" onclick={(e) => e.stopPropagation()}>
-      <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white;">
+      <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white; z-index: 1;">
         <h3 style="margin: 0;">{historyModal.exerciseName}</h3>
-        <p style="margin: 5px 0 0 0; color: #888; font-size: 0.9em;">PR & Recent History</p>
       </div>
-      <div style="padding: 20px;">
-        {#if history?.pr}
-          <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
-            <div style="font-weight: bold; font-size: 0.9em; opacity: 0.9;">Personal Record</div>
-            <div style="font-size: 1.5em; font-weight: bold; margin: 5px 0;">{history.pr.weight} lbs × {history.pr.reps} reps</div>
-            <div style="font-size: 0.85em; opacity: 0.9;">Set on {formatDate(history.pr.date)}</div>
+      <div style="padding: 15px 20px;">
+        <!-- Estimated 1RM -->
+        {#if history?.e1rm}
+          <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center;">
+            <div style="font-size: 0.8em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px;">Estimated 1RM</div>
+            <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">{history.e1rm.e1rm} lbs</div>
+            <div style="font-size: 0.8em; opacity: 0.85;">Based on {history.e1rm.weight}×{history.e1rm.reps} ({formatDate(history.e1rm.date)})</div>
           </div>
         {/if}
 
-        {#if history?.lastTwo?.length > 0}
-          <div style="font-weight: 600; color: #333; margin-bottom: 10px;">Recent Sessions</div>
-          {#each history.lastTwo as entry}
-            <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 10px; border-left: 3px solid #667eea;">
-              <div style="color: #888; font-size: 0.8em; margin-bottom: 5px;">{formatDate(entry.loggedAt)}</div>
-              <div style="font-size: 1.1em; color: #333;">
-                <strong>{entry.reps || '-'}</strong> reps @ <strong>{entry.weight || '-'}</strong> lbs
-                {#if entry.rir}<span style="color: #888; font-size: 0.9em;"> (RIR: {entry.rir})</span>{/if}
-              </div>
-              {#if entry.notes}
-                <div style="color: #666; font-style: italic; margin-top: 5px; font-size: 0.9em;">"{entry.notes}"</div>
+        <!-- Rep Range PRs -->
+        {#if history?.repRanges && (history.repRanges['1-5'] || history.repRanges['6-8'] || history.repRanges['9-12'])}
+          <div style="margin-bottom: 15px;">
+            <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Rep Range PRs</div>
+            <div style="display: grid; gap: 8px;">
+              {#if history.repRanges['1-5']}
+                <div style="background: #e3f2fd; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #1565c0;">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600; color: #1565c0;">1-5 Reps (Strength)</span>
+                    <span style="font-weight: bold; color: #333;">{history.repRanges['1-5'].weight} × {history.repRanges['1-5'].reps}</span>
+                  </div>
+                  <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['1-5'].date)}</div>
+                  {#if history.repRanges['1-5'].notes}
+                    <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{history.repRanges['1-5'].notes}"</div>
+                  {/if}
+                </div>
               {/if}
+              {#if history.repRanges['6-8']}
+                <div style="background: #f3e5f5; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #7b1fa2;">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600; color: #7b1fa2;">6-8 Reps (Power)</span>
+                    <span style="font-weight: bold; color: #333;">{history.repRanges['6-8'].weight} × {history.repRanges['6-8'].reps}</span>
+                  </div>
+                  <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['6-8'].date)}</div>
+                  {#if history.repRanges['6-8'].notes}
+                    <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{history.repRanges['6-8'].notes}"</div>
+                  {/if}
+                </div>
+              {/if}
+              {#if history.repRanges['9-12']}
+                <div style="background: #e8f5e9; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #2e7d32;">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600; color: #2e7d32;">9-12 Reps (Hypertrophy)</span>
+                    <span style="font-weight: bold; color: #333;">{history.repRanges['9-12'].weight} × {history.repRanges['9-12'].reps}</span>
+                  </div>
+                  <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['9-12'].date)}</div>
+                  {#if history.repRanges['9-12'].notes}
+                    <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{history.repRanges['9-12'].notes}"</div>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Recent Sessions -->
+        {#if history?.lastTwo?.length > 0}
+          <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Recent Sessions</div>
+          {#each history.lastTwo as entry}
+            <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 8px; border-left: 3px solid #667eea;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="color: #888; font-size: 0.8em;">{formatDate(entry.loggedAt)}</span>
+                <span style="font-weight: bold; color: #333;">{entry.weight || '-'} × {entry.reps || '-'}</span>
+              </div>
+              {#if entry.rir}<div style="font-size: 0.8em; color: #666; margin-top: 3px;">RIR: {entry.rir}</div>{/if}
+              {#if entry.notes}<div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 3px;">"{entry.notes}"</div>{/if}
             </div>
           {/each}
         {:else}
-          <p style="color: #888; text-align: center;">No previous sessions recorded.</p>
+          <p style="color: #888; text-align: center; font-size: 0.9em;">No sessions recorded yet.</p>
         {/if}
       </div>
-      <div style="padding: 15px 20px; border-top: 1px solid #eee; display: flex; justify-content: flex-end;">
+      <div style="padding: 12px 20px; border-top: 1px solid #eee; display: flex; justify-content: flex-end;">
         <button onclick={closeHistoryModal} style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">
           Close
         </button>
