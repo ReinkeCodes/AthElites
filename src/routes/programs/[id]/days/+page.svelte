@@ -21,7 +21,13 @@
     const programId = $page.params.id;
     onSnapshot(doc(db, 'programs', programId), (snapshot) => {
       if (snapshot.exists()) {
-        program = { id: snapshot.id, ...snapshot.data() };
+        const data = snapshot.data();
+        program = {
+          id: snapshot.id,
+          ...data,
+          // Use published version for clients
+          days: data.publishedDays || data.days
+        };
       }
     });
   });

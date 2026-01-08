@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, updateDoc, getDoc, collection } from 'firebase/firestore';
+  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -10,6 +10,10 @@
   let userRole = $state(null);
   let clients = $state([]);
   let exercises = $state([]);
+  let hasUnpublishedChanges = $state(false);
+  let publishing = $state(false);
+  let showCopyModal = $state(false);
+  let selectedClientForCopy = $state('');
 
   // Day management
   let newDayName = $state('');
@@ -19,8 +23,10 @@
   // Section management
   let expandedDay = $state(null);
   let newSectionName = $state('');
+  let newSectionMode = $state('full'); // 'full' or 'checkbox'
   let editingSectionIndex = $state(null);
   let editSectionName = $state('');
+  let editSectionMode = $state('full');
 
   // Exercise in section
   let addingExerciseToSection = $state(null);
@@ -52,6 +58,8 @@
     onSnapshot(doc(db, 'programs', programId), (snapshot) => {
       if (snapshot.exists()) {
         program = { id: snapshot.id, ...snapshot.data() };
+        // Check for unpublished changes
+        hasUnpublishedChanges = checkForUnpublishedChanges();
       }
     });
 
@@ -108,9 +116,14 @@
   async function addSection(dayIndex) {
     if (!newSectionName.trim()) return;
     const updatedDays = [...program.days];
-    updatedDays[dayIndex].sections = [...(updatedDays[dayIndex].sections || []), { name: newSectionName, exercises: [] }];
+    updatedDays[dayIndex].sections = [...(updatedDays[dayIndex].sections || []), {
+      name: newSectionName,
+      mode: newSectionMode,
+      exercises: []
+    }];
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
     newSectionName = '';
+    newSectionMode = 'full';
   }
 
   async function deleteSection(dayIndex, sectionIndex) {
@@ -118,6 +131,29 @@
     const updatedDays = [...program.days];
     updatedDays[dayIndex].sections = updatedDays[dayIndex].sections.filter((_, i) => i !== sectionIndex);
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
+  }
+
+  function startEditSection(dayIndex, sectionIndex) {
+    const section = program.days[dayIndex].sections[sectionIndex];
+    editingSectionIndex = `${dayIndex}-${sectionIndex}`;
+    editSectionName = section.name;
+    editSectionMode = section.mode || 'full';
+  }
+
+  async function saveEditSection(dayIndex, sectionIndex) {
+    const updatedDays = [...program.days];
+    updatedDays[dayIndex].sections[sectionIndex].name = editSectionName;
+    updatedDays[dayIndex].sections[sectionIndex].mode = editSectionMode;
+    await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
+    editingSectionIndex = null;
+    editSectionName = '';
+    editSectionMode = 'full';
+  }
+
+  function cancelEditSection() {
+    editingSectionIndex = null;
+    editSectionName = '';
+    editSectionMode = 'full';
   }
 
   // Exercise in section functions
@@ -211,6 +247,68 @@
     return [...new Set(exercises.map(e => e.type))].sort();
   }
 
+  // Check if there are unpublished changes
+  function checkForUnpublishedChanges() {
+    if (!program) return false;
+    // If never published, there are unpublished changes (if there are days)
+    if (!program.publishedDays && program.days?.length > 0) return true;
+    // Compare current days with published days
+    return JSON.stringify(program.days) !== JSON.stringify(program.publishedDays);
+  }
+
+  // Publish current changes to clients
+  async function publishChanges() {
+    if (!program) return;
+    publishing = true;
+    try {
+      await updateDoc(doc(db, 'programs', program.id), {
+        publishedDays: program.days,
+        lastPublished: new Date()
+      });
+      hasUnpublishedChanges = false;
+    } catch (e) {
+      console.error('Error publishing:', e);
+    }
+    publishing = false;
+  }
+
+  // Create a copy of this program for a specific client
+  async function createClientCopy() {
+    if (!selectedClientForCopy || !program) return;
+
+    const client = clients.find(c => c.id === selectedClientForCopy);
+    if (!client) return;
+
+    const clientName = client.displayName || client.email.split('@')[0];
+
+    // Create new program with client's name
+    const newProgram = {
+      name: `${program.name} (${clientName})`,
+      description: program.description || '',
+      days: JSON.parse(JSON.stringify(program.days || [])), // Deep copy
+      publishedDays: JSON.parse(JSON.stringify(program.days || [])), // Already published
+      assignedTo: [selectedClientForCopy],
+      parentProgramId: program.id, // Reference to original
+      isClientCopy: true,
+      createdFor: selectedClientForCopy,
+      createdAt: new Date(),
+      lastPublished: new Date()
+    };
+
+    const docRef = await addDoc(collection(db, 'programs'), newProgram);
+
+    showCopyModal = false;
+    selectedClientForCopy = '';
+
+    // Navigate to the new program
+    goto(`/programs/${docRef.id}`);
+  }
+
+  function getClientName(clientId) {
+    const client = clients.find(c => c.id === clientId);
+    return client?.displayName || client?.email?.split('@')[0] || 'Unknown';
+  }
+
   // Drag and drop functions
   function handleDragStart(e, dayIndex, sectionIndex, exerciseIndex) {
     const exercise = program.days[dayIndex].sections[sectionIndex].exercises[exerciseIndex];
@@ -272,6 +370,85 @@
     <p style="color: #666;">{program.description}</p>
   {/if}
 
+  {#if program.isClientCopy}
+    <div style="background: #e3f2fd; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; font-size: 0.9em;">
+      <strong>Custom Program</strong> — Created for {getClientName(program.createdFor)}
+    </div>
+  {/if}
+
+  <!-- Publish Status Banner -->
+  {#if hasUnpublishedChanges}
+    <div style="background: #fff3e0; border: 2px solid #ff9800; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <div>
+          <strong style="color: #e65100;">Unpublished Changes</strong>
+          <p style="margin: 5px 0 0 0; font-size: 0.9em; color: #666;">
+            Clients won't see your changes until you publish.
+          </p>
+        </div>
+        <button
+          onclick={publishChanges}
+          disabled={publishing}
+          style="padding: 10px 20px; background: #ff9800; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 5px;"
+        >
+          {publishing ? 'Publishing...' : 'Publish to Clients'}
+        </button>
+      </div>
+    </div>
+  {:else if program.lastPublished}
+    <div style="background: #e8f5e9; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; font-size: 0.9em; color: #2e7d32;">
+      Published — Clients see the latest version
+    </div>
+  {/if}
+
+  <!-- Action Buttons -->
+  <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
+    <button onclick={() => showCopyModal = true} style="padding: 10px 15px; background: #2196F3; color: white; border: none; cursor: pointer; border-radius: 5px;">
+      Create Copy for Client
+    </button>
+  </div>
+
+  <!-- Copy Modal -->
+  {#if showCopyModal}
+    <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;">
+      <div style="background: white; padding: 25px; border-radius: 10px; max-width: 400px; width: 100%;">
+        <h3 style="margin: 0 0 15px 0;">Create Custom Copy</h3>
+        <p style="color: #666; margin-bottom: 15px;">
+          This will create a separate version of "{program.name}" specifically for one client. Changes to this copy won't affect the original.
+        </p>
+
+        <label style="display: block; margin-bottom: 15px;">
+          <strong>Select Client:</strong>
+          <select bind:value={selectedClientForCopy} style="width: 100%; padding: 10px; margin-top: 5px;">
+            <option value="">-- Choose a client --</option>
+            {#each clients as client}
+              <option value={client.id}>{client.displayName || client.email}</option>
+            {/each}
+          </select>
+        </label>
+
+        {#if selectedClientForCopy}
+          <p style="background: #f5f5f5; padding: 10px; border-radius: 5px; font-size: 0.9em;">
+            New program will be named: <strong>"{program.name} ({getClientName(selectedClientForCopy)})"</strong>
+          </p>
+        {/if}
+
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+          <button
+            onclick={createClientCopy}
+            disabled={!selectedClientForCopy}
+            style="flex: 1; padding: 12px; background: {selectedClientForCopy ? '#4CAF50' : '#ccc'}; color: white; border: none; cursor: {selectedClientForCopy ? 'pointer' : 'not-allowed'}; border-radius: 5px;"
+          >
+            Create Copy
+          </button>
+          <button onclick={() => { showCopyModal = false; selectedClientForCopy = ''; }} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- Assign to Clients -->
   <details style="margin-bottom: 20px;">
     <summary style="cursor: pointer; font-weight: bold;">Assign to Clients ({program.assignedTo?.length || 0} assigned)</summary>
@@ -286,7 +463,10 @@
               checked={program.assignedTo?.includes(client.id)}
               onchange={() => toggleAssignment(client.id)}
             />
-            {client.email}
+            {client.displayName || client.email}
+            {#if client.displayName}
+              <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+            {/if}
           </label>
         {/each}
       {/if}
@@ -329,9 +509,15 @@
         <!-- Day Content (expanded) -->
         {#if expandedDay === dayIndex}
           <!-- Add Section -->
-          <div style="margin: 10px 0; padding: 10px; background: #f0f0f0;">
-            <input type="text" bind:value={newSectionName} placeholder="Section name (e.g. Warm-up, Main, Cool-down)" style="padding: 5px; margin-right: 5px;" />
-            <button onclick={() => addSection(dayIndex)}>Add Section</button>
+          <div style="margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+              <input type="text" bind:value={newSectionName} placeholder="Section name (e.g. Warm-up, Main)" style="padding: 8px; flex: 1; min-width: 150px;" />
+              <select bind:value={newSectionMode} style="padding: 8px;">
+                <option value="full">Full Tracking (sets, reps, weight)</option>
+                <option value="checkbox">Checkbox Only (just complete)</option>
+              </select>
+              <button onclick={() => addSection(dayIndex)}>Add Section</button>
+            </div>
           </div>
 
           <!-- Sections -->
@@ -345,10 +531,31 @@
                 ondragleave={handleDragLeave}
                 ondrop={(e) => handleDrop(e, dayIndex, sectionIndex)}
               >
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                  <strong>{section.name}</strong>
-                  <button onclick={() => deleteSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Remove Section</button>
-                </div>
+                {#if editingSectionIndex === `${dayIndex}-${sectionIndex}`}
+                  <!-- Edit Section Mode -->
+                  <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px;">
+                    <input type="text" bind:value={editSectionName} style="padding: 5px; flex: 1;" />
+                    <select bind:value={editSectionMode} style="padding: 5px;">
+                      <option value="full">Full Tracking</option>
+                      <option value="checkbox">Checkbox Only</option>
+                    </select>
+                    <button onclick={() => saveEditSection(dayIndex, sectionIndex)}>Save</button>
+                    <button onclick={cancelEditSection}>Cancel</button>
+                  </div>
+                {:else}
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                      <strong>{section.name}</strong>
+                      <span style="background: {section.mode === 'checkbox' ? '#fff3e0' : '#e8f5e9'}; padding: 2px 8px; border-radius: 10px; font-size: 0.75em; margin-left: 8px;">
+                        {section.mode === 'checkbox' ? 'Checkbox' : 'Full Tracking'}
+                      </span>
+                    </div>
+                    <div style="display: flex; gap: 5px;">
+                      <button onclick={() => startEditSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Edit</button>
+                      <button onclick={() => deleteSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Remove</button>
+                    </div>
+                  </div>
+                {/if}
 
                 <!-- Exercises in Section -->
                 {#if section.exercises && section.exercises.length > 0}

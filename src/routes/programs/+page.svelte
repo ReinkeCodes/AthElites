@@ -78,13 +78,21 @@
   <p>{userRole === 'admin' ? 'No programs created yet.' : 'No programs assigned to you yet.'}</p>
 {:else}
   {#each getFilteredPrograms() as program}
-    <div style="border: 1px solid #ccc; padding: 15px; margin: 10px 0; border-radius: 5px;">
-      <strong style="font-size: 1.2em;">{program.name}</strong>
+    <div style="border: 1px solid {program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''}">
+      <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 5px;">
+        <strong style="font-size: 1.2em;">{program.name}</strong>
+        {#if program.isClientCopy}
+          <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+        {/if}
+      </div>
       {#if program.description}
         <p style="margin: 5px 0; color: #666;">{program.description}</p>
       {/if}
       <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
         {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+        {#if userRole === 'admin' && program.assignedTo?.length > 0}
+          • {program.assignedTo.length} client{program.assignedTo.length !== 1 ? 's' : ''}
+        {/if}
       </p>
       <div style="margin-top: 10px;">
         {#if userRole === 'admin'}

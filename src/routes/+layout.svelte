@@ -90,6 +90,9 @@
           Exercise Library
         </a>
       {/if}
+      <a href="/profile" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
+        Profile
+      </a>
       <button
         onclick={logout}
         style="display: block; width: 100%; text-align: left; background: none; border: none; color: #ff6b6b; padding: 10px 0; cursor: pointer; font-size: 1em;"

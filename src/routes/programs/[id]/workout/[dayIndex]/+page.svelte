@@ -15,6 +15,9 @@
   // Exercise logging - tracks what user enters for each exercise
   let exerciseLogs = $state({});
 
+  // Checkbox completions for checkbox-mode sections
+  let exerciseCompleted = $state({});
+
   // History data for each exercise (last 2 entries + PR)
   let exerciseHistory = $state({});
 
@@ -33,24 +36,32 @@
     onSnapshot(doc(db, 'programs', programId), async (snapshot) => {
       if (snapshot.exists()) {
         program = { id: snapshot.id, ...snapshot.data() };
-        day = program.days?.[dayIndex];
+        // Use published version for clients, fall back to days if not published
+        const programDays = program.publishedDays || program.days;
+        day = programDays?.[dayIndex];
 
         // Initialize exercise logs for all exercises
         if (day?.sections) {
           const logs = {};
+          const completed = {};
           for (const section of day.sections) {
             for (const exercise of section.exercises || []) {
-              const key = exercise.exerciseId;
-              logs[key] = {
-                sets: exercise.sets || '',
-                reps: exercise.reps || '',
-                weight: exercise.weight || '',
-                rir: exercise.rir || '',
-                notes: ''
-              };
+              const key = `${section.name}-${exercise.exerciseId}`;
+              if (section.mode === 'checkbox') {
+                completed[key] = false;
+              } else {
+                logs[exercise.exerciseId] = {
+                  sets: exercise.sets || '',
+                  reps: exercise.reps || '',
+                  weight: exercise.weight || '',
+                  rir: exercise.rir || '',
+                  notes: ''
+                };
+              }
             }
           }
           exerciseLogs = logs;
+          exerciseCompleted = completed;
 
           // Load history for each exercise
           if (currentUserId) {
@@ -110,6 +121,20 @@
 
   function getTotalSections() {
     return day?.sections?.length || 0;
+  }
+
+  function isCheckboxSection(section) {
+    return section?.mode === 'checkbox';
+  }
+
+  function toggleExerciseComplete(sectionName, exerciseId) {
+    const key = `${sectionName}-${exerciseId}`;
+    exerciseCompleted[key] = !exerciseCompleted[key];
+  }
+
+  function isExerciseComplete(sectionName, exerciseId) {
+    const key = `${sectionName}-${exerciseId}`;
+    return exerciseCompleted[key] || false;
   }
 
   function nextSection() {
@@ -201,94 +226,134 @@
     </div>
 
     <!-- Exercises in this section -->
-    {#each getCurrentSection().exercises || [] as exercise}
-      {@const history = exerciseHistory[exercise.exerciseId]}
-      <div style="border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: white;">
-        <h3 style="margin: 0 0 5px 0;">{exercise.name}</h3>
-        <p style="color: #888; margin: 0 0 10px 0; font-size: 0.9em;">
-          Target: {exercise.sets} sets × {exercise.reps}
-          {#if exercise.weight} @ {exercise.weight}{/if}
-          {#if exercise.rir} (RIR: {exercise.rir}){/if}
-        </p>
-        {#if exercise.customReqs && exercise.customReqs.length > 0}
-          <div style="margin-bottom: 10px;">
-            {#each exercise.customReqs as req}
-              {#if req.name && req.value}
-                <span style="display: inline-block; background: #fff3e0; padding: 3px 8px; border-radius: 4px; font-size: 0.85em; margin-right: 5px; margin-bottom: 3px;">
-                  <strong>{req.name}:</strong> {req.value}
-                </span>
+    {#if isCheckboxSection(getCurrentSection())}
+      <!-- Checkbox-only mode: show all exercises with just checkboxes -->
+      {#each getCurrentSection().exercises || [] as exercise}
+        <div
+          style="border: 1px solid {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? '#4CAF50' : '#ddd'}; padding: 15px; margin-bottom: 10px; border-radius: 8px; background: {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? '#f1f8e9' : 'white'}; cursor: pointer; transition: all 0.2s;"
+          onclick={() => toggleExerciseComplete(getCurrentSection().name, exercise.exerciseId)}
+        >
+          <div style="display: flex; align-items: center; gap: 15px;">
+            <div style="width: 30px; height: 30px; border: 2px solid {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? '#4CAF50' : '#ccc'}; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? '#4CAF50' : 'white'}; flex-shrink: 0;">
+              {#if isExerciseComplete(getCurrentSection().name, exercise.exerciseId)}
+                <span style="color: white; font-size: 1.2em;">✓</span>
               {/if}
-            {/each}
-          </div>
-        {/if}
-
-        <!-- History section -->
-        {#if history && (history.lastTwo?.length > 0 || history.pr)}
-          <div style="background: #f0f8ff; padding: 10px; margin-bottom: 10px; border-radius: 5px; font-size: 0.85em;">
-            {#if history.pr}
-              <div style="color: #ff9800; font-weight: bold;">
-                PR: {history.pr.weight} × {history.pr.reps}
-              </div>
-            {/if}
-            {#if history.lastTwo?.length > 0}
-              <div style="color: #666; margin-top: 5px;">
-                <strong>Recent:</strong>
-                {#each history.lastTwo as entry, i}
-                  <div>{formatDate(entry.loggedAt)}: {entry.weight || '-'} × {entry.reps || '-'}</div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/if}
-
-        <!-- Input fields -->
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;">
-          <div>
-            <label style="font-size: 0.8em; color: #666;">Sets</label>
-            <input
-              type="text"
-              bind:value={exerciseLogs[exercise.exerciseId].sets}
-              style="width: 100%; padding: 8px; box-sizing: border-box;"
-            />
-          </div>
-          <div>
-            <label style="font-size: 0.8em; color: #666;">Reps</label>
-            <input
-              type="text"
-              bind:value={exerciseLogs[exercise.exerciseId].reps}
-              style="width: 100%; padding: 8px; box-sizing: border-box;"
-            />
-          </div>
-          <div>
-            <label style="font-size: 0.8em; color: #666;">Weight</label>
-            <input
-              type="text"
-              bind:value={exerciseLogs[exercise.exerciseId].weight}
-              style="width: 100%; padding: 8px; box-sizing: border-box;"
-            />
+            </div>
+            <div style="flex: 1;">
+              <h3 style="margin: 0 0 5px 0; {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? 'text-decoration: line-through; color: #888;' : ''}">{exercise.name}</h3>
+              {#if exercise.sets || exercise.reps}
+                <p style="color: #888; margin: 0; font-size: 0.9em;">
+                  {#if exercise.sets}{exercise.sets} sets{/if}
+                  {#if exercise.reps} × {exercise.reps}{/if}
+                  {#if exercise.notes} — {exercise.notes}{/if}
+                </p>
+              {/if}
+              {#if exercise.customReqs && exercise.customReqs.length > 0}
+                <div style="margin-top: 5px;">
+                  {#each exercise.customReqs as req}
+                    {#if req.name && req.value}
+                      <span style="display: inline-block; background: #fff3e0; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 5px;">
+                        {req.name}: {req.value}
+                      </span>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
+            </div>
           </div>
         </div>
-        <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 8px;">
-          <div>
-            <label style="font-size: 0.8em; color: #666;">RIR</label>
-            <input
-              type="text"
-              bind:value={exerciseLogs[exercise.exerciseId].rir}
-              style="width: 100%; padding: 8px; box-sizing: border-box;"
-            />
+      {/each}
+    {:else}
+      <!-- Full tracking mode: show input fields -->
+      {#each getCurrentSection().exercises || [] as exercise}
+        {@const history = exerciseHistory[exercise.exerciseId]}
+        <div style="border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: white;">
+          <h3 style="margin: 0 0 5px 0;">{exercise.name}</h3>
+          <p style="color: #888; margin: 0 0 10px 0; font-size: 0.9em;">
+            Target: {exercise.sets} sets × {exercise.reps}
+            {#if exercise.weight} @ {exercise.weight}{/if}
+            {#if exercise.rir} (RIR: {exercise.rir}){/if}
+          </p>
+          {#if exercise.customReqs && exercise.customReqs.length > 0}
+            <div style="margin-bottom: 10px;">
+              {#each exercise.customReqs as req}
+                {#if req.name && req.value}
+                  <span style="display: inline-block; background: #fff3e0; padding: 3px 8px; border-radius: 4px; font-size: 0.85em; margin-right: 5px; margin-bottom: 3px;">
+                    <strong>{req.name}:</strong> {req.value}
+                  </span>
+                {/if}
+              {/each}
+            </div>
+          {/if}
+
+          <!-- History section -->
+          {#if history && (history.lastTwo?.length > 0 || history.pr)}
+            <div style="background: #f0f8ff; padding: 10px; margin-bottom: 10px; border-radius: 5px; font-size: 0.85em;">
+              {#if history.pr}
+                <div style="color: #ff9800; font-weight: bold;">
+                  PR: {history.pr.weight} × {history.pr.reps}
+                </div>
+              {/if}
+              {#if history.lastTwo?.length > 0}
+                <div style="color: #666; margin-top: 5px;">
+                  <strong>Recent:</strong>
+                  {#each history.lastTwo as entry, i}
+                    <div>{formatDate(entry.loggedAt)}: {entry.weight || '-'} × {entry.reps || '-'}</div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Input fields -->
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;">
+            <div>
+              <label style="font-size: 0.8em; color: #666;">Sets</label>
+              <input
+                type="text"
+                bind:value={exerciseLogs[exercise.exerciseId].sets}
+                style="width: 100%; padding: 8px; box-sizing: border-box;"
+              />
+            </div>
+            <div>
+              <label style="font-size: 0.8em; color: #666;">Reps</label>
+              <input
+                type="text"
+                bind:value={exerciseLogs[exercise.exerciseId].reps}
+                style="width: 100%; padding: 8px; box-sizing: border-box;"
+              />
+            </div>
+            <div>
+              <label style="font-size: 0.8em; color: #666;">Weight</label>
+              <input
+                type="text"
+                bind:value={exerciseLogs[exercise.exerciseId].weight}
+                style="width: 100%; padding: 8px; box-sizing: border-box;"
+              />
+            </div>
           </div>
-          <div>
-            <label style="font-size: 0.8em; color: #666;">Notes</label>
-            <input
-              type="text"
-              bind:value={exerciseLogs[exercise.exerciseId].notes}
-              placeholder="How did it feel?"
-              style="width: 100%; padding: 8px; box-sizing: border-box;"
-            />
+          <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 8px;">
+            <div>
+              <label style="font-size: 0.8em; color: #666;">RIR</label>
+              <input
+                type="text"
+                bind:value={exerciseLogs[exercise.exerciseId].rir}
+                style="width: 100%; padding: 8px; box-sizing: border-box;"
+              />
+            </div>
+            <div>
+              <label style="font-size: 0.8em; color: #666;">Notes</label>
+              <input
+                type="text"
+                bind:value={exerciseLogs[exercise.exerciseId].notes}
+                placeholder="How did it feel?"
+                style="width: 100%; padding: 8px; box-sizing: border-box;"
+              />
+            </div>
           </div>
         </div>
-      </div>
-    {/each}
+      {/each}
+    {/if}
 
     <!-- Navigation buttons -->
     <div style="display: flex; justify-content: space-between; margin-top: 20px;">
