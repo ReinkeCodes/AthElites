@@ -1,12 +1,27 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, getDoc } from 'firebase/firestore';
+  import { doc, onSnapshot, getDoc, updateDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
 
   let program = $state(null);
   let userRole = $state(null);
+
+  function backfillIds(days) {
+    if (!days) return false;
+    let changed = false;
+    for (const day of days) {
+      if (!day.workoutTemplateId) { day.workoutTemplateId = crypto.randomUUID(); changed = true; }
+      for (const section of day.sections || []) {
+        if (!section.sectionTemplateId) { section.sectionTemplateId = crypto.randomUUID(); changed = true; }
+        for (const exercise of section.exercises || []) {
+          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = crypto.randomUUID(); changed = true; }
+        }
+      }
+    }
+    return changed;
+  }
 
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
@@ -22,6 +37,12 @@
     onSnapshot(doc(db, 'programs', programId), (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.data();
+
+        // Backfill missing IDs in publishedDays and persist
+        if (data.publishedDays && backfillIds(data.publishedDays)) {
+          updateDoc(doc(db, 'programs', programId), { publishedDays: data.publishedDays });
+        }
+
         program = {
           id: snapshot.id,
           ...data,

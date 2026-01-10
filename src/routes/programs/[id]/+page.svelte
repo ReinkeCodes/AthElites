@@ -41,6 +41,27 @@
   let draggedExercise = $state(null); // { dayIndex, sectionIndex, exerciseIndex, exercise }
   let dropTargetSection = $state(null); // "dayIndex-sectionIndex"
 
+  // Generate stable unique IDs
+  function generateId() {
+    return crypto.randomUUID();
+  }
+
+  // Backfill missing IDs on days/sections/exercises, returns true if any were added
+  function backfillIds(days) {
+    if (!days) return false;
+    let changed = false;
+    for (const day of days) {
+      if (!day.workoutTemplateId) { day.workoutTemplateId = generateId(); changed = true; }
+      for (const section of day.sections || []) {
+        if (!section.sectionTemplateId) { section.sectionTemplateId = generateId(); changed = true; }
+        for (const exercise of section.exercises || []) {
+          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = generateId(); changed = true; }
+        }
+      }
+    }
+    return changed;
+  }
+
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
       if (user) {
@@ -58,6 +79,15 @@
     onSnapshot(doc(db, 'programs', programId), (snapshot) => {
       if (snapshot.exists()) {
         program = { id: snapshot.id, ...snapshot.data() };
+        // Backfill missing IDs in both days and publishedDays
+        const daysChanged = backfillIds(program.days);
+        const publishedChanged = backfillIds(program.publishedDays);
+        if (daysChanged || publishedChanged) {
+          const updates = {};
+          if (daysChanged) updates.days = program.days;
+          if (publishedChanged) updates.publishedDays = program.publishedDays;
+          updateDoc(doc(db, 'programs', programId), updates);
+        }
         // Check for unpublished changes
         hasUnpublishedChanges = checkForUnpublishedChanges();
       }
@@ -86,7 +116,7 @@
   async function addDay(e) {
     e.preventDefault();
     if (!newDayName.trim()) return;
-    const newDay = { name: newDayName, sections: [] };
+    const newDay = { workoutTemplateId: generateId(), name: newDayName, sections: [] };
     await updateDoc(doc(db, 'programs', program.id), {
       days: [...(program.days || []), newDay]
     });
@@ -117,6 +147,7 @@
     if (!newSectionName.trim()) return;
     const updatedDays = [...program.days];
     updatedDays[dayIndex].sections = [...(updatedDays[dayIndex].sections || []), {
+      sectionTemplateId: generateId(),
       name: newSectionName,
       mode: newSectionMode,
       exercises: []
@@ -164,6 +195,7 @@
 
     const updatedDays = [...program.days];
     const exerciseEntry = {
+      workoutExerciseId: generateId(),
       exerciseId: selectedExerciseId,
       name: exercise.name,
       type: exercise.type,
@@ -267,8 +299,19 @@
     if (!program) return;
     publishing = true;
     try {
+      // Deep copy days to publishedDays and ensure all IDs exist
+      const publishedDays = JSON.parse(JSON.stringify(program.days || []));
+      for (const day of publishedDays) {
+        if (!day.workoutTemplateId) day.workoutTemplateId = generateId();
+        for (const section of day.sections || []) {
+          if (!section.sectionTemplateId) section.sectionTemplateId = generateId();
+          for (const exercise of section.exercises || []) {
+            if (!exercise.workoutExerciseId) exercise.workoutExerciseId = generateId();
+          }
+        }
+      }
       await updateDoc(doc(db, 'programs', program.id), {
-        publishedDays: program.days,
+        publishedDays,
         lastPublished: new Date()
       });
       hasUnpublishedChanges = false;

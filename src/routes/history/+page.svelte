@@ -11,6 +11,10 @@
   let loading = $state(true);
   let activeTab = $state('workouts'); // 'workouts' or 'prs'
   let selectedSession = $state(null);
+  let selectedExercise = $state(null);
+  let exerciseSessions = $state([]);
+  let selectedExerciseSession = $state(null);
+  let exerciseSessionSets = $state([]);
 
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
@@ -141,6 +145,41 @@
       .map(([id, pr]) => ({ exerciseId: id, ...pr }))
       .sort((a, b) => a.exerciseName.localeCompare(b.exerciseName));
   }
+
+  function openExerciseHistory(exerciseId, exerciseName) {
+    selectedExercise = { exerciseId, exerciseName };
+    // Get unique sessions for this exercise (last 10)
+    const exerciseLogs = allLogs.filter(l => l.exerciseId === exerciseId && l.completedWorkoutId);
+    const sessionMap = {};
+    exerciseLogs.forEach(log => {
+      if (!sessionMap[log.completedWorkoutId]) {
+        sessionMap[log.completedWorkoutId] = { id: log.completedWorkoutId, date: log.loggedAt, dayName: log.dayName };
+      }
+    });
+    exerciseSessions = Object.values(sessionMap)
+      .sort((a, b) => {
+        const da = a.date?.toDate ? a.date.toDate() : new Date(a.date);
+        const db = b.date?.toDate ? b.date.toDate() : new Date(b.date);
+        return db - da;
+      })
+      .slice(0, 10);
+    if (exerciseSessions.length > 0) selectExerciseSession(exerciseSessions[0]);
+  }
+
+  function selectExerciseSession(session) {
+    selectedExerciseSession = session;
+    const sets = allLogs
+      .filter(l => l.completedWorkoutId === session.id && l.exerciseId === selectedExercise.exerciseId)
+      .sort((a, b) => (a.setNumber || 1) - (b.setNumber || 1));
+    exerciseSessionSets = sets;
+  }
+
+  function closeExerciseHistory() {
+    selectedExercise = null;
+    exerciseSessions = [];
+    selectedExerciseSession = null;
+    exerciseSessionSets = [];
+  }
 </script>
 
 <h1>Workout History</h1>
@@ -248,7 +287,7 @@
       <p style="color: #888; margin-bottom: 15px;">{getPRsList().length} exercise{getPRsList().length !== 1 ? 's' : ''} with PRs</p>
 
       {#each getPRsList() as pr}
-        <div style="background: white; border: 1px solid #e0e0e0; border-radius: 10px; padding: 15px; margin-bottom: 12px; border-left: 4px solid #ff9800;">
+        <div onclick={() => openExerciseHistory(pr.exerciseId, pr.exerciseName)} style="background: white; border: 1px solid #e0e0e0; border-radius: 10px; padding: 15px; margin-bottom: 12px; border-left: 4px solid #ff9800; cursor: pointer;" onmouseenter={(e) => e.currentTarget.style.borderColor = '#ff9800'} onmouseleave={(e) => e.currentTarget.style.borderColor = '#e0e0e0'}>
           <div style="display: flex; justify-content: space-between; align-items: start;">
             <div>
               <strong style="font-size: 1.1em;">{pr.exerciseName}</strong>
@@ -266,6 +305,44 @@
       {/each}
     {/if}
   {/if}
+{/if}
+
+{#if selectedExercise}
+<div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;" onclick={closeExerciseHistory}>
+  <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto;" onclick={(e) => e.stopPropagation()}>
+    <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white;">
+      <h3 style="margin: 0;">{selectedExercise.exerciseName}</h3>
+    </div>
+    <div style="padding: 15px 20px;">
+      {#if exerciseSessions.length > 1}
+      <div style="margin-bottom: 15px;">
+        <label style="font-size: 0.85em; color: #666;">Select Session:</label>
+        <select onchange={(e) => selectExerciseSession(exerciseSessions[e.target.selectedIndex])} style="width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ddd; border-radius: 6px;">
+          {#each exerciseSessions as session, i}
+            <option selected={session.id === selectedExerciseSession?.id}>{formatDate(session.date)} - {session.dayName}</option>
+          {/each}
+        </select>
+      </div>
+      {/if}
+      {#if exerciseSessionSets.length > 0}
+      <div style="font-weight: 600; margin-bottom: 10px; font-size: 0.9em;">Session Sets</div>
+      {#each exerciseSessionSets as set}
+        <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 6px; background: #f8f9fa; border-radius: 6px;">
+          <span style="font-weight: bold; color: #667eea; min-width: 45px;">Set {set.setNumber || 1}</span>
+          <span>{set.reps || '-'} × {set.weight || '-'}</span>
+          {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
+        </div>
+        {#if set.notes}<div style="color: #888; font-style: italic; font-size: 0.85em; margin: 0 0 8px 57px;">"{set.notes}"</div>{/if}
+      {/each}
+      {:else}
+      <p style="color: #888;">No sets recorded.</p>
+      {/if}
+    </div>
+    <div style="padding: 12px 20px; border-top: 1px solid #eee;">
+      <button onclick={closeExerciseHistory} style="width: 100%; padding: 10px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">Close</button>
+    </div>
+  </div>
+</div>
 {/if}
 
 <nav style="margin-top: 30px;">

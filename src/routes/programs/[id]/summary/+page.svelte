@@ -8,20 +8,22 @@
   let program = $state(null);
   let day = $state(null);
   let currentUserId = $state(null);
-  let todaysLogs = $state([]);
+  let sessionLogs = $state([]);
   let duration = $state(0);
   let loading = $state(true);
   let dayIndex = $state(0);
+  let sessionId = $state(null);
 
   onMount(() => {
     const urlParams = new URLSearchParams(window.location.search);
     dayIndex = parseInt(urlParams.get('day') || '0');
     duration = parseInt(urlParams.get('duration') || '0');
+    sessionId = urlParams.get('session');
 
     onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUserId = user.uid;
-        await loadTodaysLogs();
+        await loadSessionLogs();
       }
       loading = false;
     });
@@ -38,32 +40,21 @@
     });
   });
 
-  async function loadTodaysLogs() {
-    if (!currentUserId) return;
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+  async function loadSessionLogs() {
+    if (!currentUserId || !sessionId) return;
 
     try {
-      // Simpler query without orderBy to avoid index requirement
       const logsQuery = query(
         collection(db, 'workoutLogs'),
-        where('userId', '==', currentUserId),
-        where('programId', '==', $page.params.id)
+        where('completedWorkoutId', '==', sessionId)
       );
 
       const snapshot = await getDocs(logsQuery);
       const allLogs = snapshot.docs.map(d => d.data());
 
-      // Filter to today's logs
-      const filteredLogs = allLogs.filter(log => {
-        const logDate = log.loggedAt?.toDate ? log.loggedAt.toDate() : new Date(log.loggedAt);
-        return logDate >= today;
-      });
-
-      // Group logs by exercise (since each set is now a separate entry)
+      // Group logs by exercise
       const groupedByExercise = {};
-      filteredLogs.forEach(log => {
+      allLogs.forEach(log => {
         const key = log.exerciseId;
         if (!groupedByExercise[key]) {
           groupedByExercise[key] = {
@@ -83,14 +74,13 @@
         });
       });
 
-      // Sort sets within each exercise and convert to array
-      todaysLogs = Object.values(groupedByExercise).map(exercise => {
+      sessionLogs = Object.values(groupedByExercise).map(exercise => {
         exercise.sets.sort((a, b) => a.setNumber - b.setNumber);
         return exercise;
       });
     } catch (e) {
       console.log('Could not load logs:', e);
-      todaysLogs = [];
+      sessionLogs = [];
     }
   }
 </script>
@@ -122,11 +112,11 @@
 
     <h3 style="margin-top: 30px; margin-bottom: 15px;">Today's Performance</h3>
 
-    {#if todaysLogs.length === 0}
+    {#if sessionLogs.length === 0}
       <p style="color: #888;">No exercises logged for this workout.</p>
     {:else}
       <div style="text-align: left; max-width: 500px; margin: 0 auto;">
-        {#each todaysLogs as exercise}
+        {#each sessionLogs as exercise}
           <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px; margin-bottom: 12px;">
             <strong style="font-size: 1.1em;">{exercise.exerciseName}</strong>
             <div style="margin-top: 10px;">
@@ -149,7 +139,7 @@
       </div>
 
       <p style="color: #888; font-size: 0.9em; margin-top: 20px;">
-        {todaysLogs.length} exercise{todaysLogs.length !== 1 ? 's' : ''} logged
+        {sessionLogs.length} exercise{sessionLogs.length !== 1 ? 's' : ''} logged
       </p>
     {/if}
   </div>

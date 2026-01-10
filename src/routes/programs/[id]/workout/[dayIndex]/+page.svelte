@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -34,6 +34,22 @@
 
   // History modal state
   let historyModal = $state({ open: false, exerciseId: null, exerciseName: '' });
+
+  // Backfill missing IDs in days array, returns true if any were added
+  function backfillIds(days) {
+    if (!days) return false;
+    let changed = false;
+    for (const day of days) {
+      if (!day.workoutTemplateId) { day.workoutTemplateId = crypto.randomUUID(); changed = true; }
+      for (const section of day.sections || []) {
+        if (!section.sectionTemplateId) { section.sectionTemplateId = crypto.randomUUID(); changed = true; }
+        for (const exercise of section.exercises || []) {
+          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = crypto.randomUUID(); changed = true; }
+        }
+      }
+    }
+    return changed;
+  }
 
   function openHistoryModal(exerciseId, exerciseName) {
     historyModal = { open: true, exerciseId, exerciseName };
@@ -76,7 +92,14 @@
 
     onSnapshot(doc(db, 'programs', programId), async (snapshot) => {
       if (snapshot.exists()) {
-        program = { id: snapshot.id, ...snapshot.data() };
+        const data = snapshot.data();
+
+        // Backfill missing IDs in publishedDays and persist to Firestore
+        if (data.publishedDays && backfillIds(data.publishedDays)) {
+          updateDoc(doc(db, 'programs', programId), { publishedDays: data.publishedDays });
+        }
+
+        program = { id: snapshot.id, ...data };
         // Use published version for clients, fall back to days if not published
         const programDays = program.publishedDays || program.days;
         day = programDays?.[dayIndex];
@@ -174,9 +197,28 @@
             }
           });
 
+          // Find most recent session for this exercise
+          let lastSession = null;
+          if (entries.length > 0 && entries[0].completedWorkoutId) {
+            const sessionId = entries[0].completedWorkoutId;
+            const sessionLogs = entries.filter(e => e.completedWorkoutId === sessionId);
+            sessionLogs.sort((a, b) => (a.setNumber || 1) - (b.setNumber || 1));
+            lastSession = {
+              date: entries[0].loggedAt,
+              sets: sessionLogs.map(log => ({
+                setNumber: log.setNumber || 1,
+                reps: log.reps,
+                weight: log.weight,
+                rir: log.rir,
+                notes: log.notes,
+                customInputs: log.customInputs
+              }))
+            };
+          }
+
           history[exerciseId] = {
-            entries: entries, // full history
-            lastTwo: entries.slice(0, 2),
+            entries: entries,
+            lastSession: lastSession,
             e1rm: best1RM,
             repRanges: repRanges
           };
@@ -352,9 +394,29 @@
     // Mark current section as visited
     visitedSections.add(currentSectionIndex);
 
+    const loggedAt = new Date();
+    const workoutEndTime = new Date();
+    const durationMinutes = Math.round((workoutEndTime - workoutStartTime) / 60000);
+
+    // Get workoutTemplateId from the active day (publishedDays preferred)
+    const sourceDay = (program.publishedDays || program.days)?.[parseInt($page.params.dayIndex)];
+    const workoutTemplateId = sourceDay?.workoutTemplateId || day.workoutTemplateId || null;
+
+    // Create workout session first to get its ID
+    const sessionRef = await addDoc(collection(db, 'workoutSessions'), {
+      userId: currentUserId,
+      programId: program.id,
+      programName: program.name,
+      dayName: day.name,
+      workoutTemplateId,
+      startedAt: workoutStartTime,
+      finishedAt: workoutEndTime,
+      durationMinutes: durationMinutes
+    });
+    const completedWorkoutId = sessionRef.id;
+
     // Save all exercise logs to Firestore - one entry per SET
     const logPromises = [];
-    const loggedAt = new Date();
 
     for (const section of day.sections || []) {
       for (const exercise of section.exercises || []) {
@@ -369,6 +431,8 @@
                 programId: program.id,
                 programName: program.name,
                 dayName: day.name,
+                completedWorkoutId: completedWorkoutId,
+                workoutExerciseId: exercise.workoutExerciseId || null,
                 exerciseId: exercise.exerciseId,
                 exerciseName: exercise.name,
                 setNumber: setIndex + 1,
@@ -391,24 +455,9 @@
       }
     }
 
-    // Save workout session
-    const workoutEndTime = new Date();
-    const durationMinutes = Math.round((workoutEndTime - workoutStartTime) / 60000);
+    await Promise.all(logPromises);
 
-    await Promise.all([
-      ...logPromises,
-      addDoc(collection(db, 'workoutSessions'), {
-        userId: currentUserId,
-        programId: program.id,
-        programName: program.name,
-        dayName: day.name,
-        startedAt: workoutStartTime,
-        finishedAt: workoutEndTime,
-        durationMinutes: durationMinutes
-      })
-    ]);
-
-    goto(`/programs/${program.id}/summary?day=${$page.params.dayIndex}&duration=${durationMinutes}`);
+    goto(`/programs/${program.id}/summary?day=${$page.params.dayIndex}&duration=${durationMinutes}&session=${completedWorkoutId}`);
   }
 
   function formatDate(timestamp) {
@@ -593,7 +642,13 @@
                     <!-- Reps/Distance -->
                     <input
                       type="text"
-                      bind:value={set.reps}
+                      value={set.reps}
+                      oninput={(e) => {
+                        if (log.sets[setIndex]) {
+                          log.sets[setIndex].reps = e.target.value;
+                          exerciseLogs = { ...exerciseLogs };
+                        }
+                      }}
                       placeholder={log.targetReps || (exercise.repsMetric === 'distance' ? 'dist' : '0')}
                       style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
                     />
@@ -601,7 +656,13 @@
                     <!-- Weight/Time -->
                     <input
                       type="text"
-                      bind:value={set.weight}
+                      value={set.weight}
+                      oninput={(e) => {
+                        if (log.sets[setIndex]) {
+                          log.sets[setIndex].weight = e.target.value;
+                          exerciseLogs = { ...exerciseLogs };
+                        }
+                      }}
                       placeholder={log.targetWeight || (exercise.weightMetric === 'time' ? 'time' : 'lbs')}
                       style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
                     />
@@ -609,7 +670,13 @@
                     <!-- RIR -->
                     <input
                       type="text"
-                      bind:value={set.rir}
+                      value={set.rir}
+                      oninput={(e) => {
+                        if (log.sets[setIndex]) {
+                          log.sets[setIndex].rir = e.target.value;
+                          exerciseLogs = { ...exerciseLogs };
+                        }
+                      }}
                       placeholder={log.targetRir || '0'}
                       style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
                     />
@@ -780,19 +847,20 @@
           </div>
         {/if}
 
-        <!-- Recent Sessions -->
-        {#if history?.lastTwo?.length > 0}
-          <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Recent Sessions</div>
-          {#each history.lastTwo as entry}
-            <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; margin-bottom: 8px; border-left: 3px solid #667eea;">
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span style="color: #888; font-size: 0.8em;">{formatDate(entry.loggedAt)}</span>
-                <span style="font-weight: bold; color: #333;">{entry.weight || '-'} × {entry.reps || '-'}</span>
+        <!-- Most Recent Session -->
+        {#if history?.lastSession}
+          <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Most Recent Session</div>
+          <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; border-left: 3px solid #667eea;">
+            <div style="color: #888; font-size: 0.8em; margin-bottom: 8px;">{formatDate(history.lastSession.date)}</div>
+            {#each history.lastSession.sets as set}
+              <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: white; border-radius: 5px; font-size: 0.9em;">
+                <span style="font-weight: bold; color: #667eea; min-width: 40px;">Set {set.setNumber}</span>
+                <span>{set.reps || '-'} × {set.weight || '-'}</span>
+                {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
               </div>
-              {#if entry.rir}<div style="font-size: 0.8em; color: #666; margin-top: 3px;">RIR: {entry.rir}</div>{/if}
-              {#if entry.notes}<div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 3px;">"{entry.notes}"</div>{/if}
-            </div>
-          {/each}
+              {#if set.notes}<div style="color: #888; font-style: italic; font-size: 0.8em; margin: 0 0 6px 50px;">"{set.notes}"</div>{/if}
+            {/each}
+          </div>
         {:else}
           <p style="color: #888; text-align: center; font-size: 0.9em;">No sessions recorded yet.</p>
         {/if}
