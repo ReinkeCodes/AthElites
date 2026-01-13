@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // users collection
+    match /user/{userId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // programs collection
+    match /programs/{programId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // exercises collection
+    match /exercises/{exerciseId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // settings collection
+    match /settings/{settingId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // workoutSessions: owner-only access
+    match /workoutSessions/{sessionId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+
+    // workoutLogs: owner-only access
+    match /workoutLogs/{logId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+  }
+}

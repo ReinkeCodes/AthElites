@@ -9,11 +9,16 @@
   let newProgramDescription = $state('');
   let userRole = $state(null);
   let currentUserId = $state(null);
+  let activeView = $state('all'); // 'all' or 'my'
 
   function getFilteredPrograms() {
-    if (userRole === 'admin') {
-      return programs;
+    if (activeView === 'my' || userRole === 'client') {
+      return programs.filter(p => p.assignedTo?.includes(currentUserId));
     }
+    return programs;
+  }
+
+  function getMyPrograms() {
     return programs.filter(p => p.assignedTo?.includes(currentUserId));
   }
 
@@ -60,7 +65,25 @@
 
 <h1>Programs</h1>
 
-{#if userRole === 'admin'}
+{#if userRole === 'admin' || userRole === 'coach'}
+  <!-- View Tabs -->
+  <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #eee;">
+    <button
+      onclick={() => activeView = 'all'}
+      style="flex: 1; padding: 12px; border: none; background: {activeView === 'all' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'all' ? 'bold' : 'normal'}; border-bottom: {activeView === 'all' ? '3px solid #2196F3' : 'none'}; margin-bottom: -2px;"
+    >
+      All Programs
+    </button>
+    <button
+      onclick={() => activeView = 'my'}
+      style="flex: 1; padding: 12px; border: none; background: {activeView === 'my' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'my' ? 'bold' : 'normal'}; border-bottom: {activeView === 'my' ? '3px solid #4CAF50' : 'none'}; margin-bottom: -2px;"
+    >
+      My Programs ({getMyPrograms().length})
+    </button>
+  </div>
+{/if}
+
+{#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
   <h2>Create Program</h2>
   <form onsubmit={createProgram} style="margin-bottom: 20px;">
     <div style="margin-bottom: 10px;">
@@ -73,9 +96,9 @@
   </form>
 {/if}
 
-<h2>{userRole === 'admin' ? 'All Programs' : 'Your Programs'}</h2>
+<h2>{activeView === 'my' || userRole === 'client' ? 'Your Programs' : 'All Programs'}</h2>
 {#if getFilteredPrograms().length === 0}
-  <p>{userRole === 'admin' ? 'No programs created yet.' : 'No programs assigned to you yet.'}</p>
+  <p>{activeView === 'my' || userRole === 'client' ? 'No programs assigned to you yet.' : 'No programs created yet.'}</p>
 {:else}
   {#each getFilteredPrograms() as program}
     <div style="border: 1px solid {program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''}">
@@ -90,12 +113,12 @@
       {/if}
       <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
         {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
-        {#if userRole === 'admin' && program.assignedTo?.length > 0}
-          • {program.assignedTo.length} client{program.assignedTo.length !== 1 ? 's' : ''}
+        {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all' && program.assignedTo?.length > 0}
+          • {program.assignedTo.length} assigned
         {/if}
       </p>
       <div style="margin-top: 10px;">
-        {#if userRole === 'admin'}
+        {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
           <a href="/programs/{program.id}" style="margin-right: 10px;">Edit Program</a>
           <button onclick={() => deleteProgram(program.id)}>Delete</button>
         {:else}

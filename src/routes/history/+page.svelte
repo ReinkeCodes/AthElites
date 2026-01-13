@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
+  import { collection, query, where, getDocs, orderBy, doc, getDoc, deleteDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
 
@@ -15,6 +15,21 @@
   let exerciseSessions = $state([]);
   let selectedExerciseSession = $state(null);
   let exerciseSessionSets = $state([]);
+  let programsCache = $state({});
+
+  async function loadProgram(programId) {
+    if (!programId || programsCache[programId]) return;
+    const snap = await getDoc(doc(db, 'programs', programId));
+    if (snap.exists()) { programsCache[programId] = snap.data(); programsCache = { ...programsCache }; }
+  }
+
+  function getCustomReqs(programId, workoutExerciseId) {
+    const p = programsCache[programId];
+    if (!p?.publishedDays) return null;
+    for (const d of p.publishedDays) for (const s of d.sections || []) for (const e of s.exercises || [])
+      if (e.workoutExerciseId === workoutExerciseId) return e.customReqs?.filter(r => r.clientInput) || [];
+    return null;
+  }
 
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
@@ -129,7 +144,10 @@
         rir: log.rir,
         notes: log.notes,
         repsMetric: log.repsMetric || 'reps',
-        weightMetric: log.weightMetric || 'weight'
+        weightMetric: log.weightMetric || 'weight',
+        customInputs: log.customInputs,
+        workoutExerciseId: log.workoutExerciseId,
+        programId: log.programId
       });
     });
 
@@ -151,11 +169,14 @@
     // Get unique sessions for this exercise (last 10)
     const exerciseLogs = allLogs.filter(l => l.exerciseId === exerciseId && l.completedWorkoutId);
     const sessionMap = {};
+    const programIds = new Set();
     exerciseLogs.forEach(log => {
+      if (log.programId) programIds.add(log.programId);
       if (!sessionMap[log.completedWorkoutId]) {
         sessionMap[log.completedWorkoutId] = { id: log.completedWorkoutId, date: log.loggedAt, dayName: log.dayName };
       }
     });
+    programIds.forEach(pid => loadProgram(pid));
     exerciseSessions = Object.values(sessionMap)
       .sort((a, b) => {
         const da = a.date?.toDate ? a.date.toDate() : new Date(a.date);
@@ -179,6 +200,31 @@
     exerciseSessions = [];
     selectedExerciseSession = null;
     exerciseSessionSets = [];
+  }
+
+  async function deleteSession(session) {
+    if (!confirm(`Delete "${session.dayName}" workout from ${formatDate(session.finishedAt)}? This cannot be undone.`)) return;
+    try {
+      // Delete all logs for this session
+      const logsQuery = query(collection(db, 'workoutLogs'), where('userId', '==', currentUserId), where('completedWorkoutId', '==', session.id));
+      const logsSnap = await getDocs(logsQuery);
+      await Promise.all(logsSnap.docs.map(d => deleteDoc(d.ref)));
+      // Delete the session
+      await deleteDoc(doc(db, 'workoutSessions', session.id));
+      // Refresh UI
+      workoutSessions = workoutSessions.filter(s => s.id !== session.id);
+      allLogs = allLogs.filter(l => l.completedWorkoutId !== session.id);
+      selectedSession = null;
+      // Recalculate PRs
+      const prs = {};
+      allLogs.forEach(log => {
+        const weight = parseFloat(log.weight) || 0;
+        if (!prs[log.exerciseId] || weight > prs[log.exerciseId].weight) {
+          prs[log.exerciseId] = { exerciseName: log.exerciseName, weight, reps: log.reps, date: log.loggedAt, programName: log.programName, dayName: log.dayName };
+        }
+      });
+      exercisePRs = prs;
+    } catch (e) { console.error('Delete failed:', e); alert('Failed to delete session'); }
   }
 </script>
 
@@ -208,9 +254,14 @@
   {#if activeTab === 'workouts'}
     {#if selectedSession}
       <!-- Session Detail View -->
-      <button onclick={() => selectedSession = null} style="margin-bottom: 15px; padding: 8px 16px; background: #f5f5f5; border: 1px solid #ddd; cursor: pointer; border-radius: 5px;">
-        ← Back to all workouts
-      </button>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+        <button onclick={() => selectedSession = null} style="padding: 8px 16px; background: #f5f5f5; border: 1px solid #ddd; cursor: pointer; border-radius: 5px;">
+          ← Back to all workouts
+        </button>
+        <button onclick={() => deleteSession(selectedSession)} style="padding: 8px 16px; background: #ffebee; border: 1px solid #ef5350; color: #c62828; cursor: pointer; border-radius: 5px;">
+          Delete Workout
+        </button>
+      </div>
 
       <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 12px; margin-bottom: 20px;">
         <h2 style="margin: 0 0 5px 0;">{selectedSession.dayName}</h2>
@@ -236,6 +287,7 @@
                   {#if set.rir} <span style="color: #888;">(RIR: {set.rir})</span>{/if}
                 </span>
               </div>
+              {#if set.customInputs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const reqs = getCustomReqs(set.programId, set.workoutExerciseId)}{@const req = reqs?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.8em; margin: 2px 0 0 45px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value} {req.value}{/if}</div>{/if}{/each}{/if}
               {#if set.notes && set.notes !== 'Did not complete'}
                 <div style="color: #666; font-style: italic; font-size: 0.85em; margin: 0 0 6px 45px;">"{set.notes}"</div>
               {/if}
@@ -257,7 +309,7 @@
 
         {#each workoutSessions as session}
           <div
-            onclick={() => selectedSession = session}
+            onclick={() => { selectedSession = session; loadProgram(session.programId); }}
             style="background: white; border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 12px; cursor: pointer; transition: all 0.2s;"
             onmouseenter={(e) => e.currentTarget.style.borderColor = '#667eea'}
             onmouseleave={(e) => e.currentTarget.style.borderColor = '#ddd'}
@@ -332,6 +384,7 @@
           <span>{set.reps || '-'} × {set.weight || '-'}</span>
           {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
         </div>
+        {#if set.customInputs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const reqs = getCustomReqs(set.programId, set.workoutExerciseId)}{@const req = reqs?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.85em; margin: 0 0 4px 57px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value} {req.value}{/if}</div>{/if}{/each}{/if}
         {#if set.notes}<div style="color: #888; font-style: italic; font-size: 0.85em; margin: 0 0 8px 57px;">"{set.notes}"</div>{/if}
       {/each}
       {:else}

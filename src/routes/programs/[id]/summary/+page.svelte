@@ -46,6 +46,7 @@
     try {
       const logsQuery = query(
         collection(db, 'workoutLogs'),
+        where('userId', '==', currentUserId),
         where('completedWorkoutId', '==', sessionId)
       );
 

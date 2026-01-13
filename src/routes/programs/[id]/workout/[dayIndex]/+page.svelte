@@ -787,6 +787,7 @@
 <!-- History Modal -->
 {#if historyModal.open}
   {@const history = exerciseHistory[historyModal.exerciseId]}
+  {@const historyExercise = day?.sections?.flatMap(s => s.exercises || []).find(e => e.exerciseId === historyModal.exerciseId)}
   <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;" onclick={closeHistoryModal}>
     <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto;" onclick={(e) => e.stopPropagation()}>
       <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white; z-index: 1;">
@@ -858,6 +859,7 @@
                 <span>{set.reps || '-'} × {set.weight || '-'}</span>
                 {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
               </div>
+              {#if set.customInputs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const req = historyExercise?.customReqs?.filter(r => r.clientInput)?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.8em; margin: 0 0 4px 50px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value} {req.value}{/if}</div>{/if}{/each}{/if}
               {#if set.notes}<div style="color: #888; font-style: italic; font-size: 0.8em; margin: 0 0 6px 50px;">"{set.notes}"</div>{/if}
             {/each}
           </div>

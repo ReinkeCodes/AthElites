@@ -196,7 +196,7 @@
 
 <h1>Exercise Library</h1>
 
-{#if userRole === 'admin'}
+{#if userRole === 'admin' || userRole === 'coach'}
   <h2>Create Exercise</h2>
   <form onsubmit={createExercise}>
     <div style="margin-bottom: 10px;">
@@ -315,7 +315,7 @@
               </p>
             {/if}
           </div>
-          {#if userRole === 'admin'}
+          {#if userRole === 'admin' || userRole === 'coach'}
             <div style="display: flex; gap: 8px;">
               <button
                 onclick={() => startEdit(exercise)}
@@ -323,12 +323,14 @@
               >
                 Edit
               </button>
-              <button
-                onclick={() => deleteExercise(exercise)}
-                style="padding: 6px 12px; background: #fff; border: 1px solid #f44336; color: #f44336; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
-              >
-                Delete
-              </button>
+              {#if userRole === 'admin'}
+                <button
+                  onclick={() => deleteExercise(exercise)}
+                  style="padding: 6px 12px; background: #fff; border: 1px solid #f44336; color: #f44336; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
+                >
+                  Delete
+                </button>
+              {/if}
             </div>
           {/if}
         </div>

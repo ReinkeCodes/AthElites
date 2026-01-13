@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { doc, getDoc, updateDoc } from 'firebase/firestore';
+  import { doc, getDoc, updateDoc, collection, onSnapshot } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -10,6 +10,8 @@
   let displayName = $state('');
   let saving = $state(false);
   let message = $state('');
+  let allUsers = $state([]);
+  let roleMessage = $state('');
 
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
@@ -22,6 +24,11 @@
       if (userDoc.exists()) {
         userData = userDoc.data();
         displayName = userData.displayName || '';
+        if (userData.role === 'admin') {
+          onSnapshot(collection(db, 'user'), (snapshot) => {
+            allUsers = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          });
+        }
       }
     });
   });
@@ -43,6 +50,22 @@
       message = 'Error saving: ' + err.message;
     }
     saving = false;
+  }
+
+  async function changeUserRole(userId, newRole) {
+    if (userData?.role !== 'admin') return;
+    if (userId === currentUser?.uid) {
+      roleMessage = 'Cannot change your own role';
+      setTimeout(() => roleMessage = '', 3000);
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'user', userId), { role: newRole });
+      roleMessage = 'Role updated!';
+      setTimeout(() => roleMessage = '', 3000);
+    } catch (err) {
+      roleMessage = 'Error: ' + err.message;
+    }
   }
 </script>
 
@@ -86,6 +109,39 @@
   </form>
 {:else}
   <p>Loading...</p>
+{/if}
+
+{#if userData?.role === 'admin'}
+  <hr style="margin: 30px 0; border: none; border-top: 2px solid #eee;" />
+  <h2>User Management</h2>
+  {#if roleMessage}
+    <p style="color: {roleMessage.includes('Error') ? 'red' : 'green'}; padding: 10px; background: {roleMessage.includes('Error') ? '#ffebee' : '#e8f5e9'}; border-radius: 5px; margin-bottom: 15px;">
+      {roleMessage}
+    </p>
+  {/if}
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    {#each allUsers as user}
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: #f5f5f5; border-radius: 8px; flex-wrap: wrap; gap: 10px;">
+        <div>
+          <strong>{user.displayName || user.email}</strong>
+          {#if user.displayName}<br /><span style="color: #888; font-size: 0.85em;">{user.email}</span>{/if}
+          {#if user.id === currentUser?.uid}<span style="background: #e3f2fd; color: #1565c0; padding: 2px 6px; border-radius: 4px; font-size: 0.7em; margin-left: 8px;">You</span>{/if}
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <select
+            value={user.role}
+            onchange={(e) => changeUserRole(user.id, e.target.value)}
+            disabled={user.id === currentUser?.uid}
+            style="padding: 6px 10px; border-radius: 4px; border: 1px solid #ccc; {user.id === currentUser?.uid ? 'opacity: 0.5; cursor: not-allowed;' : ''}"
+          >
+            <option value="client">Client</option>
+            <option value="coach">Coach</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+      </div>
+    {/each}
+  </div>
 {/if}
 
 <nav style="margin-top: 20px;">

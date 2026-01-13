@@ -68,7 +68,7 @@
         const userDoc = await getDoc(doc(db, 'user', user.uid));
         if (userDoc.exists()) {
           userRole = userDoc.data().role;
-          if (userDoc.data().role !== 'admin') {
+          if (userDoc.data().role !== 'admin' && userDoc.data().role !== 'coach') {
             goto(`/programs/${$page.params.id}/days`);
           }
         }
@@ -94,9 +94,7 @@
     });
 
     onSnapshot(collection(db, 'user'), (snapshot) => {
-      clients = snapshot.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(u => u.role === 'client');
+      clients = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     });
 
     onSnapshot(collection(db, 'exercises'), (snapshot) => {
@@ -413,7 +411,7 @@
   }
 </script>
 
-{#if program && userRole === 'admin'}
+{#if program && (userRole === 'admin' || userRole === 'coach')}
   <h1>{program.name}</h1>
   {#if program.description}
     <p style="color: #666;">{program.description}</p>
@@ -498,12 +496,12 @@
     </div>
   {/if}
 
-  <!-- Assign to Clients -->
+  <!-- Assign to Users -->
   <details style="margin-bottom: 20px;">
-    <summary style="cursor: pointer; font-weight: bold;">Assign to Clients ({program.assignedTo?.length || 0} assigned)</summary>
+    <summary style="cursor: pointer; font-weight: bold;">Assign to Users ({program.assignedTo?.length || 0} assigned)</summary>
     <div style="padding: 10px; background: #f5f5f5; margin-top: 5px;">
       {#if clients.length === 0}
-        <p>No clients yet. Have them sign up first.</p>
+        <p>No users yet.</p>
       {:else}
         {#each clients as client}
           <label style="display: block; margin: 5px 0;">
@@ -513,6 +511,9 @@
               onchange={() => toggleAssignment(client.id)}
             />
             {client.displayName || client.email}
+            {#if client.role && client.role !== 'client'}
+              <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+            {/if}
             {#if client.displayName}
               <span style="color: #888; font-size: 0.85em;">({client.email})</span>
             {/if}
