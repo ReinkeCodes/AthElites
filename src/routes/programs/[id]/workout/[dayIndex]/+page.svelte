@@ -30,7 +30,7 @@
   let exerciseHistory = $state({});
 
   // Notes modal state
-  let notesModal = $state({ open: false, exerciseId: null, setIndex: null, exerciseName: '' });
+  let notesModal = $state({ open: false, workoutExerciseId: null, setIndex: null, exerciseName: '' });
 
   // History modal state
   let historyModal = $state({ open: false, exerciseId: null, exerciseName: '' });
@@ -59,22 +59,22 @@
     historyModal = { open: false, exerciseId: null, exerciseName: '' };
   }
 
-  function openNotesModal(exerciseId, setIndex, exerciseName) {
-    notesModal = { open: true, exerciseId, setIndex, exerciseName };
+  function openNotesModal(workoutExerciseId, setIndex, exerciseName) {
+    notesModal = { open: true, workoutExerciseId, setIndex, exerciseName };
   }
 
   function closeNotesModal() {
-    notesModal = { open: false, exerciseId: null, setIndex: null, exerciseName: '' };
+    notesModal = { open: false, workoutExerciseId: null, setIndex: null, exerciseName: '' };
   }
 
   function getNotesValue() {
-    if (!notesModal.exerciseId) return '';
-    return exerciseLogs[notesModal.exerciseId]?.sets?.[notesModal.setIndex]?.notes || '';
+    if (!notesModal.workoutExerciseId) return '';
+    return exerciseLogs[notesModal.workoutExerciseId]?.sets?.[notesModal.setIndex]?.notes || '';
   }
 
   function setNotesValue(value) {
-    if (notesModal.exerciseId && exerciseLogs[notesModal.exerciseId]?.sets?.[notesModal.setIndex]) {
-      exerciseLogs[notesModal.exerciseId].sets[notesModal.setIndex].notes = value;
+    if (notesModal.workoutExerciseId && exerciseLogs[notesModal.workoutExerciseId]?.sets?.[notesModal.setIndex]) {
+      exerciseLogs[notesModal.workoutExerciseId].sets[notesModal.setIndex].notes = value;
     }
   }
 
@@ -110,13 +110,12 @@
           const completed = {};
           for (const section of day.sections) {
             for (const exercise of section.exercises || []) {
-              const key = `${section.name}-${exercise.exerciseId}`;
               if (section.mode === 'checkbox') {
-                completed[key] = false;
+                completed[exercise.workoutExerciseId] = false;
               } else {
-                // Create per-set tracking
+                // Create per-set tracking using workoutExerciseId for uniqueness
                 const numSets = parseInt(exercise.sets) || 3;
-                logs[exercise.exerciseId] = {
+                logs[exercise.workoutExerciseId] = {
                   targetSets: numSets,
                   targetReps: exercise.reps || '',
                   targetWeight: exercise.weight || '',
@@ -243,14 +242,12 @@
     return section?.mode === 'checkbox';
   }
 
-  function toggleExerciseComplete(sectionName, exerciseId) {
-    const key = `${sectionName}-${exerciseId}`;
-    exerciseCompleted[key] = !exerciseCompleted[key];
+  function toggleExerciseComplete(workoutExerciseId) {
+    exerciseCompleted[workoutExerciseId] = !exerciseCompleted[workoutExerciseId];
   }
 
-  function isExerciseComplete(sectionName, exerciseId) {
-    const key = `${sectionName}-${exerciseId}`;
-    return exerciseCompleted[key] || false;
+  function isExerciseComplete(workoutExerciseId) {
+    return exerciseCompleted[workoutExerciseId] || false;
   }
 
   // Check if a section is complete
@@ -261,12 +258,12 @@
     if (section.mode === 'checkbox') {
       // All exercises must be checked
       return section.exercises.every(ex =>
-        exerciseCompleted[`${section.name}-${ex.exerciseId}`]
+        exerciseCompleted[ex.workoutExerciseId]
       );
     } else {
       // For full tracking, at least one set with reps or weight for all exercises
       return section.exercises.every(ex => {
-        const log = exerciseLogs[ex.exerciseId];
+        const log = exerciseLogs[ex.workoutExerciseId];
         if (!log || !log.sets) return false;
         return log.sets.some(set => set.weight || set.reps);
       });
@@ -280,11 +277,11 @@
 
     if (section.mode === 'checkbox') {
       return section.exercises.some(ex =>
-        exerciseCompleted[`${section.name}-${ex.exerciseId}`]
+        exerciseCompleted[ex.workoutExerciseId]
       );
     } else {
       return section.exercises.some(ex => {
-        const log = exerciseLogs[ex.exerciseId];
+        const log = exerciseLogs[ex.workoutExerciseId];
         if (!log || !log.sets) return false;
         return log.sets.some(set => set.weight || set.reps);
       });
@@ -299,8 +296,8 @@
   }
 
   // Check if an exercise in full tracking mode has data (at least one set filled)
-  function hasExerciseData(exerciseId) {
-    const log = exerciseLogs[exerciseId];
+  function hasExerciseData(workoutExerciseId) {
+    const log = exerciseLogs[workoutExerciseId];
     if (!log || !log.sets) return false;
     return log.sets.some(set => set.weight || set.reps);
   }
@@ -312,11 +309,11 @@
 
     if (section.mode === 'checkbox') {
       return section.exercises.filter(ex =>
-        !exerciseCompleted[`${section.name}-${ex.exerciseId}`]
+        !exerciseCompleted[ex.workoutExerciseId]
       ).length;
     } else {
       return section.exercises.filter(ex => {
-        const log = exerciseLogs[ex.exerciseId];
+        const log = exerciseLogs[ex.workoutExerciseId];
         if (!log || !log.sets) return true;
         return !log.sets.some(set => set.weight || set.reps);
       }).length;
@@ -330,16 +327,15 @@
 
     if (section.mode === 'checkbox') {
       section.exercises.forEach(ex => {
-        const key = `${section.name}-${ex.exerciseId}`;
-        if (!exerciseCompleted[key]) {
-          exerciseCompleted[key] = true;
+        if (!exerciseCompleted[ex.workoutExerciseId]) {
+          exerciseCompleted[ex.workoutExerciseId] = true;
         }
       });
       // Trigger reactivity
       exerciseCompleted = { ...exerciseCompleted };
     } else {
       section.exercises.forEach(ex => {
-        const log = exerciseLogs[ex.exerciseId];
+        const log = exerciseLogs[ex.workoutExerciseId];
         if (log && log.sets) {
           // Mark empty sets as DNC
           log.sets.forEach(set => {
@@ -357,8 +353,8 @@
   }
 
   // Add another set to an exercise
-  function addSet(exerciseId) {
-    const log = exerciseLogs[exerciseId];
+  function addSet(workoutExerciseId) {
+    const log = exerciseLogs[workoutExerciseId];
     if (log && log.sets) {
       log.sets.push({ reps: '', weight: '', rir: '', notes: '' });
       exerciseLogs = { ...exerciseLogs };
@@ -366,8 +362,8 @@
   }
 
   // Remove a set from an exercise (keep at least 1)
-  function removeSet(exerciseId, setIndex) {
-    const log = exerciseLogs[exerciseId];
+  function removeSet(workoutExerciseId, setIndex) {
+    const log = exerciseLogs[workoutExerciseId];
     if (log && log.sets && log.sets.length > 1) {
       log.sets.splice(setIndex, 1);
       exerciseLogs = { ...exerciseLogs };
@@ -420,7 +416,7 @@
 
     for (const section of day.sections || []) {
       for (const exercise of section.exercises || []) {
-        const log = exerciseLogs[exercise.exerciseId];
+        const log = exerciseLogs[exercise.workoutExerciseId];
 
         if (log && log.sets) {
           log.sets.forEach((set, setIndex) => {
@@ -512,20 +508,20 @@
     {#if isCheckboxSection(getCurrentSection())}
       <!-- Checkbox-only mode: show all exercises with just checkboxes -->
       {#each getCurrentSection().exercises || [] as exercise}
-        {@const isComplete = isExerciseComplete(getCurrentSection().name, exercise.exerciseId)}
+        {@const isComplete = isExerciseComplete(exercise.workoutExerciseId)}
         {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !isComplete}
         <div
           style="border: 2px solid {isComplete ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; padding: 15px; margin-bottom: 10px; border-radius: 8px; background: {isComplete ? '#f1f8e9' : showIncompleteHint ? '#fffde7' : 'white'}; cursor: pointer; transition: all 0.2s;"
-          onclick={() => toggleExerciseComplete(getCurrentSection().name, exercise.exerciseId)}
+          onclick={() => toggleExerciseComplete(exercise.workoutExerciseId)}
         >
           <div style="display: flex; align-items: center; gap: 15px;">
-            <div style="width: 30px; height: 30px; border: 2px solid {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? '#4CAF50' : '#ccc'}; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? '#4CAF50' : 'white'}; flex-shrink: 0;">
-              {#if isExerciseComplete(getCurrentSection().name, exercise.exerciseId)}
+            <div style="width: 30px; height: 30px; border: 2px solid {isComplete ? '#4CAF50' : '#ccc'}; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: {isComplete ? '#4CAF50' : 'white'}; flex-shrink: 0;">
+              {#if isComplete}
                 <span style="color: white; font-size: 1.2em;">✓</span>
               {/if}
             </div>
             <div style="flex: 1;">
-              <h3 style="margin: 0 0 5px 0; {isExerciseComplete(getCurrentSection().name, exercise.exerciseId) ? 'text-decoration: line-through; color: #888;' : ''}">{exercise.name}</h3>
+              <h3 style="margin: 0 0 5px 0; {isComplete ? 'text-decoration: line-through; color: #888;' : ''}">{exercise.name}</h3>
               {#if exercise.sets || exercise.reps}
                 <p style="color: #888; margin: 0; font-size: 0.9em;">
                   {#if exercise.sets}{exercise.sets} sets{/if}
@@ -552,8 +548,8 @@
       <!-- Full tracking mode: targets at top, inputs below -->
       {#each getCurrentSection().exercises || [] as exercise}
         {@const history = exerciseHistory[exercise.exerciseId]}
-        {@const log = exerciseLogs[exercise.exerciseId]}
-        {@const hasData = hasExerciseData(exercise.exerciseId)}
+        {@const log = exerciseLogs[exercise.workoutExerciseId]}
+        {@const hasData = hasExerciseData(exercise.workoutExerciseId)}
         {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !hasData}
         {@const repsLabel = exercise.repsMetric === 'distance' ? '' : 'reps'}
         {@const weightLabel = exercise.weightMetric === 'time' ? '' : 'lbs'}
@@ -613,7 +609,7 @@
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                 <p style="margin: 0; font-size: 0.85em; color: #666; font-weight: 500;">Log each set:</p>
                 <button
-                  onclick={() => addSet(exercise.exerciseId)}
+                  onclick={() => addSet(exercise.workoutExerciseId)}
                   style="background: #e8f5e9; border: 1px solid #4CAF50; color: #4CAF50; padding: 4px 10px; border-radius: 4px; font-size: 0.8em; cursor: pointer;"
                 >
                   + Add Set
@@ -683,7 +679,7 @@
 
                     <!-- Notes button -->
                     <button
-                      onclick={() => openNotesModal(exercise.exerciseId, setIndex, exercise.name)}
+                      onclick={() => openNotesModal(exercise.workoutExerciseId, setIndex, exercise.name)}
                       style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid {set.notes ? '#4CAF50' : '#ddd'}; border-radius: 4px; font-size: 0.85em; background: {set.notes ? '#e8f5e9' : 'white'}; cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                     >
                       {set.notes || '+ Note'}
@@ -692,7 +688,7 @@
                     <!-- Remove button -->
                     {#if log.sets.length > 1}
                       <button
-                        onclick={() => removeSet(exercise.exerciseId, setIndex)}
+                        onclick={() => removeSet(exercise.workoutExerciseId, setIndex)}
                         style="background: none; border: none; color: #999; cursor: pointer; font-size: 1.2em; padding: 0;"
                       title="Remove set"
                     >×</button>

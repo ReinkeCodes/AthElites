@@ -111,27 +111,16 @@
   }
 
   function getSessionLogs(session) {
-    const sessionDate = session.finishedAt?.toDate ? session.finishedAt.toDate() : new Date(session.finishedAt);
-    const startOfDay = new Date(sessionDate);
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(sessionDate);
-    endOfDay.setHours(23, 59, 59, 999);
+    // Filter logs by unique session ID (completedWorkoutId)
+    const sessionLogs = allLogs.filter(log => log.completedWorkoutId === session.id);
 
-    // Filter logs for this session
-    const sessionLogs = allLogs.filter(log => {
-      const logDate = log.loggedAt?.toDate ? log.loggedAt.toDate() : new Date(log.loggedAt);
-      return log.programId === session.programId &&
-             log.dayName === session.dayName &&
-             logDate >= startOfDay &&
-             logDate <= endOfDay;
-    });
-
-    // Group by exercise (since each set is now a separate entry)
+    // Group sets by exercise for display within this session
     const groupedByExercise = {};
     sessionLogs.forEach(log => {
-      const key = log.exerciseId;
+      const key = log.workoutExerciseId || log.exerciseId;
       if (!groupedByExercise[key]) {
         groupedByExercise[key] = {
+          workoutExerciseId: log.workoutExerciseId,
           exerciseId: log.exerciseId,
           exerciseName: log.exerciseName,
           sets: []

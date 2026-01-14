@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc } from 'firebase/firestore';
+  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc, getDocs } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -14,6 +14,21 @@
   let publishing = $state(false);
   let showCopyModal = $state(false);
   let selectedClientForCopy = $state('');
+
+  // Copy day to another program
+  let allPrograms = $state([]);
+  let showCopyDayModal = $state(false);
+  let copyDayIndex = $state(null);
+  let selectedDestinationProgram = $state('');
+  let programSearchQuery = $state('');
+  let copyingDay = $state(false);
+  let toastMessage = $state('');
+
+  // Copy section to another program
+  let showCopySectionModal = $state(false);
+  let copySectionDayIndex = $state(null);
+  let copySectionIndex = $state(null);
+  let copyingSection = $state(false);
 
   // Day management
   let newDayName = $state('');
@@ -40,6 +55,7 @@
   // Drag and drop
   let draggedExercise = $state(null); // { dayIndex, sectionIndex, exerciseIndex, exercise }
   let dropTargetSection = $state(null); // "dayIndex-sectionIndex"
+  let dropTargetExerciseIndex = $state(null); // index within section for reorder
 
   // Generate stable unique IDs
   function generateId() {
@@ -99,6 +115,11 @@
 
     onSnapshot(collection(db, 'exercises'), (snapshot) => {
       exercises = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    });
+
+    // Load all programs for copy day feature
+    onSnapshot(collection(db, 'programs'), (snapshot) => {
+      allPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     });
   });
 
@@ -356,6 +377,119 @@
     return client?.displayName || client?.email?.split('@')[0] || 'Unknown';
   }
 
+  // Copy day to another program
+  function openCopyDayModal(dayIndex) {
+    copyDayIndex = dayIndex;
+    selectedDestinationProgram = '';
+    programSearchQuery = '';
+    showCopyDayModal = true;
+  }
+
+  function closeCopyDayModal() {
+    showCopyDayModal = false;
+    copyDayIndex = null;
+    selectedDestinationProgram = '';
+    programSearchQuery = '';
+  }
+
+  function getFilteredPrograms() {
+    return allPrograms
+      .filter(p => p.id !== program.id)
+      .filter(p => !programSearchQuery || p.name?.toLowerCase().includes(programSearchQuery.toLowerCase()))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }
+
+  function getRecentPrograms() {
+    return allPrograms
+      .filter(p => p.id !== program.id && p.lastPublished)
+      .sort((a, b) => {
+        const da = a.lastPublished?.toDate ? a.lastPublished.toDate() : new Date(a.lastPublished);
+        const db = b.lastPublished?.toDate ? b.lastPublished.toDate() : new Date(b.lastPublished);
+        return db - da;
+      })
+      .slice(0, 5);
+  }
+
+  async function copyDayToProgram() {
+    if (!selectedDestinationProgram || copyDayIndex === null) return;
+    copyingDay = true;
+    try {
+      const destSnap = await getDoc(doc(db, 'programs', selectedDestinationProgram));
+      if (!destSnap.exists()) throw new Error('Destination program not found');
+      const destProgram = destSnap.data();
+      const sourceDay = program.days[copyDayIndex];
+      const copiedDay = JSON.parse(JSON.stringify(sourceDay));
+      copiedDay.workoutTemplateId = generateId();
+      for (const section of copiedDay.sections || []) {
+        section.sectionTemplateId = generateId();
+        for (const exercise of section.exercises || []) {
+          exercise.workoutExerciseId = generateId();
+        }
+      }
+      const updatedDays = [...(destProgram.days || []), copiedDay];
+      await updateDoc(doc(db, 'programs', selectedDestinationProgram), { days: updatedDays });
+      const destName = allPrograms.find(p => p.id === selectedDestinationProgram)?.name || 'program';
+      toastMessage = `Copied to ${destName}`;
+      setTimeout(() => { toastMessage = ''; }, 3000);
+      closeCopyDayModal();
+    } catch (e) {
+      console.error('Copy day failed:', e);
+      toastMessage = `Failed to copy day: ${e.message ?? 'Unknown error'}`;
+      setTimeout(() => { toastMessage = ''; }, 5000);
+    } finally {
+      copyingDay = false;
+    }
+  }
+
+  // Copy section to another program
+  function openCopySectionModal(dayIndex, sectionIndex) {
+    copySectionDayIndex = dayIndex;
+    copySectionIndex = sectionIndex;
+    selectedDestinationProgram = '';
+    programSearchQuery = '';
+    showCopySectionModal = true;
+  }
+
+  function closeCopySectionModal() {
+    showCopySectionModal = false;
+    copySectionDayIndex = null;
+    copySectionIndex = null;
+    selectedDestinationProgram = '';
+    programSearchQuery = '';
+  }
+
+  async function copySectionToProgram() {
+    if (!selectedDestinationProgram || copySectionDayIndex === null || copySectionIndex === null) return;
+    copyingSection = true;
+    try {
+      const destSnap = await getDoc(doc(db, 'programs', selectedDestinationProgram));
+      if (!destSnap.exists()) throw new Error('Destination program not found');
+      const destProgram = destSnap.data();
+      const updatedDays = [...(destProgram.days || [])];
+      if (updatedDays.length === 0) {
+        updatedDays.push({ workoutTemplateId: generateId(), name: 'Day 1', sections: [] });
+      }
+      const sourceSection = program.days[copySectionDayIndex].sections[copySectionIndex];
+      const copiedSection = JSON.parse(JSON.stringify(sourceSection));
+      copiedSection.sectionTemplateId = generateId();
+      for (const exercise of copiedSection.exercises || []) {
+        exercise.workoutExerciseId = generateId();
+      }
+      updatedDays[updatedDays.length - 1].sections.push(copiedSection);
+      await updateDoc(doc(db, 'programs', selectedDestinationProgram), { days: updatedDays });
+      const destName = allPrograms.find(p => p.id === selectedDestinationProgram)?.name || 'program';
+      toastMessage = `Copied to ${destName}`;
+      setTimeout(() => { toastMessage = ''; }, 3000);
+      closeCopySectionModal();
+    } catch (e) {
+      console.error('Copy section failed:', e);
+      toastMessage = `Failed to copy section: ${e.message ?? 'Unknown error'}`;
+      setTimeout(() => { toastMessage = ''; }, 5000);
+    } finally {
+      copyingSection = false;
+    }
+  }
+
   // Drag and drop functions
   function handleDragStart(e, dayIndex, sectionIndex, exerciseIndex) {
     const exercise = program.days[dayIndex].sections[sectionIndex].exercises[exerciseIndex];
@@ -408,6 +542,31 @@
 
     draggedExercise = null;
     dropTargetSection = null;
+  }
+
+  function handleExerciseDragOver(e, dayIndex, sectionIndex, exIndex) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!draggedExercise) return;
+    if (draggedExercise.dayIndex === dayIndex && draggedExercise.sectionIndex === sectionIndex) {
+      dropTargetExerciseIndex = exIndex;
+    }
+  }
+
+  async function handleExerciseReorder(e, dayIndex, sectionIndex, targetExIndex) {
+    if (!draggedExercise) return;
+    if (draggedExercise.dayIndex !== dayIndex || draggedExercise.sectionIndex !== sectionIndex) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (draggedExercise.exerciseIndex === targetExIndex) { draggedExercise = null; dropTargetExerciseIndex = null; return; }
+    const updatedDays = [...program.days];
+    const exercises = updatedDays[dayIndex].sections[sectionIndex].exercises;
+    const [moved] = exercises.splice(draggedExercise.exerciseIndex, 1);
+    exercises.splice(targetExIndex, 0, moved);
+    await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
+    draggedExercise = null;
+    dropTargetSection = null;
+    dropTargetExerciseIndex = null;
   }
 </script>
 
@@ -550,6 +709,7 @@
               <button onclick={() => expandedDay = expandedDay === dayIndex ? null : dayIndex}>
                 {expandedDay === dayIndex ? 'Collapse' : 'Expand'}
               </button>
+              <button onclick={() => openCopyDayModal(dayIndex)} style="background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
               <button onclick={() => startEditDay(dayIndex)}>Rename</button>
               <button onclick={() => deleteDay(dayIndex)}>Delete</button>
             </div>
@@ -578,6 +738,7 @@
               <div
                 style="border: 1px solid #ccc; padding: 10px; margin: 10px 0; background: {dropTargetSection === `${dayIndex}-${sectionIndex}` ? '#e3f2fd' : 'white'}; transition: background 0.2s; {dropTargetSection === `${dayIndex}-${sectionIndex}` ? 'border: 2px dashed #2196F3;' : ''}"
                 ondragover={(e) => handleDragOver(e, dayIndex, sectionIndex)}
+                ondragenter={() => { if (draggedExercise && (draggedExercise.dayIndex !== dayIndex || draggedExercise.sectionIndex !== sectionIndex)) dropTargetExerciseIndex = null; }}
                 ondragleave={handleDragLeave}
                 ondrop={(e) => handleDrop(e, dayIndex, sectionIndex)}
               >
@@ -602,6 +763,7 @@
                     </div>
                     <div style="display: flex; gap: 5px;">
                       <button onclick={() => startEditSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Edit</button>
+                      <button onclick={() => openCopySectionModal(dayIndex, sectionIndex)} style="font-size: 0.8em; background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
                       <button onclick={() => deleteSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Remove</button>
                     </div>
                   </div>
@@ -614,7 +776,10 @@
                       draggable="true"
                       ondragstart={(e) => handleDragStart(e, dayIndex, sectionIndex, exIndex)}
                       ondragend={handleDragEnd}
-                      style="padding: 10px; margin: 5px 0; background: #f9f9f9; border-left: 3px solid #4CAF50; cursor: grab; {draggedExercise?.dayIndex === dayIndex && draggedExercise?.sectionIndex === sectionIndex && draggedExercise?.exerciseIndex === exIndex ? 'opacity: 0.5;' : ''}"
+                      ondragover={(e) => handleExerciseDragOver(e, dayIndex, sectionIndex, exIndex)}
+                      ondragleave={() => { if (dropTargetExerciseIndex === exIndex) dropTargetExerciseIndex = null; }}
+                      ondrop={(e) => handleExerciseReorder(e, dayIndex, sectionIndex, exIndex)}
+                      style="padding: 10px; margin: 5px 0; background: #f9f9f9; border-left: 3px solid #4CAF50; cursor: grab; {draggedExercise?.dayIndex === dayIndex && draggedExercise?.sectionIndex === sectionIndex && draggedExercise?.exerciseIndex === exIndex ? 'opacity: 0.5;' : ''} {dropTargetExerciseIndex === exIndex && draggedExercise && draggedExercise.exerciseIndex !== exIndex ? 'border-top: 3px solid #2196F3;' : ''}"
                     >
                       {#if editingExercise === `${dayIndex}-${sectionIndex}-${exIndex}`}
                         <!-- Edit Mode -->
@@ -794,6 +959,129 @@
   <p>Redirecting...</p>
 {:else}
   <p>Loading...</p>
+{/if}
+
+<!-- Copy Day Modal -->
+{#if showCopyDayModal && copyDayIndex !== null}
+  <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;" onclick={closeCopyDayModal}>
+    <div style="background: white; padding: 25px; border-radius: 10px; max-width: 450px; width: 100%;" onclick={(e) => e.stopPropagation()}>
+      <h3 style="margin: 0 0 15px 0;">Copy Day to Another Program</h3>
+      <p style="color: #666; margin-bottom: 15px;">
+        Copy "<strong>{program.days[copyDayIndex]?.name}</strong>" to another program.
+      </p>
+
+      {#if getRecentPrograms().length > 0}
+        <div style="margin-bottom: 15px;">
+          <label style="font-size: 0.85em; color: #666;">Recent Programs:</label>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px;">
+            {#each getRecentPrograms() as p}
+              <button
+                onclick={() => selectedDestinationProgram = p.id}
+                style="padding: 6px 12px; border-radius: 20px; border: 1px solid {selectedDestinationProgram === p.id ? '#2196F3' : '#ddd'}; background: {selectedDestinationProgram === p.id ? '#e3f2fd' : 'white'}; cursor: pointer; font-size: 0.85em;"
+              >
+                {p.name}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <label style="display: block; margin-bottom: 15px;">
+        <strong>Destination Program:</strong>
+        <input type="text" bind:value={programSearchQuery} placeholder="Search programs…" style="width: 100%; padding: 8px; margin-top: 5px; margin-bottom: 5px; border: 1px solid #ddd; border-radius: 5px;" />
+        <select bind:value={selectedDestinationProgram} style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+          <option value="">-- Select program --</option>
+          {#each getFilteredPrograms() as p}
+            <option value={p.id}>{p.name}</option>
+          {/each}
+        </select>
+      </label>
+
+      {#if selectedDestinationProgram}
+        <p style="background: #e8f5e9; padding: 10px; border-radius: 5px; font-size: 0.9em; color: #2e7d32;">
+          Day will be added to the end of <strong>"{allPrograms.find(p => p.id === selectedDestinationProgram)?.name}"</strong>
+        </p>
+      {/if}
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button
+          onclick={copyDayToProgram}
+          disabled={!selectedDestinationProgram || copyingDay}
+          style="flex: 1; padding: 12px; background: {selectedDestinationProgram && !copyingDay ? '#4CAF50' : '#ccc'}; color: white; border: none; cursor: {selectedDestinationProgram && !copyingDay ? 'pointer' : 'not-allowed'}; border-radius: 5px;"
+        >
+          {copyingDay ? 'Copying…' : 'Copy Day'}
+        </button>
+        <button onclick={closeCopyDayModal} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Copy Section Modal -->
+{#if showCopySectionModal && copySectionDayIndex !== null && copySectionIndex !== null}
+  <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;" onclick={closeCopySectionModal}>
+    <div style="background: white; padding: 25px; border-radius: 10px; max-width: 450px; width: 100%;" onclick={(e) => e.stopPropagation()}>
+      <h3 style="margin: 0 0 15px 0;">Copy Section to Another Program</h3>
+      <p style="color: #666; margin-bottom: 15px;">
+        Copy "<strong>{program.days[copySectionDayIndex]?.sections[copySectionIndex]?.name}</strong>" to another program's last day.
+      </p>
+
+      {#if getRecentPrograms().length > 0}
+        <div style="margin-bottom: 15px;">
+          <label style="font-size: 0.85em; color: #666;">Recent Programs:</label>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px;">
+            {#each getRecentPrograms() as p}
+              <button
+                onclick={() => selectedDestinationProgram = p.id}
+                style="padding: 6px 12px; border-radius: 20px; border: 1px solid {selectedDestinationProgram === p.id ? '#2196F3' : '#ddd'}; background: {selectedDestinationProgram === p.id ? '#e3f2fd' : 'white'}; cursor: pointer; font-size: 0.85em;"
+              >
+                {p.name}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      <label style="display: block; margin-bottom: 15px;">
+        <strong>Destination Program:</strong>
+        <input type="text" bind:value={programSearchQuery} placeholder="Search programs…" style="width: 100%; padding: 8px; margin-top: 5px; margin-bottom: 5px; border: 1px solid #ddd; border-radius: 5px;" />
+        <select bind:value={selectedDestinationProgram} style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+          <option value="">-- Select program --</option>
+          {#each getFilteredPrograms() as p}
+            <option value={p.id}>{p.name}</option>
+          {/each}
+        </select>
+      </label>
+
+      {#if selectedDestinationProgram}
+        <p style="background: #e8f5e9; padding: 10px; border-radius: 5px; font-size: 0.9em; color: #2e7d32;">
+          Section will be added to the last day of <strong>"{allPrograms.find(p => p.id === selectedDestinationProgram)?.name}"</strong>{allPrograms.find(p => p.id === selectedDestinationProgram)?.days?.length ? '' : ' (Day 1 will be created)'}
+        </p>
+      {/if}
+
+      <div style="display: flex; gap: 10px; margin-top: 20px;">
+        <button
+          onclick={copySectionToProgram}
+          disabled={!selectedDestinationProgram || copyingSection}
+          style="flex: 1; padding: 12px; background: {selectedDestinationProgram && !copyingSection ? '#4CAF50' : '#ccc'}; color: white; border: none; cursor: {selectedDestinationProgram && !copyingSection ? 'pointer' : 'not-allowed'}; border-radius: 5px;"
+        >
+          {copyingSection ? 'Copying…' : 'Copy Section'}
+        </button>
+        <button onclick={closeCopySectionModal} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
+          Cancel
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Toast -->
+{#if toastMessage}
+  <div style="position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #323232; color: white; padding: 12px 24px; border-radius: 8px; z-index: 2000; font-size: 0.95em;">
+    {toastMessage}
+  </div>
 {/if}
 
 <nav style="margin-top: 20px;">
