@@ -339,6 +339,3 @@
   {/each}
 {/if}
 
-<nav>
-  <a href="/">← Home</a>
-</nav>

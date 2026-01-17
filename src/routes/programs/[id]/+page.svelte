@@ -1084,6 +1084,3 @@
   </div>
 {/if}
 
-<nav style="margin-top: 20px;">
-  <a href="/programs">← Back to Programs</a>
-</nav>

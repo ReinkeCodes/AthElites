@@ -169,7 +169,3 @@
     {/each}
   </div>
 {/if}
-
-<nav style="margin-top: 20px;">
-  <a href="/">← Home</a>
-</nav>

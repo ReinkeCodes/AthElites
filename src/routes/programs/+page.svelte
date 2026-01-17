@@ -101,34 +101,60 @@
   <p>{activeView === 'my' || userRole === 'client' ? 'No programs assigned to you yet.' : 'No programs created yet.'}</p>
 {:else}
   {#each getFilteredPrograms() as program}
-    <div style="border: 1px solid {program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''}">
-      <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 5px;">
-        <strong style="font-size: 1.2em;">{program.name}</strong>
-        {#if program.isClientCopy}
-          <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+    {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
+      <!-- Admin/Coach edit view: fully clickable card -->
+      <a href="/programs/{program.id}" class="program-card" style="display: block; text-decoration: none; color: inherit; border: 1px solid {program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white; position: relative;">
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1;">
+            <strong style="font-size: 1.2em;">{program.name}</strong>
+            {#if program.isClientCopy}
+              <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+            {/if}
+          </div>
+          <button
+            onclick={(e) => { e.preventDefault(); e.stopPropagation(); deleteProgram(program.id); }}
+            style="background: none; border: none; color: #999; font-size: 1.2em; cursor: pointer; padding: 4px 8px; line-height: 1;"
+            title="Delete program"
+          >×</button>
+        </div>
+        {#if program.description}
+          <p style="margin: 5px 0; color: #666;">{program.description}</p>
         {/if}
-      </div>
-      {#if program.description}
-        <p style="margin: 5px 0; color: #666;">{program.description}</p>
-      {/if}
-      <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
-        {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
-        {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all' && program.assignedTo?.length > 0}
-          • {program.assignedTo.length} assigned
+        <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
+          {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+          {#if program.assignedTo?.length > 0}
+            • {program.assignedTo.length} assigned
+          {/if}
+        </p>
+      </a>
+    {:else}
+      <!-- Client/My view: fully clickable card -->
+      <a href="/programs/{program.id}/days" class="program-card" style="display: block; text-decoration: none; color: inherit; border: 1px solid {program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white;">
+        <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 5px;">
+          <strong style="font-size: 1.2em;">{program.name}</strong>
+          {#if program.isClientCopy}
+            <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+          {/if}
+        </div>
+        {#if program.description}
+          <p style="margin: 5px 0; color: #666;">{program.description}</p>
         {/if}
-      </p>
-      <div style="margin-top: 10px;">
-        {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
-          <a href="/programs/{program.id}" style="margin-right: 10px;">Edit Program</a>
-          <button onclick={() => deleteProgram(program.id)}>Delete</button>
-        {:else}
-          <a href="/programs/{program.id}/days">Start Workout</a>
-        {/if}
-      </div>
-    </div>
+        <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
+          {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+        </p>
+      </a>
+    {/if}
   {/each}
 {/if}
 
-<nav style="margin-top: 20px;">
-  <a href="/">← Home</a>
-</nav>
+<style>
+  .program-card {
+    transition: filter 0.15s ease;
+  }
+  .program-card:hover {
+    filter: brightness(0.97);
+  }
+  .program-card:active {
+    filter: brightness(0.94);
+  }
+</style>

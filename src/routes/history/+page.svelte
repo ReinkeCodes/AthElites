@@ -666,6 +666,3 @@
 </div>
 {/if}
 
-<nav style="margin-top: 30px;">
-  <a href="/">← Home</a>
-</nav>

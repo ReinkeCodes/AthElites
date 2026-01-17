@@ -85,16 +85,16 @@
   <!-- Quick Actions -->
   <div style="display: grid; gap: 10px; margin-bottom: 30px;">
     {#if assignedPrograms.length > 0}
-      <a href="/programs" style="display: block; padding: 20px; background: #4CAF50; color: white; text-decoration: none; border-radius: 8px; text-align: center;">
+      <a href="/programs" class="action-btn" style="display: block; padding: 20px; background: #4CAF50; color: white; text-decoration: none; border-radius: 8px; text-align: center;">
         <strong style="font-size: 1.2em;">Start Workout</strong>
         <p style="margin: 5px 0 0 0; opacity: 0.9;">{assignedPrograms.length} program{assignedPrograms.length !== 1 ? 's' : ''} available</p>
       </a>
     {:else if userRole === 'admin'}
-      <a href="/programs" style="display: block; padding: 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 8px; text-align: center;">
+      <a href="/programs" class="action-btn" style="display: block; padding: 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 8px; text-align: center;">
         <strong style="font-size: 1.2em;">Manage Programs</strong>
         <p style="margin: 5px 0 0 0; opacity: 0.9;">Create and assign workouts</p>
       </a>
-      <a href="/exercises" style="display: block; padding: 20px; background: #ff9800; color: white; text-decoration: none; border-radius: 8px; text-align: center;">
+      <a href="/exercises" class="action-btn" style="display: block; padding: 20px; background: #ff9800; color: white; text-decoration: none; border-radius: 8px; text-align: center;">
         <strong style="font-size: 1.2em;">Exercise Library</strong>
         <p style="margin: 5px 0 0 0; opacity: 0.9;">Manage exercises</p>
       </a>
@@ -102,6 +102,16 @@
       <p style="color: #888; text-align: center; padding: 20px;">No programs assigned yet. Check back later!</p>
     {/if}
   </div>
+
+  <!-- History & PRs -->
+  <a href="/history" class="action-btn" style="display: block; padding: 15px; background: #f5f5f5; border-radius: 8px; text-align: center; text-decoration: none; color: #333; margin-bottom: 10px;">
+    <strong>History & PRs</strong>
+  </a>
+
+  <!-- Profile -->
+  <a href="/profile" class="action-btn" style="display: block; padding: 15px; background: #f5f5f5; border-radius: 8px; text-align: center; text-decoration: none; color: #333; margin-bottom: 20px;">
+    <strong>Profile</strong>
+  </a>
 
   <!-- Recent Workouts -->
   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -131,13 +141,16 @@
     </div>
   {/if}
 
-  <!-- Navigation Links -->
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 30px;">
-    <a href="/history" style="display: block; padding: 15px; background: #f5f5f5; border-radius: 8px; text-align: center; text-decoration: none; color: #333;">
-      <strong>History & PRs</strong>
-    </a>
-    <a href="/profile" style="display: block; padding: 15px; background: #f5f5f5; border-radius: 8px; text-align: center; text-decoration: none; color: #333;">
-      <strong>Profile</strong>
-    </a>
-  </div>
 {/if}
+
+<style>
+  .action-btn {
+    transition: filter 0.15s ease;
+  }
+  .action-btn:hover {
+    filter: brightness(0.95);
+  }
+  .action-btn:active {
+    filter: brightness(0.9);
+  }
+</style>
