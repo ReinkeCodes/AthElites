@@ -16,6 +16,7 @@
   let selectedExerciseSession = $state(null);
   let exerciseSessionSets = $state([]);
   let programsCache = $state({});
+  let selectedExerciseHistory = $state(null); // e1rm and repRanges for selected exercise
 
   async function loadProgram(programId) {
     if (!programId || programsCache[programId]) return;
@@ -127,6 +128,7 @@
         };
       }
       groupedByExercise[key].sets.push({
+        id: log.id, // Include log ID for deletion
         setNumber: log.setNumber || 1,
         reps: log.reps,
         weight: log.weight,
@@ -155,16 +157,65 @@
 
   function openExerciseHistory(exerciseId, exerciseName) {
     selectedExercise = { exerciseId, exerciseName };
+
+    // Clear stale data immediately to prevent orphan PR display
+    selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } };
+    exerciseSessions = [];
+    selectedExerciseSession = null;
+    exerciseSessionSets = [];
+
     // Get unique sessions for this exercise (last 10)
     const exerciseLogs = allLogs.filter(l => l.exerciseId === exerciseId && l.completedWorkoutId);
+
+    // If no logs exist, ensure clean state (no orphan PRs)
+    if (exerciseLogs.length === 0) {
+      selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } };
+      return;
+    }
+
     const sessionMap = {};
     const programIds = new Set();
+
+    // Calculate e1rm and rep range PRs (same logic as workout page)
+    let best1RM = null;
+    const repRanges = {
+      '1-5': null,
+      '6-8': null,
+      '9-12': null
+    };
+
     exerciseLogs.forEach(log => {
       if (log.programId) programIds.add(log.programId);
       if (!sessionMap[log.completedWorkoutId]) {
         sessionMap[log.completedWorkoutId] = { id: log.completedWorkoutId, date: log.loggedAt, dayName: log.dayName };
       }
+
+      // Calculate PRs
+      const weight = parseFloat(log.weight) || 0;
+      const reps = parseInt(log.reps) || 0;
+      if (weight <= 0 || reps <= 0) return;
+
+      // Calculate estimated 1RM using Epley formula: weight × (1 + reps/30)
+      const e1rm = weight * (1 + reps / 30);
+      if (!best1RM || e1rm > best1RM.e1rm) {
+        best1RM = { e1rm: Math.round(e1rm), weight, reps, date: log.loggedAt, notes: log.notes };
+      }
+
+      // Categorize by rep range
+      let range = null;
+      if (reps >= 1 && reps <= 5) range = '1-5';
+      else if (reps >= 6 && reps <= 8) range = '6-8';
+      else if (reps >= 9 && reps <= 12) range = '9-12';
+
+      if (range) {
+        if (!repRanges[range] || weight > repRanges[range].weight) {
+          repRanges[range] = { weight, reps, date: log.loggedAt, notes: log.notes };
+        }
+      }
     });
+
+    selectedExerciseHistory = { e1rm: best1RM, repRanges };
+
     programIds.forEach(pid => loadProgram(pid));
     exerciseSessions = Object.values(sessionMap)
       .sort((a, b) => {
@@ -189,31 +240,193 @@
     exerciseSessions = [];
     selectedExerciseSession = null;
     exerciseSessionSets = [];
+    selectedExerciseHistory = null;
   }
 
   async function deleteSession(session) {
     if (!confirm(`Delete "${session.dayName}" workout from ${formatDate(session.finishedAt)}? This cannot be undone.`)) return;
     try {
-      // Delete all logs for this session
+      // Delete all logs for this session from Firestore
       const logsQuery = query(collection(db, 'workoutLogs'), where('userId', '==', currentUserId), where('completedWorkoutId', '==', session.id));
       const logsSnap = await getDocs(logsQuery);
+
+      // Collect IDs of logs being deleted (more reliable than filtering by completedWorkoutId)
+      const deletedLogIds = new Set(logsSnap.docs.map(d => d.id));
+
       await Promise.all(logsSnap.docs.map(d => deleteDoc(d.ref)));
       // Delete the session
       await deleteDoc(doc(db, 'workoutSessions', session.id));
-      // Refresh UI
+
+      // Refresh UI - filter by actual deleted log IDs for reliability
       workoutSessions = workoutSessions.filter(s => s.id !== session.id);
-      allLogs = allLogs.filter(l => l.completedWorkoutId !== session.id);
+      allLogs = allLogs.filter(l => !deletedLogIds.has(l.id));
       selectedSession = null;
-      // Recalculate PRs
+
+      // Recalculate PRs from remaining logs (matches loadAllLogs logic exactly)
+      // If no logs remain for an exercise, it won't be in prs and will disappear from PR tab
       const prs = {};
       allLogs.forEach(log => {
         const weight = parseFloat(log.weight) || 0;
-        if (!prs[log.exerciseId] || weight > prs[log.exerciseId].weight) {
-          prs[log.exerciseId] = { exerciseName: log.exerciseName, weight, reps: log.reps, date: log.loggedAt, programName: log.programName, dayName: log.dayName };
+        const exerciseId = log.exerciseId;
+        const exerciseName = log.exerciseName;
+
+        if (!prs[exerciseId] || weight > prs[exerciseId].weight) {
+          prs[exerciseId] = {
+            exerciseName,
+            weight,
+            reps: log.reps,
+            sets: log.sets,
+            date: log.loggedAt,
+            programName: log.programName,
+            dayName: log.dayName
+          };
         }
       });
       exercisePRs = prs;
     } catch (e) { console.error('Delete failed:', e); alert('Failed to delete session'); }
+  }
+
+  // TASK 1: Delete all logs for a specific exercise within a session
+  async function deleteExerciseLogs(sessionId, exercise) {
+    const exerciseKey = exercise.workoutExerciseId || exercise.exerciseId;
+    if (!confirm(`Delete all logged sets for "${exercise.exerciseName}"? This cannot be undone.`)) return;
+
+    try {
+      // Find all log IDs for this exercise in this session
+      const logIds = exercise.sets.map(s => s.id).filter(Boolean);
+
+      // Delete from Firestore
+      await Promise.all(logIds.map(id => deleteDoc(doc(db, 'workoutLogs', id))));
+
+      // Update local state
+      allLogs = allLogs.filter(l => !logIds.includes(l.id));
+
+      // Recalculate PRs
+      recalculatePRs();
+    } catch (e) {
+      console.error('Delete exercise logs failed:', e);
+      alert('Failed to delete exercise logs');
+    }
+  }
+
+  // TASK 2: Delete a single set log from PR modal
+  async function deleteSetLog(setId) {
+    if (!confirm('Delete this set? This cannot be undone.')) return;
+
+    try {
+      // Delete from Firestore
+      await deleteDoc(doc(db, 'workoutLogs', setId));
+
+      // Update local state
+      allLogs = allLogs.filter(l => l.id !== setId);
+
+      // Update exerciseSessionSets to reflect the deletion
+      exerciseSessionSets = exerciseSessionSets.filter(s => s.id !== setId);
+
+      // Recalculate PRs first
+      recalculatePRs();
+
+      // Check if any logs remain for this exercise at all
+      const remainingExerciseLogs = allLogs.filter(l => l.exerciseId === selectedExercise?.exerciseId);
+
+      if (remainingExerciseLogs.length === 0) {
+        // No logs remain for this exercise - close the modal
+        closeExerciseHistory();
+        return;
+      }
+
+      // If no sets remain in current session, find next available session
+      if (exerciseSessionSets.length === 0) {
+        // Rebuild exerciseSessions from remaining logs
+        const sessionMap = {};
+        remainingExerciseLogs.forEach(log => {
+          if (log.completedWorkoutId && !sessionMap[log.completedWorkoutId]) {
+            sessionMap[log.completedWorkoutId] = { id: log.completedWorkoutId, date: log.loggedAt, dayName: log.dayName };
+          }
+        });
+        exerciseSessions = Object.values(sessionMap)
+          .sort((a, b) => {
+            const da = a.date?.toDate ? a.date.toDate() : new Date(a.date);
+            const db = b.date?.toDate ? b.date.toDate() : new Date(b.date);
+            return db - da;
+          })
+          .slice(0, 10);
+
+        if (exerciseSessions.length > 0) {
+          selectExerciseSession(exerciseSessions[0]);
+        } else {
+          selectedExerciseSession = null;
+        }
+      }
+
+      // Recalculate selected exercise history
+      if (selectedExercise) {
+        recalculateSelectedExerciseHistory();
+      }
+    } catch (e) {
+      console.error('Delete set failed:', e);
+      alert('Failed to delete set');
+    }
+  }
+
+  // Helper: Recalculate PRs from allLogs
+  function recalculatePRs() {
+    const prs = {};
+    allLogs.forEach(log => {
+      const weight = parseFloat(log.weight) || 0;
+      const exerciseId = log.exerciseId;
+      const exerciseName = log.exerciseName;
+
+      if (!prs[exerciseId] || weight > prs[exerciseId].weight) {
+        prs[exerciseId] = {
+          exerciseName,
+          weight,
+          reps: log.reps,
+          sets: log.sets,
+          date: log.loggedAt,
+          programName: log.programName,
+          dayName: log.dayName
+        };
+      }
+    });
+    exercisePRs = prs;
+  }
+
+  // Helper: Recalculate e1rm and repRanges for selected exercise
+  function recalculateSelectedExerciseHistory() {
+    if (!selectedExercise) return;
+
+    const exerciseLogs = allLogs.filter(l => l.exerciseId === selectedExercise.exerciseId && l.completedWorkoutId);
+
+    if (exerciseLogs.length === 0) {
+      selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } };
+      return;
+    }
+
+    let best1RM = null;
+    const repRanges = { '1-5': null, '6-8': null, '9-12': null };
+
+    exerciseLogs.forEach(log => {
+      const weight = parseFloat(log.weight) || 0;
+      const reps = parseInt(log.reps) || 0;
+      if (weight <= 0 || reps <= 0) return;
+
+      const e1rm = weight * (1 + reps / 30);
+      if (!best1RM || e1rm > best1RM.e1rm) {
+        best1RM = { e1rm: Math.round(e1rm), weight, reps, date: log.loggedAt, notes: log.notes };
+      }
+
+      let range = null;
+      if (reps >= 1 && reps <= 5) range = '1-5';
+      else if (reps >= 6 && reps <= 8) range = '6-8';
+      else if (reps >= 9 && reps <= 12) range = '9-12';
+
+      if (range && (!repRanges[range] || weight > repRanges[range].weight)) {
+        repRanges[range] = { weight, reps, date: log.loggedAt, notes: log.notes };
+      }
+    });
+
+    selectedExerciseHistory = { e1rm: best1RM, repRanges };
   }
 </script>
 
@@ -266,7 +479,14 @@
       <h3>Exercises</h3>
       {#each getSessionLogs(selectedSession) as exercise}
         <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 12px 15px; margin-bottom: 12px;">
-          <strong style="font-size: 1.05em;">{exercise.exerciseName}</strong>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <strong style="font-size: 1.05em;">{exercise.exerciseName}</strong>
+            <button
+              onclick={(e) => { e.stopPropagation(); deleteExerciseLogs(selectedSession.id, exercise); }}
+              style="background: none; border: none; color: #999; cursor: pointer; font-size: 1.1em; padding: 4px 8px; line-height: 1;"
+              title="Delete all sets for this exercise"
+            >×</button>
+          </div>
           <div style="margin-top: 8px;">
             {#each exercise.sets as set}
               <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: #f8f9fa; border-radius: 5px; font-size: 0.9em;">
@@ -355,6 +575,60 @@
       <h3 style="margin: 0;">{selectedExercise.exerciseName}</h3>
     </div>
     <div style="padding: 15px 20px;">
+      <!-- Estimated 1RM -->
+      {#if selectedExerciseHistory?.e1rm}
+        <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center;">
+          <div style="font-size: 0.8em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px;">Estimated 1RM</div>
+          <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">{selectedExerciseHistory.e1rm.e1rm} lbs</div>
+          <div style="font-size: 0.8em; opacity: 0.85;">Based on {selectedExerciseHistory.e1rm.weight}×{selectedExerciseHistory.e1rm.reps} ({formatDate(selectedExerciseHistory.e1rm.date)})</div>
+        </div>
+      {/if}
+
+      <!-- Rep Range PRs -->
+      {#if selectedExerciseHistory?.repRanges && (selectedExerciseHistory.repRanges['1-5'] || selectedExerciseHistory.repRanges['6-8'] || selectedExerciseHistory.repRanges['9-12'])}
+        <div style="margin-bottom: 15px;">
+          <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Rep Range PRs</div>
+          <div style="display: grid; gap: 8px;">
+            {#if selectedExerciseHistory.repRanges['1-5']}
+              <div style="background: #e3f2fd; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #1565c0;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="font-weight: 600; color: #1565c0;">1-5 Reps (Strength)</span>
+                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['1-5'].weight} × {selectedExerciseHistory.repRanges['1-5'].reps}</span>
+                </div>
+                <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['1-5'].date)}</div>
+                {#if selectedExerciseHistory.repRanges['1-5'].notes}
+                  <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{selectedExerciseHistory.repRanges['1-5'].notes}"</div>
+                {/if}
+              </div>
+            {/if}
+            {#if selectedExerciseHistory.repRanges['6-8']}
+              <div style="background: #f3e5f5; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #7b1fa2;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="font-weight: 600; color: #7b1fa2;">6-8 Reps (Power)</span>
+                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['6-8'].weight} × {selectedExerciseHistory.repRanges['6-8'].reps}</span>
+                </div>
+                <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['6-8'].date)}</div>
+                {#if selectedExerciseHistory.repRanges['6-8'].notes}
+                  <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{selectedExerciseHistory.repRanges['6-8'].notes}"</div>
+                {/if}
+              </div>
+            {/if}
+            {#if selectedExerciseHistory.repRanges['9-12']}
+              <div style="background: #e8f5e9; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #2e7d32;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="font-weight: 600; color: #2e7d32;">9-12 Reps (Hypertrophy)</span>
+                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['9-12'].weight} × {selectedExerciseHistory.repRanges['9-12'].reps}</span>
+                </div>
+                <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['9-12'].date)}</div>
+                {#if selectedExerciseHistory.repRanges['9-12'].notes}
+                  <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{selectedExerciseHistory.repRanges['9-12'].notes}"</div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
       {#if exerciseSessions.length > 1}
       <div style="margin-bottom: 15px;">
         <label style="font-size: 0.85em; color: #666;">Select Session:</label>
@@ -370,8 +644,13 @@
       {#each exerciseSessionSets as set}
         <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 6px; background: #f8f9fa; border-radius: 6px;">
           <span style="font-weight: bold; color: #667eea; min-width: 45px;">Set {set.setNumber || 1}</span>
-          <span>{set.reps || '-'} × {set.weight || '-'}</span>
+          <span style="flex: 1;">{set.reps || '-'} × {set.weight || '-'}</span>
           {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
+          <button
+            onclick={(e) => { e.stopPropagation(); deleteSetLog(set.id); }}
+            style="background: none; border: none; color: #999; cursor: pointer; font-size: 1.1em; padding: 4px 8px; line-height: 1; margin-left: auto;"
+            title="Delete this set"
+          >×</button>
         </div>
         {#if set.customInputs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const reqs = getCustomReqs(set.programId, set.workoutExerciseId)}{@const req = reqs?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.85em; margin: 0 0 4px 57px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value} {req.value}{/if}</div>{/if}{/each}{/if}
         {#if set.notes}<div style="color: #888; font-style: italic; font-size: 0.85em; margin: 0 0 8px 57px;">"{set.notes}"</div>{/if}

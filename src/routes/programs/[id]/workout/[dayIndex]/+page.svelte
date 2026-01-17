@@ -35,6 +35,10 @@
   // History modal state
   let historyModal = $state({ open: false, exerciseId: null, exerciseName: '' });
 
+  // Active set index per exercise (for progressive disclosure in full tracking mode)
+  // Structure: { workoutExerciseId: activeSetIndex }
+  let activeSetIndices = $state({});
+
   // Backfill missing IDs in days array, returns true if any were added
   function backfillIds(days) {
     if (!days) return false;
@@ -51,8 +55,102 @@
     return changed;
   }
 
-  function openHistoryModal(exerciseId, exerciseName) {
+  async function openHistoryModal(exerciseId, exerciseName) {
+    // Clear stale data immediately before opening modal
+    exerciseHistory = {
+      ...exerciseHistory,
+      [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } }
+    };
     historyModal = { open: true, exerciseId, exerciseName };
+    // Refresh history for this exercise from Firestore to ensure no stale/orphan PRs
+    await refreshExerciseHistory(exerciseId);
+  }
+
+  async function refreshExerciseHistory(exerciseId) {
+    if (!currentUserId) return;
+
+    try {
+      const logsQuery = query(
+        collection(db, 'workoutLogs'),
+        where('userId', '==', currentUserId),
+        where('exerciseId', '==', exerciseId),
+        orderBy('loggedAt', 'desc'),
+        limit(10)
+      );
+
+      const snapshot = await getDocs(logsQuery);
+      const entries = snapshot.docs.map(d => d.data());
+
+      // If no entries exist, ensure clean state
+      if (entries.length === 0) {
+        exerciseHistory = {
+          ...exerciseHistory,
+          [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } }
+        };
+        return;
+      }
+
+      // Calculate estimated 1RM using Epley formula
+      let best1RM = null;
+      const repRanges = { '1-5': null, '6-8': null, '9-12': null };
+
+      entries.forEach(entry => {
+        const weight = parseFloat(entry.weight) || 0;
+        const reps = parseInt(entry.reps) || 0;
+        if (weight <= 0 || reps <= 0) return;
+
+        const e1rm = weight * (1 + reps / 30);
+        if (!best1RM || e1rm > best1RM.e1rm) {
+          best1RM = { e1rm: Math.round(e1rm), weight, reps, date: entry.loggedAt, notes: entry.notes };
+        }
+
+        let range = null;
+        if (reps >= 1 && reps <= 5) range = '1-5';
+        else if (reps >= 6 && reps <= 8) range = '6-8';
+        else if (reps >= 9 && reps <= 12) range = '9-12';
+
+        if (range && (!repRanges[range] || weight > repRanges[range].weight)) {
+          repRanges[range] = { weight, reps, date: entry.loggedAt, notes: entry.notes };
+        }
+      });
+
+      // Find most recent session
+      let lastSession = null;
+      if (entries.length > 0 && entries[0].completedWorkoutId) {
+        const sessionId = entries[0].completedWorkoutId;
+        const sessionLogs = entries.filter(e => e.completedWorkoutId === sessionId);
+        sessionLogs.sort((a, b) => (a.setNumber || 1) - (b.setNumber || 1));
+        lastSession = {
+          date: entries[0].loggedAt,
+          sets: sessionLogs.map(log => ({
+            setNumber: log.setNumber || 1,
+            reps: log.reps,
+            weight: log.weight,
+            rir: log.rir,
+            notes: log.notes,
+            customInputs: log.customInputs
+          }))
+        };
+      }
+
+      // Update exerciseHistory for this specific exercise
+      exerciseHistory = {
+        ...exerciseHistory,
+        [exerciseId]: {
+          entries,
+          lastSession,
+          e1rm: best1RM,
+          repRanges
+        }
+      };
+    } catch (e) {
+      console.log('Could not refresh exercise history:', e.message || e);
+      // On error, ensure clean state
+      exerciseHistory = {
+        ...exerciseHistory,
+        [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } }
+      };
+    }
   }
 
   function closeHistoryModal() {
@@ -108,6 +206,7 @@
         if (day?.sections) {
           const logs = {};
           const completed = {};
+          const setIndices = {};
           for (const section of day.sections) {
             for (const exercise of section.exercises || []) {
               if (section.mode === 'checkbox') {
@@ -127,11 +226,14 @@
                     notes: ''
                   }))
                 };
+                // Initialize active set index to 0 (first set)
+                setIndices[exercise.workoutExerciseId] = 0;
               }
             }
           }
           exerciseLogs = logs;
           exerciseCompleted = completed;
+          activeSetIndices = setIndices;
 
           // Load history for each exercise
           if (currentUserId) {
@@ -150,7 +252,7 @@
       for (const exercise of section.exercises || []) {
         const exerciseId = exercise.exerciseId;
 
-        // Get last 2 logged entries for this exercise
+        // Get logged entries for this exercise
         const logsQuery = query(
           collection(db, 'workoutLogs'),
           where('userId', '==', currentUserId),
@@ -302,6 +404,14 @@
     return log.sets.some(set => set.weight || set.reps);
   }
 
+  // Check if an exercise is fully completed (ALL sets have all required fields filled)
+  // Uses the same logic as getSetCompletionState for consistency with dot indicators
+  function isExerciseFullyCompleted(workoutExerciseId) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets || log.sets.length === 0) return false;
+    return log.sets.every(set => getSetCompletionState(set) === 'completed');
+  }
+
   // Count incomplete exercises in current section
   function getIncompleteCount() {
     const section = getCurrentSection();
@@ -358,6 +468,9 @@
     if (log && log.sets) {
       log.sets.push({ reps: '', weight: '', rir: '', notes: '' });
       exerciseLogs = { ...exerciseLogs };
+      // Navigate to the newly added set
+      activeSetIndices[workoutExerciseId] = log.sets.length - 1;
+      activeSetIndices = { ...activeSetIndices };
     }
   }
 
@@ -367,6 +480,174 @@
     if (log && log.sets && log.sets.length > 1) {
       log.sets.splice(setIndex, 1);
       exerciseLogs = { ...exerciseLogs };
+      // Adjust active set index if needed
+      const activeIdx = activeSetIndices[workoutExerciseId] || 0;
+      if (activeIdx >= log.sets.length) {
+        activeSetIndices[workoutExerciseId] = log.sets.length - 1;
+        activeSetIndices = { ...activeSetIndices };
+      }
+    }
+  }
+
+  // Get active set index for an exercise
+  function getActiveSetIndex(workoutExerciseId) {
+    return activeSetIndices[workoutExerciseId] ?? 0;
+  }
+
+  // Set active set index (for tap to activate)
+  function setActiveSetIndex(workoutExerciseId, index) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (log && log.sets && index >= 0 && index < log.sets.length) {
+      activeSetIndices[workoutExerciseId] = index;
+      activeSetIndices = { ...activeSetIndices };
+    }
+  }
+
+  // Navigate to next set (for swipe left)
+  function nextSet(workoutExerciseId) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets) return;
+    const currentIdx = activeSetIndices[workoutExerciseId] ?? 0;
+    if (currentIdx < log.sets.length - 1) {
+      activeSetIndices[workoutExerciseId] = currentIdx + 1;
+      activeSetIndices = { ...activeSetIndices };
+    }
+  }
+
+  // Navigate to previous set (for swipe right)
+  function prevSet(workoutExerciseId) {
+    const currentIdx = activeSetIndices[workoutExerciseId] ?? 0;
+    if (currentIdx > 0) {
+      activeSetIndices[workoutExerciseId] = currentIdx - 1;
+      activeSetIndices = { ...activeSetIndices };
+    }
+  }
+
+  // Get set completion state: 'untouched' | 'incomplete' | 'completed'
+  // Required fields: reps, weight, rir (notes excluded)
+  function getSetCompletionState(set) {
+    if (!set) return 'untouched';
+    const hasValue = (v) => v !== null && v !== undefined && String(v).trim() !== '';
+    const repsHas = hasValue(set.reps);
+    const weightHas = hasValue(set.weight);
+    const rirHas = hasValue(set.rir);
+    const filledCount = [repsHas, weightHas, rirHas].filter(Boolean).length;
+    if (filledCount === 0) return 'untouched';
+    if (filledCount === 3) return 'completed';
+    return 'incomplete';
+  }
+
+  // Get dot color based on completion state
+  function getDotColor(state) {
+    if (state === 'completed') return '#4CAF50';
+    if (state === 'incomplete') return '#FFC107';
+    return '#e0e0e0';
+  }
+
+  // Notes expanded state per exercise+set
+  let notesExpanded = $state({});
+
+  // Expanded exercise per section (accordion behavior)
+  // Structure: { sectionIndex: workoutExerciseId }
+  let expandedExercise = $state({});
+
+  function isExerciseExpanded(sectionIndex, workoutExerciseId) {
+    return expandedExercise[sectionIndex] === workoutExerciseId;
+  }
+
+  function toggleExerciseExpanded(sectionIndex, workoutExerciseId) {
+    if (expandedExercise[sectionIndex] === workoutExerciseId) {
+      // Collapse if already expanded (optional behavior)
+      expandedExercise[sectionIndex] = null;
+    } else {
+      // Expand this one, collapse others
+      expandedExercise[sectionIndex] = workoutExerciseId;
+    }
+    expandedExercise = { ...expandedExercise };
+  }
+
+  // Get compact prescription summary (main line, excludes RIR)
+  function getPrescriptionSummary(exercise) {
+    const parts = [];
+    if (exercise.sets) {
+      if (exercise.reps) {
+        parts.push(`${exercise.sets} x ${exercise.reps}`);
+      } else {
+        const setWord = parseInt(exercise.sets) === 1 ? 'set' : 'sets';
+        parts.push(`${exercise.sets} ${setWord}`);
+      }
+    }
+    if (exercise.weight) parts.push(`@ ${exercise.weight}`);
+    return parts.join(' ') || 'No prescription';
+  }
+
+  function isNotesExpanded(workoutExerciseId, setIndex) {
+    return notesExpanded[`${workoutExerciseId}_${setIndex}`] || false;
+  }
+
+  function toggleNotesExpanded(workoutExerciseId, setIndex) {
+    const key = `${workoutExerciseId}_${setIndex}`;
+    notesExpanded[key] = !notesExpanded[key];
+    notesExpanded = { ...notesExpanded };
+  }
+
+  // Stepper functions for numeric inputs
+  function stepValue(workoutExerciseId, setIndex, field, delta) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets || !log.sets[setIndex]) return;
+    const current = parseFloat(log.sets[setIndex][field]) || 0;
+    let newVal = current + delta;
+    if (field === 'rir') newVal = Math.max(0, Math.min(10, newVal));
+    else newVal = Math.max(0, newVal);
+    log.sets[setIndex][field] = String(newVal);
+    exerciseLogs = { ...exerciseLogs };
+  }
+
+  // Swipe handler state tracking (per exercise)
+  let swipeState = $state({});
+
+  // Swipe handlers for set navigation
+  function handleSwipeStart(workoutExerciseId, e) {
+    // Don't start swipe if target is an input/textarea/select/button
+    const tag = e.target.tagName.toLowerCase();
+    if (['input', 'textarea', 'select', 'button'].includes(tag)) return;
+
+    const touch = e.touches ? e.touches[0] : e;
+    swipeState[workoutExerciseId] = {
+      startX: touch.clientX,
+      startY: touch.clientY,
+      swiping: true
+    };
+  }
+
+  function handleSwipeMove(workoutExerciseId, e) {
+    // Not strictly needed, but can be used for visual feedback later
+  }
+
+  function handleSwipeEnd(workoutExerciseId, e) {
+    const state = swipeState[workoutExerciseId];
+    if (!state || !state.swiping) return;
+
+    const touch = e.changedTouches ? e.changedTouches[0] : e;
+    const deltaX = touch.clientX - state.startX;
+    const deltaY = touch.clientY - state.startY;
+
+    // Reset swipe state
+    swipeState[workoutExerciseId] = { swiping: false };
+
+    // Ignore mostly-vertical gestures
+    if (Math.abs(deltaY) > Math.abs(deltaX)) return;
+
+    // Threshold for swipe detection (50px)
+    const threshold = 50;
+    if (Math.abs(deltaX) < threshold) return;
+
+    // Swipe left (negative deltaX) → next set
+    // Swipe right (positive deltaX) → previous set
+    if (deltaX < -threshold) {
+      nextSet(workoutExerciseId);
+    } else if (deltaX > threshold) {
+      prevSet(workoutExerciseId);
     }
   }
 
@@ -545,182 +826,221 @@
         </div>
       {/each}
     {:else}
-      <!-- Full tracking mode: targets at top, inputs below -->
-      {#each getCurrentSection().exercises || [] as exercise}
+      <!-- Full tracking mode: collapsible exercise buckets (accordion) -->
+      {#each getCurrentSection().exercises || [] as exercise, exIndex}
         {@const history = exerciseHistory[exercise.exerciseId]}
         {@const log = exerciseLogs[exercise.workoutExerciseId]}
         {@const hasData = hasExerciseData(exercise.workoutExerciseId)}
-        {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !hasData}
+        {@const isCompleted = isExerciseFullyCompleted(exercise.workoutExerciseId)}
+        {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !isCompleted}
         {@const repsLabel = exercise.repsMetric === 'distance' ? '' : 'reps'}
         {@const weightLabel = exercise.weightMetric === 'time' ? '' : 'lbs'}
         {@const repsHeader = exercise.repsMetric === 'distance' ? 'Distance' : 'Reps'}
         {@const weightHeader = exercise.weightMetric === 'time' ? 'Time' : 'Weight'}
         {@const nonInputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && !r.clientInput)}
         {@const inputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && r.clientInput)}
-        <div style="border: 2px solid {hasData ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: {showIncompleteHint ? '#fffde7' : 'white'}; transition: all 0.3s;">
+        {@const isExpanded = expandedExercise[currentSectionIndex] === exercise.workoutExerciseId}
+        <div style="border: 2px solid {isCompleted ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; margin-bottom: 10px; border-radius: 8px; background: {isCompleted ? '#e8f5e9' : showIncompleteHint ? '#fffde7' : 'white'}; transition: all 0.3s; overflow: hidden;">
 
-          <!-- Exercise name -->
-          <h3 style="margin: 0 0 10px 0; font-size: 1.1em;">{exercise.name}</h3>
-
-          <!-- Target details box (includes non-input custom reqs) -->
-          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 15px; border-radius: 8px; margin-bottom: 12px;">
-            <div style="font-size: 1.2em; font-weight: bold; margin-bottom: 5px;">
-              {exercise.sets || '?'} sets × {exercise.reps || '?'} {repsLabel}
-              {#if exercise.weight} @ {exercise.weight} {weightLabel}{/if}
-              {#if exercise.rir} • RIR {exercise.rir}{/if}
-            </div>
-            {#if nonInputReqs.length > 0}
-              <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
-                {#each nonInputReqs as req}
-                  <span style="background: rgba(255,255,255,0.2); padding: 3px 8px; border-radius: 4px; font-size: 0.8em;">{req.name}: {req.value}</span>
-                {/each}
-              </div>
-            {/if}
-            {#if exercise.notes}
-              <div style="font-size: 0.85em; opacity: 0.85; margin-top: 8px; font-style: italic;">{exercise.notes}</div>
-            {/if}
-          </div>
-
-          <!-- PR Badges Row -->
-          {#if history && (history.e1rm || history.lastTwo?.length > 0)}
-            <button
+          {#if isExpanded}
+            <!-- Expanded state: full-width banner replaces collapsed header -->
+            <!-- Tapping banner opens history modal; chevron excluded via stopPropagation -->
+            <div
+              class="exercise-banner"
+              style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 15px; position: relative; cursor: pointer; transition: filter 0.15s ease;"
               onclick={() => openHistoryModal(exercise.exerciseId, exercise.name)}
-              style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; padding: 10px 12px; margin-bottom: 12px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; cursor: pointer; text-align: left;"
+              role="button"
+              tabindex="0"
+              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openHistoryModal(exercise.exerciseId, exercise.name); }}
             >
-              {#if history.e1rm}
-                <span style="background: linear-gradient(135deg, #ff9800, #f57c00); color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.75em; font-weight: bold;">1RM: {history.e1rm.e1rm}</span>
-              {/if}
-              {#if history.repRanges?.['1-5']}
-                <span style="background: #e3f2fd; color: #1565c0; padding: 3px 6px; border-radius: 4px; font-size: 0.7em;">1-5: {history.repRanges['1-5'].weight}×{history.repRanges['1-5'].reps}</span>
-              {/if}
-              {#if history.repRanges?.['6-8']}
-                <span style="background: #f3e5f5; color: #7b1fa2; padding: 3px 6px; border-radius: 4px; font-size: 0.7em;">6-8: {history.repRanges['6-8'].weight}×{history.repRanges['6-8'].reps}</span>
-              {/if}
-              {#if history.repRanges?.['9-12']}
-                <span style="background: #e8f5e9; color: #2e7d32; padding: 3px 6px; border-radius: 4px; font-size: 0.7em;">9-12: {history.repRanges['9-12'].weight}×{history.repRanges['9-12'].reps}</span>
-              {/if}
-              <span style="color: #999; font-size: 0.8em; margin-left: auto;">Tap for details →</span>
-            </button>
-          {/if}
+              <!-- Chevron at top-right (collapse control) -->
+              <button
+                onclick={(e) => { e.stopPropagation(); toggleExerciseExpanded(currentSectionIndex, exercise.workoutExerciseId); }}
+                style="position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,0.15); border: none; cursor: pointer; font-size: 1.2em; color: white; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; z-index: 1;"
+              >▲</button>
 
-          <!-- Per-set input fields -->
-          {#if log && log.sets}
-            <div style="background: #fafafa; padding: 12px; border-radius: 8px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <p style="margin: 0; font-size: 0.85em; color: #666; font-weight: 500;">Log each set:</p>
-                <button
-                  onclick={() => addSet(exercise.workoutExerciseId)}
-                  style="background: #e8f5e9; border: 1px solid #4CAF50; color: #4CAF50; padding: 4px 10px; border-radius: 4px; font-size: 0.8em; cursor: pointer;"
-                >
-                  + Add Set
-                </button>
+              <!-- Line 1: Title + history chevron + Tap for history hint (with right padding for collapse chevron) -->
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding-right: 50px;">
+                <span style="font-size: 1.1em; font-weight: bold;">{exercise.name}</span>
+                <span style="color: rgba(255,255,255,0.5); font-size: 1em;">›</span>
+                <span style="color: rgba(255,255,255,0.5); font-size: 0.85em; white-space: nowrap;">Tap for history</span>
               </div>
+              <!-- Line 2: Prescription summary -->
+              <div style="font-size: 0.95em; opacity: 0.95;">{getPrescriptionSummary(exercise)}</div>
+              <!-- Line 3: RIR (if assigned) -->
+              {#if exercise.rir}
+                <div style="font-size: 0.9em; opacity: 0.9; margin-top: 4px;">RIR {exercise.rir}</div>
+              {/if}
+              <!-- Line 4: Notes (if present) -->
+              {#if exercise.notes}
+                <div style="font-size: 0.85em; opacity: 0.85; margin-top: 8px; font-style: italic; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">{exercise.notes}</div>
+              {/if}
+            </div>
 
-              <!-- Column headers -->
-              <div style="display: grid; grid-template-columns: 40px 1fr 1fr 60px 1fr 30px; gap: 6px; margin-bottom: 6px; padding: 0 2px;">
-                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Set</span>
-                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">{repsHeader}</span>
-                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">{weightHeader}</span>
-                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">RIR</span>
-                <span style="font-size: 0.7em; color: #999; text-transform: uppercase;">Notes</span>
-                <span></span>
-              </div>
+            <!-- Logging UI content (below banner) -->
+            <div style="padding: 15px;">
 
-              <!-- Set rows -->
-              {#each log.sets as set, setIndex}
-                {#if set}
-                {@const setHasData = set.reps || set.weight}
-                <div style="margin-bottom: 8px;">
-                  <div style="display: grid; grid-template-columns: 40px 1fr 1fr 60px 1fr 30px; gap: 6px; align-items: center; background: {setHasData ? '#e8f5e9' : 'white'}; padding: 8px; border-radius: 6px; border: 1px solid {setHasData ? '#c8e6c9' : '#e0e0e0'};">
-                    <!-- Set number -->
-                    <div style="font-weight: bold; color: #667eea; text-align: center;">{setIndex + 1}</div>
-
-                    <!-- Reps/Distance -->
-                    <input
-                      type="text"
-                      value={set.reps}
-                      oninput={(e) => {
-                        if (log.sets[setIndex]) {
-                          log.sets[setIndex].reps = e.target.value;
-                          exerciseLogs = { ...exerciseLogs };
-                        }
-                      }}
-                      placeholder={log.targetReps || (exercise.repsMetric === 'distance' ? 'dist' : '0')}
-                      style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
-                    />
-
-                    <!-- Weight/Time -->
-                    <input
-                      type="text"
-                      value={set.weight}
-                      oninput={(e) => {
-                        if (log.sets[setIndex]) {
-                          log.sets[setIndex].weight = e.target.value;
-                          exerciseLogs = { ...exerciseLogs };
-                        }
-                      }}
-                      placeholder={log.targetWeight || (exercise.weightMetric === 'time' ? 'time' : 'lbs')}
-                      style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
-                    />
-
-                    <!-- RIR -->
-                    <input
-                      type="text"
-                      value={set.rir}
-                      oninput={(e) => {
-                        if (log.sets[setIndex]) {
-                          log.sets[setIndex].rir = e.target.value;
-                          exerciseLogs = { ...exerciseLogs };
-                        }
-                      }}
-                      placeholder={log.targetRir || '0'}
-                      style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em; text-align: center; background: white;"
-                    />
-
-                    <!-- Notes button -->
-                    <button
-                      onclick={() => openNotesModal(exercise.workoutExerciseId, setIndex, exercise.name)}
-                      style="width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid {set.notes ? '#4CAF50' : '#ddd'}; border-radius: 4px; font-size: 0.85em; background: {set.notes ? '#e8f5e9' : 'white'}; cursor: pointer; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+              <!-- Single-set view with swipe navigation -->
+              {#if log && log.sets}
+                {@const activeIdx = getActiveSetIndex(exercise.workoutExerciseId)}
+                <div style="background: #fafafa; padding: 12px; border-radius: 8px;">
+                  <!-- Active set (single set view with swipe handling) -->
+                  {#if log.sets[activeIdx]}
+                    {@const set = log.sets[activeIdx]}
+                    {@const setIndex = activeIdx}
+                    <div
+                      style="background: white; border: 2px solid #667eea; border-radius: 8px; padding: 12px; margin-bottom: 6px; touch-action: pan-y;"
+                      ontouchstart={(e) => handleSwipeStart(exercise.workoutExerciseId, e)}
+                      ontouchend={(e) => handleSwipeEnd(exercise.workoutExerciseId, e)}
+                      onmousedown={(e) => handleSwipeStart(exercise.workoutExerciseId, e)}
+                      onmouseup={(e) => handleSwipeEnd(exercise.workoutExerciseId, e)}
                     >
-                      {set.notes || '+ Note'}
-                    </button>
+                      <!-- Set header row: add (+) left, "Set" center, delete (x) right -->
+                      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                        <!-- Green plus (add set) - left -->
+                        <button
+                          onclick={() => addSet(exercise.workoutExerciseId)}
+                          style="background: none; border: none; color: #4CAF50; cursor: pointer; font-size: 1.5em; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
+                          title="Add set"
+                        >+</button>
 
-                    <!-- Remove button -->
-                    {#if log.sets.length > 1}
-                      <button
-                        onclick={() => removeSet(exercise.workoutExerciseId, setIndex)}
-                        style="background: none; border: none; color: #999; cursor: pointer; font-size: 1.2em; padding: 0;"
-                      title="Remove set"
-                    >×</button>
-                    {:else}
-                      <div></div>
-                    {/if}
-                  </div>
-                  <!-- Per-set client input fields -->
-                  {#if inputReqs.length > 0}
-                    <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; padding-left: 46px;">
-                      {#each inputReqs as req, reqIndex}
-                        <div style="display: flex; align-items: center; gap: 4px; background: #fff8e1; padding: 4px 8px; border-radius: 4px;">
-                          <span style="font-size: 0.75em; color: #666;">{req.name}:</span>
-                          <input
-                            type="text"
-                            placeholder={req.value}
-                            value={set.customInputs?.[reqIndex] || ''}
-                            oninput={(e) => {
-                              if (!set.customInputs) set.customInputs = {};
-                              set.customInputs[reqIndex] = e.target.value;
-                              exerciseLogs = { ...exerciseLogs };
-                            }}
-                            style="width: 60px; padding: 4px 6px; border: 1px solid #ddd; border-radius: 3px; font-size: 0.8em; text-align: center;"
-                          />
+                        <!-- Center: "Set" label -->
+                        <span style="font-weight: bold; color: #667eea; font-size: 1.1em;">Set</span>
+
+                        <!-- Black x (delete set) - right -->
+                        {#if log.sets.length > 1}
+                          <button
+                            onclick={() => removeSet(exercise.workoutExerciseId, setIndex)}
+                            style="background: none; border: none; color: #000; cursor: pointer; font-size: 1.5em; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
+                            title="Remove set"
+                          >×</button>
+                        {:else}
+                          <!-- Placeholder to maintain centering when delete not shown -->
+                          <div style="min-width: 44px; min-height: 44px;"></div>
+                        {/if}
+                      </div>
+
+                      <!-- Dot indicator -->
+                      <div style="display: flex; justify-content: center; gap: 8px; margin-bottom: 10px;">
+                        {#each log.sets as dotSet, dotIndex}
+                          {@const completionState = getSetCompletionState(dotSet)}
+                          {@const isActive = dotIndex === activeIdx}
+                          <div style="width: {isActive ? '12px' : '10px'}; height: {isActive ? '12px' : '10px'}; border-radius: 50%; background: {getDotColor(completionState)}; {isActive ? 'box-shadow: 0 0 0 2px #667eea;' : ''} transition: all 0.2s;"></div>
+                        {/each}
+                      </div>
+
+                      <!-- Vertical stacked inputs -->
+                      <div style="display: flex; flex-direction: column; gap: 12px;">
+                        <!-- Reps row -->
+                        <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
+                          <span style="font-weight: 500; color: #333;">{repsHeader}</span>
+                          <div style="display: flex; align-items: center; gap: 12px;">
+                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
+                            <input
+                              type="text"
+                              value={set.reps}
+                              oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].reps = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                              placeholder={log.targetReps || '0'}
+                              style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
+                            />
+                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', 1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
+                          </div>
                         </div>
-                      {/each}
+
+                        <!-- Weight row -->
+                        <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
+                          <span style="font-weight: 500; color: #333;">{weightHeader}</span>
+                          <div style="display: flex; align-items: center; gap: 12px;">
+                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
+                            <input
+                              type="text"
+                              value={set.weight}
+                              oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].weight = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                              placeholder={log.targetWeight || '0'}
+                              style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
+                            />
+                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
+                          </div>
+                        </div>
+
+                        <!-- RIR row -->
+                        <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
+                          <span style="font-weight: 500; color: #333;">RIR</span>
+                          <div style="display: flex; align-items: center; gap: 12px;">
+                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', -1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
+                            <input
+                              type="text"
+                              value={set.rir}
+                              oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].rir = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                              placeholder={log.targetRir || '0'}
+                              style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
+                            />
+                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', 1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
+                          </div>
+                        </div>
+
+                        <!-- Notes row (collapsed by default) -->
+                        <div style="padding: 8px 0;">
+                          {#if isNotesExpanded(exercise.workoutExerciseId, setIndex)}
+                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                              <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span style="font-weight: 500; color: #333;">Notes</span>
+                                <button onclick={() => toggleNotesExpanded(exercise.workoutExerciseId, setIndex)} style="background: none; border: none; color: #667eea; cursor: pointer; font-size: 0.9em;">Collapse</button>
+                              </div>
+                              <textarea
+                                value={set.notes || ''}
+                                oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].notes = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                                placeholder="Add notes..."
+                                style="width: 100%; min-height: 80px; padding: 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.95em; resize: vertical; box-sizing: border-box;"
+                              ></textarea>
+                            </div>
+                          {:else}
+                            <button
+                              onclick={() => toggleNotesExpanded(exercise.workoutExerciseId, setIndex)}
+                              style="display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px; border: 1px solid {set.notes ? '#4CAF50' : '#ddd'}; border-radius: 6px; background: {set.notes ? '#e8f5e9' : 'white'}; cursor: pointer;"
+                            >
+                              <span style="font-weight: 500; color: #333;">Notes</span>
+                              <span style="color: {set.notes ? '#4CAF50' : '#999'}; font-size: 0.9em;">{set.notes ? 'View note' : '+ Add'}</span>
+                            </button>
+                          {/if}
+                        </div>
+
+                        <!-- Per-set client input fields -->
+                        {#if inputReqs.length > 0}
+                          {#each inputReqs as req, reqIndex}
+                            <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
+                              <span style="font-weight: 500; color: #333;">{req.name}</span>
+                              <input
+                                type="text"
+                                placeholder={req.value}
+                                value={set.customInputs?.[reqIndex] || ''}
+                                oninput={(e) => { if (!set.customInputs) set.customInputs = {}; set.customInputs[reqIndex] = e.target.value; exerciseLogs = { ...exerciseLogs }; }}
+                                style="width: 80px; padding: 8px 0; border: none; background: transparent; font-size: 1.1em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
+                              />
+                            </div>
+                          {/each}
+                        {/if}
+                      </div>
                     </div>
                   {/if}
                 </div>
-                {/if}
-              {/each}
+              {/if}
             </div>
+          {:else}
+            <!-- Collapsed state: summary header -->
+            <button
+              onclick={() => toggleExerciseExpanded(currentSectionIndex, exercise.workoutExerciseId)}
+              style="width: 100%; padding: 12px 15px; background: none; border: none; cursor: pointer; text-align: left; display: flex; align-items: center; justify-content: space-between;"
+            >
+              <div>
+                <h3 style="margin: 0; font-size: 1.1em; color: #333;">{exercise.name}</h3>
+                <p style="margin: 4px 0 0 0; font-size: 0.85em; color: #666;">{getPrescriptionSummary(exercise)}</p>
+                {#if exercise.rir}
+                  <p style="margin: 2px 0 0 0; font-size: 0.85em; color: #666;">RIR {exercise.rir}</p>
+                {/if}
+              </div>
+              <span style="font-size: 1.2em; color: #667eea; transition: transform 0.2s;">▼</span>
+            </button>
           {/if}
         </div>
       {/each}
@@ -871,3 +1191,13 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* Subtle hover/press feedback for exercise banner */
+  :global(.exercise-banner:hover) {
+    filter: brightness(1.08);
+  }
+  :global(.exercise-banner:active) {
+    filter: brightness(0.95);
+  }
+</style>
