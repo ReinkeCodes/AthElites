@@ -39,16 +39,21 @@
   // Structure: { workoutExerciseId: activeSetIndex }
   let activeSetIndices = $state({});
 
+  // Generate stable unique IDs (Firestore-based, works on all browsers including mobile Safari)
+  function generateId() {
+    return doc(collection(db, '_')).id;
+  }
+
   // Backfill missing IDs in days array, returns true if any were added
   function backfillIds(days) {
     if (!days) return false;
     let changed = false;
     for (const day of days) {
-      if (!day.workoutTemplateId) { day.workoutTemplateId = crypto.randomUUID(); changed = true; }
+      if (!day.workoutTemplateId) { day.workoutTemplateId = generateId(); changed = true; }
       for (const section of day.sections || []) {
-        if (!section.sectionTemplateId) { section.sectionTemplateId = crypto.randomUUID(); changed = true; }
+        if (!section.sectionTemplateId) { section.sectionTemplateId = generateId(); changed = true; }
         for (const exercise of section.exercises || []) {
-          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = crypto.randomUUID(); changed = true; }
+          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = generateId(); changed = true; }
         }
       }
     }

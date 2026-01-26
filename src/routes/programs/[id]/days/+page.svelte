@@ -1,31 +1,43 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, getDoc, updateDoc } from 'firebase/firestore';
+  import { doc, onSnapshot, getDoc, updateDoc, collection } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
 
   let program = $state(null);
   let userRole = $state(null);
+  let currentUserId = $state(null);
+
+  // Generate stable unique IDs (Firestore-based, works on all browsers including mobile Safari)
+  function generateId() {
+    return doc(collection(db, '_')).id;
+  }
 
   function backfillIds(days) {
     if (!days) return false;
     let changed = false;
     for (const day of days) {
-      if (!day.workoutTemplateId) { day.workoutTemplateId = crypto.randomUUID(); changed = true; }
+      if (!day.workoutTemplateId) { day.workoutTemplateId = generateId(); changed = true; }
       for (const section of day.sections || []) {
-        if (!section.sectionTemplateId) { section.sectionTemplateId = crypto.randomUUID(); changed = true; }
+        if (!section.sectionTemplateId) { section.sectionTemplateId = generateId(); changed = true; }
         for (const exercise of section.exercises || []) {
-          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = crypto.randomUUID(); changed = true; }
+          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = generateId(); changed = true; }
         }
       }
     }
     return changed;
   }
 
+  // Check if this is a client-owned program
+  function isClientOwnedProgram() {
+    return program?.createdByRole === 'client' && program?.createdByUserId === currentUserId;
+  }
+
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
       if (user) {
+        currentUserId = user.uid;
         const userDoc = await getDoc(doc(db, 'user', user.uid));
         if (userDoc.exists()) {
           userRole = userDoc.data().role;
@@ -46,8 +58,8 @@
         program = {
           id: snapshot.id,
           ...data,
-          // Use published version for clients
-          days: data.publishedDays || data.days
+          // Always use publishedDays for workouts (same infrastructure for all programs)
+          days: data.publishedDays || []
         };
       }
     });
@@ -72,7 +84,19 @@
   <h2>Select a Day</h2>
 
   {#if !program.days || program.days.length === 0}
-    <p>No workout days available yet. Check back later!</p>
+    {#if isClientOwnedProgram()}
+      <div style="background: #fff3e0; border: 2px solid #ff9800; padding: 20px; border-radius: 8px; text-align: center;">
+        <p style="margin: 0 0 10px 0; font-weight: bold; color: #e65100;">No published workouts yet</p>
+        <p style="margin: 0 0 15px 0; color: #666;">
+          You need to publish your changes before you can start workouts.
+        </p>
+        <a href="/programs/{program.id}" style="display: inline-block; padding: 10px 20px; background: #ff9800; color: white; text-decoration: none; border-radius: 5px; font-weight: bold;">
+          Go to Editor & Publish
+        </a>
+      </div>
+    {:else}
+      <p>No workout days available yet. Check back later!</p>
+    {/if}
   {:else}
     <div style="display: grid; gap: 15px;">
       {#each program.days as day, dayIndex}
