@@ -7,6 +7,7 @@
   let exercises = $state([]);
   let programs = $state([]);
   let userRole = $state(null);
+  let currentUserId = $state(null);
 
   // New exercise form
   let newName = $state('');
@@ -25,6 +26,16 @@
   let sortBy = $state('alphabetical');
   let filterType = $state('all');
 
+  // Toast notification
+  let toastMessage = $state('');
+  let toastType = $state('error'); // 'error' or 'success'
+
+  function showToast(message, type = 'error') {
+    toastMessage = message;
+    toastType = type;
+    setTimeout(() => { toastMessage = ''; }, 5000);
+  }
+
   // Default types + custom types from Firebase
   const defaultTypes = ['Compound', 'Isolation', 'Warm-up', 'Stretch', 'Cardio', 'Mobility', 'Core'];
   let customTypes = $state([]);
@@ -34,9 +45,23 @@
     return [...defaultTypes, ...customTypes, 'Other'];
   }
 
+  // Check if exercise is owned by current client user
+  function isMyExercise(exercise) {
+    return exercise.createdByRole === 'client' && exercise.createdByUserId === currentUserId;
+  }
+
   // Filtered and sorted exercises (computed)
   function getFilteredExercises() {
     let result = [...exercises];
+
+    // Role-based filtering
+    if (userRole === 'admin' || userRole === 'coach') {
+      // Coach/Admin: show only global exercises (exclude client-created)
+      result = result.filter(e => e.createdByRole !== 'client');
+    } else if (userRole === 'client') {
+      // Client: show global exercises + their own client-created exercises
+      result = result.filter(e => e.createdByRole !== 'client' || isMyExercise(e));
+    }
 
     // Filter by type
     if (filterType !== 'all') {
@@ -62,12 +87,14 @@
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
       if (user) {
+        currentUserId = user.uid;
         const userDoc = await getDoc(doc(db, 'user', user.uid));
         if (userDoc.exists()) {
           userRole = userDoc.data().role;
         }
       } else {
         userRole = null;
+        currentUserId = null;
       }
     });
 
@@ -138,13 +165,16 @@
       await saveCustomType(finalType);
     }
 
-    await updateDoc(doc(db, 'exercises', editingId), {
-      name: editName,
-      type: finalType,
-      notes: editNotes
-    });
-
-    cancelEdit();
+    try {
+      await updateDoc(doc(db, 'exercises', editingId), {
+        name: editName,
+        type: finalType,
+        notes: editNotes
+      });
+      cancelEdit();
+    } catch (err) {
+      showToast(`Failed to update exercise: ${err.message}`);
+    }
   }
 
   async function saveCustomType(typeName) {
@@ -166,18 +196,24 @@
       await saveCustomType(finalType);
     }
 
-    await addDoc(collection(db, 'exercises'), {
-      name: newName,
-      type: finalType,
-      notes: newNotes,
-      createdAt: new Date()
-    });
+    try {
+      await addDoc(collection(db, 'exercises'), {
+        name: newName,
+        type: finalType,
+        notes: newNotes,
+        createdAt: new Date(),
+        createdByRole: userRole,
+        createdByUserId: currentUserId
+      });
 
-    // Reset form
-    newName = '';
-    newType = 'Compound';
-    customType = '';
-    newNotes = '';
+      // Reset form
+      newName = '';
+      newType = 'Compound';
+      customType = '';
+      newNotes = '';
+    } catch (err) {
+      showToast(`Failed to create exercise: ${err.message}`);
+    }
   }
 
   async function deleteExercise(exercise) {
@@ -189,14 +225,18 @@
     }
 
     if (confirm(confirmMessage)) {
-      await deleteDoc(doc(db, 'exercises', exercise.id));
+      try {
+        await deleteDoc(doc(db, 'exercises', exercise.id));
+      } catch (err) {
+        showToast(`Failed to delete exercise: ${err.message}`);
+      }
     }
   }
 </script>
 
 <h1>Exercise Library</h1>
 
-{#if userRole === 'admin' || userRole === 'coach'}
+{#if userRole}
   <h2>Create Exercise</h2>
   <form onsubmit={createExercise}>
     <div style="margin-bottom: 10px;">
@@ -302,10 +342,14 @@
       {:else}
         <!-- View mode -->
         {@const usingPrograms = getProgramsUsingExercise(exercise.id)}
+        {@const isMine = isMyExercise(exercise)}
         <div style="display: flex; justify-content: space-between; align-items: start;">
           <div>
             <strong style="font-size: 1.1em;">{exercise.name}</strong>
             <span style="background: #e3f2fd; color: #1976D2; padding: 3px 8px; border-radius: 12px; margin-left: 10px; font-size: 0.8em;">{exercise.type}</span>
+            {#if isMine}
+              <span style="background: #e8f5e9; color: #388E3C; padding: 3px 8px; border-radius: 12px; margin-left: 6px; font-size: 0.8em;">My Exercise</span>
+            {/if}
             {#if exercise.notes}
               <p style="margin: 8px 0 0 0; color: #666; font-style: italic;">{exercise.notes}</p>
             {/if}
@@ -332,6 +376,21 @@
                 </button>
               {/if}
             </div>
+          {:else if userRole === 'client' && isMine}
+            <div style="display: flex; gap: 8px;">
+              <button
+                onclick={() => startEdit(exercise)}
+                style="padding: 6px 12px; background: #fff; border: 1px solid #2196F3; color: #2196F3; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
+              >
+                Edit
+              </button>
+              <button
+                onclick={() => deleteExercise(exercise)}
+                style="padding: 6px 12px; background: #fff; border: 1px solid #f44336; color: #f44336; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
+              >
+                Delete
+              </button>
+            </div>
           {/if}
         </div>
       {/if}
@@ -339,3 +398,9 @@
   {/each}
 {/if}
 
+<!-- Toast notification -->
+{#if toastMessage}
+  <div style="position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: {toastType === 'error' ? '#f44336' : '#4CAF50'}; color: white; padding: 12px 24px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 1000; max-width: 90%; text-align: center;">
+    {toastMessage}
+  </div>
+{/if}

@@ -116,11 +116,9 @@
       <a href="/history" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
         History & PRs
       </a>
-      {#if userRole === 'admin' || userRole === 'coach'}
-        <a href="/exercises" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
-          Exercise Library
-        </a>
-      {/if}
+      <a href="/exercises" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
+        Exercise Library
+      </a>
       {#if userRole === 'admin'}
         <a href="/admin/users" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
           User Roles
