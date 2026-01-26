@@ -39,16 +39,21 @@
   // Structure: { workoutExerciseId: activeSetIndex }
   let activeSetIndices = $state({});
 
+  // Generate stable unique IDs (Firestore-based, works on all browsers including mobile Safari)
+  function generateId() {
+    return doc(collection(db, '_')).id;
+  }
+
   // Backfill missing IDs in days array, returns true if any were added
   function backfillIds(days) {
     if (!days) return false;
     let changed = false;
     for (const day of days) {
-      if (!day.workoutTemplateId) { day.workoutTemplateId = crypto.randomUUID(); changed = true; }
+      if (!day.workoutTemplateId) { day.workoutTemplateId = generateId(); changed = true; }
       for (const section of day.sections || []) {
-        if (!section.sectionTemplateId) { section.sectionTemplateId = crypto.randomUUID(); changed = true; }
+        if (!section.sectionTemplateId) { section.sectionTemplateId = generateId(); changed = true; }
         for (const exercise of section.exercises || []) {
-          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = crypto.randomUUID(); changed = true; }
+          if (!exercise.workoutExerciseId) { exercise.workoutExerciseId = generateId(); changed = true; }
         }
       }
     }
@@ -566,6 +571,24 @@
     expandedExercise = { ...expandedExercise };
   }
 
+  // Get single metric label for checkbox-only sections
+  // Returns formatted label like "6 Reps" or "2 Min" if exactly one metric, else null
+  function getSingleMetricLabel(exercise) {
+    const hasReps = exercise.reps && String(exercise.reps).trim() !== '';
+    const hasWeight = exercise.weight && String(exercise.weight).trim() !== '';
+    const isTimeMetric = exercise.weightMetric === 'time';
+
+    // Single metric: only reps OR only time (excluding notes)
+    if (hasReps && !hasWeight) {
+      return `${exercise.reps} Reps`;
+    }
+    if (hasWeight && !hasReps && isTimeMetric) {
+      return `${exercise.weight}`;
+    }
+
+    return null;
+  }
+
   // Get compact prescription summary (main line, excludes RIR)
   function getPrescriptionSummary(exercise) {
     const parts = [];
@@ -791,6 +814,7 @@
       {#each getCurrentSection().exercises || [] as exercise}
         {@const isComplete = isExerciseComplete(exercise.workoutExerciseId)}
         {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !isComplete}
+        {@const singleMetric = getSingleMetricLabel(exercise)}
         <div
           style="border: 2px solid {isComplete ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; padding: 15px; margin-bottom: 10px; border-radius: 8px; background: {isComplete ? '#f1f8e9' : showIncompleteHint ? '#fffde7' : 'white'}; cursor: pointer; transition: all 0.2s;"
           onclick={() => toggleExerciseComplete(exercise.workoutExerciseId)}
@@ -803,7 +827,12 @@
             </div>
             <div style="flex: 1;">
               <h3 style="margin: 0 0 5px 0; {isComplete ? 'text-decoration: line-through; color: #888;' : ''}">{exercise.name}</h3>
-              {#if exercise.sets || exercise.reps}
+              {#if singleMetric}
+                <p style="color: #888; margin: 0; font-size: 0.9em;">{singleMetric}</p>
+                {#if exercise.notes}
+                  <p style="color: #888; margin: 2px 0 0 0; font-size: 0.9em;">{exercise.notes}</p>
+                {/if}
+              {:else if exercise.sets || exercise.reps}
                 <p style="color: #888; margin: 0; font-size: 0.9em;">
                   {#if exercise.sets}{exercise.sets} sets{/if}
                   {#if exercise.reps} × {exercise.reps}{/if}
@@ -1071,9 +1100,6 @@
   <p>Loading workout...</p>
 {/if}
 
-<nav style="margin-top: 30px;">
-  <a href="/programs/{$page.params.id}/days">← Back to Day Selection</a>
-</nav>
 
 <!-- Notes Modal -->
 {#if notesModal.open}

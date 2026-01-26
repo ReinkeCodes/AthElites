@@ -1,19 +1,181 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Helper function to get user role from user document
+    function getUserRole() {
+      return get(/databases/$(database)/documents/user/$(request.auth.uid)).data.role;
+    }
+
+    // Helper: check if exercise is global/legacy (not client-private)
+    function isGlobalExercise(data) {
+      return !('createdByRole' in data) || data.createdByRole == null || data.createdByRole in ['coach', 'admin'];
+    }
+
+    // Helper: check if exercise is client-owned by current user
+    function isOwnClientExercise(data) {
+      return data.createdByRole == 'client' && data.createdByUserId == request.auth.uid;
+    }
+
     // users collection
     match /user/{userId} {
       allow read, write: if request.auth != null;
     }
 
+    // ===== PROGRAM HELPERS =====
+
+    // Helper: check if program is global/legacy (not client-owned)
+    function isGlobalProgram(data) {
+      return !('createdByRole' in data) || data.createdByRole == null || data.createdByRole in ['coach', 'admin'];
+    }
+
+    // Helper: check if program is client-owned by current user
+    // Uses createdByUserId as canonical field (does not require createdByRole)
+    function isOwnClientProgram(data) {
+      return 'createdByUserId' in data && data.createdByUserId == request.auth.uid;
+    }
+
+    // Helper: check if user is assigned to program (handles string or list)
+    function isProgramAssignedToUser(data) {
+      return 'assignedTo' in data && (
+        (data.assignedTo is list && request.auth.uid in data.assignedTo) ||
+        (data.assignedTo is string && data.assignedTo == request.auth.uid)
+      );
+    }
+
+    // Helper: validate client self-assignment for both assignedToUids and assignedTo
+    // Validates that assignment fields (if present) only contain the client's own uid
+    function isValidClientSelfAssignment(data) {
+      // Validate assignedToUids if present
+      let uidsValid = !('assignedToUids' in data) ||
+        data.assignedToUids == null ||
+        (data.assignedToUids is list && data.assignedToUids.size() <= 1 &&
+         (data.assignedToUids.size() == 0 || request.auth.uid in data.assignedToUids));
+      // Validate assignedTo if present (backward compat)
+      let assignedValid = !('assignedTo' in data) ||
+        data.assignedTo == null ||
+        (data.assignedTo is string && data.assignedTo == request.auth.uid) ||
+        (data.assignedTo is list && data.assignedTo.size() <= 1 &&
+         (data.assignedTo.size() == 0 || request.auth.uid in data.assignedTo));
+      return uidsValid && assignedValid;
+    }
+
     // programs collection
     match /programs/{programId} {
-      allow read, write: if request.auth != null;
+      // GET (single document by ID):
+      // - Coach/Admin: can get any program
+      // - Client: can get owned or assigned programs (supports legacy assignedTo fields)
+      allow get: if request.auth != null && (
+        getUserRole() in ['coach', 'admin'] ||
+        ('createdByUserId' in resource.data && resource.data.createdByUserId == request.auth.uid) ||
+        // Canonical assignedToUids field
+        ('assignedToUids' in resource.data && request.auth.uid in resource.data.assignedToUids) ||
+        // Legacy: assignedTo as list
+        ('assignedTo' in resource.data && resource.data.assignedTo is list && request.auth.uid in resource.data.assignedTo) ||
+        // Legacy: assignedTo as string
+        ('assignedTo' in resource.data && resource.data.assignedTo is string && resource.data.assignedTo == request.auth.uid)
+      );
+
+      // LIST (queries):
+      // Coach/Admin: can list all programs
+      allow list: if request.auth != null && getUserRole() in ['coach', 'admin'];
+
+      // Client: can list owned or assigned programs
+      // NOTE: No getUserRole() here - simple field checks only for query-proofing.
+      // Uses canonical assignedToUids field for array-contains query authorization.
+      allow list: if request.auth != null && (
+        ('createdByUserId' in resource.data && resource.data.createdByUserId == request.auth.uid) ||
+        ('assignedToUids' in resource.data && request.auth.uid in resource.data.assignedToUids)
+      );
+
+      // CREATE:
+      // - Client: must set createdByRole='client', createdByUserId=own uid, assignedTo=self only
+      // - Coach/Admin: can create global programs (createdByRole missing/null or in ['coach','admin'])
+      allow create: if request.auth != null && (
+        // Client create
+        (getUserRole() == 'client' &&
+         request.resource.data.createdByRole == 'client' &&
+         request.resource.data.createdByUserId == request.auth.uid &&
+         isValidClientSelfAssignment(request.resource.data)) ||
+        // Coach/Admin create
+        (getUserRole() in ['coach', 'admin'] &&
+         (!('createdByRole' in request.resource.data) ||
+          request.resource.data.createdByRole == null ||
+          request.resource.data.createdByRole in ['coach', 'admin']))
+      );
+
+      // UPDATE:
+      // - Client: can update only own programs, cannot change ownership, assignedTo must remain self-only
+      // - Coach/Admin: can update only global programs (not client-owned)
+      allow update: if request.auth != null && (
+        // Client update: own programs only
+        (getUserRole() == 'client' &&
+         isOwnClientProgram(resource.data) &&
+         request.resource.data.createdByRole == resource.data.createdByRole &&
+         request.resource.data.createdByUserId == resource.data.createdByUserId &&
+         isValidClientSelfAssignment(request.resource.data)) ||
+        // Coach/Admin update: global programs only
+        (getUserRole() in ['coach', 'admin'] && isGlobalProgram(resource.data))
+      );
+
+      // DELETE:
+      // - Client: can delete only own programs
+      // - Coach/Admin: can delete only global programs (not client-owned)
+      allow delete: if request.auth != null && (
+        // Client delete: own programs only
+        (getUserRole() == 'client' && isOwnClientProgram(resource.data)) ||
+        // Coach/Admin delete: global programs only
+        (getUserRole() in ['coach', 'admin'] && isGlobalProgram(resource.data))
+      );
     }
 
     // exercises collection
     match /exercises/{exerciseId} {
-      allow read, write: if request.auth != null;
+      // READ:
+      // - Coach/Admin: can read ALL exercises
+      // - Client: can read global/legacy + their own client-private exercises
+      allow read: if request.auth != null && (
+        getUserRole() in ['coach', 'admin'] ||
+        isGlobalExercise(resource.data) ||
+        isOwnClientExercise(resource.data)
+      );
+
+      // CREATE:
+      // - Client: must set createdByRole='client' and createdByUserId=own uid
+      // - Coach/Admin: can create global exercises (createdByRole in ['coach','admin'] or missing)
+      allow create: if request.auth != null && (
+        // Client create: must mark as client-owned
+        (getUserRole() == 'client' &&
+         request.resource.data.createdByRole == 'client' &&
+         request.resource.data.createdByUserId == request.auth.uid) ||
+        // Coach/Admin create: global exercises
+        (getUserRole() in ['coach', 'admin'] &&
+         (!('createdByRole' in request.resource.data) ||
+          request.resource.data.createdByRole == null ||
+          request.resource.data.createdByRole in ['coach', 'admin']))
+      );
+
+      // UPDATE:
+      // - Client: can update only their own client-private exercises, cannot change ownership
+      // - Coach/Admin: can update global/legacy exercises only
+      allow update: if request.auth != null && (
+        // Client update: own client-private only, ownership fields unchanged
+        (getUserRole() == 'client' &&
+         isOwnClientExercise(resource.data) &&
+         request.resource.data.createdByRole == resource.data.createdByRole &&
+         request.resource.data.createdByUserId == resource.data.createdByUserId) ||
+        // Coach/Admin update: global/legacy only
+        (getUserRole() in ['coach', 'admin'] && isGlobalExercise(resource.data))
+      );
+
+      // DELETE:
+      // - Client: can delete only their own client-private exercises
+      // - Coach/Admin: can delete global/legacy exercises only
+      allow delete: if request.auth != null && (
+        // Client delete: own client-private only
+        (getUserRole() == 'client' && isOwnClientExercise(resource.data)) ||
+        // Coach/Admin delete: global/legacy only
+        (getUserRole() in ['coach', 'admin'] && isGlobalExercise(resource.data))
+      );
     }
 
     // settings collection

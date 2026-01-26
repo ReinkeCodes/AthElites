@@ -4,11 +4,29 @@
   import { onAuthStateChanged, signOut } from 'firebase/auth';
   import { doc, getDoc } from 'firebase/firestore';
   import { onMount } from 'svelte';
+  import { page } from '$app/stores';
 
   let { children } = $props();
   let user = $state(null);
   let userRole = $state(null);
   let menuOpen = $state(false);
+
+  // Pages that have back navigation (previously had "Back to..." links)
+  const backNavPages = [
+    '/programs',
+    '/exercises',
+    '/log',
+    '/history',
+    '/profile',
+    '/admin/users'
+  ];
+
+  // Check if back arrow should be visible
+  function showBackArrow(pathname) {
+    if (pathname === '/') return false; // Never on home
+    // Show on explicit back-nav pages or any nested program/workout pages
+    return backNavPages.includes(pathname) || pathname.startsWith('/programs/');
+  }
 
   onMount(() => {
     onAuthStateChanged(auth, async (u) => {
@@ -70,6 +88,16 @@
     {/if}
   </div>
 
+  <!-- Back Arrow (visible when not on home, not menu open, and on back-nav page) -->
+  {#if user && !menuOpen && showBackArrow($page.url.pathname)}
+    <button
+      onclick={() => history.back()}
+      class="back-arrow"
+      aria-label="Back"
+      title="Back"
+    >←</button>
+  {/if}
+
   {#if menuOpen && user}
     <div style="padding-top: 15px; border-top: 1px solid #555; margin-top: 10px;">
       <div style="color: #aaa; font-size: 0.9em; margin-bottom: 10px;">
@@ -88,11 +116,9 @@
       <a href="/history" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
         History & PRs
       </a>
-      {#if userRole === 'admin' || userRole === 'coach'}
-        <a href="/exercises" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
-          Exercise Library
-        </a>
-      {/if}
+      <a href="/exercises" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
+        Exercise Library
+      </a>
       {#if userRole === 'admin'}
         <a href="/admin/users" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
           User Roles
@@ -114,3 +140,29 @@
 <main style="padding: 15px; max-width: 800px; margin: 0 auto;">
   {@render children()}
 </main>
+
+<style>
+  .back-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    margin-top: 8px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    font-size: 1.2em;
+    color: white;
+    cursor: pointer;
+    transition: transform 0.1s ease, background 0.15s ease;
+    line-height: 1;
+  }
+  .back-arrow:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .back-arrow:active {
+    transform: scale(0.9);
+    color: #d4a574;
+  }
+</style>

@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc, getDocs } from 'firebase/firestore';
+  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc, getDocs, query, where } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -57,9 +57,9 @@
   let dropTargetSection = $state(null); // "dayIndex-sectionIndex"
   let dropTargetExerciseIndex = $state(null); // index within section for reorder
 
-  // Generate stable unique IDs
+  // Generate stable unique IDs (Firestore-based, works on all browsers including mobile Safari)
   function generateId() {
-    return crypto.randomUUID();
+    return doc(collection(db, '_')).id;
   }
 
   // Backfill missing IDs on days/sections/exercises, returns true if any were added
@@ -78,15 +78,70 @@
     return changed;
   }
 
+  let currentUserId = $state(null);
+  let accessChecked = $state(false);
+
+  // Check if current user owns this client-created program
+  function isOwnClientProgram() {
+    return program?.createdByRole === 'client' && program?.createdByUserId === currentUserId;
+  }
+
+  // Check access and redirect if needed - only runs once when both userRole and program are loaded
+  function checkAccessAndRedirect() {
+    const programId = $page.params.id;
+
+    // DEBUG logging (REMOVE AFTER FIX)
+    console.log('[DEBUG] checkAccessAndRedirect called:', {
+      userRole,
+      currentUserId,
+      programId,
+      programExists: !!program,
+      createdByRole: program?.createdByRole,
+      createdByUserId: program?.createdByUserId,
+      assignedTo: program?.assignedTo,
+      assignedToType: typeof program?.assignedTo,
+      accessChecked
+    });
+
+    // Wait for both userRole and program to be loaded
+    if (!userRole || !program || !currentUserId) {
+      console.log('[DEBUG] Waiting for data - userRole:', userRole, 'program:', !!program, 'currentUserId:', currentUserId);
+      return;
+    }
+
+    // Only check once
+    if (accessChecked) return;
+    accessChecked = true;
+
+    // Admin/Coach can access any program (except client-created, but UI filters that)
+    if (userRole === 'admin' || userRole === 'coach') {
+      console.log('[DEBUG] Admin/Coach access granted');
+      return;
+    }
+
+    // Client access check
+    const isOwner = program.createdByRole === 'client' && program.createdByUserId === currentUserId;
+    const isAssigned = Array.isArray(program.assignedTo) && program.assignedTo.includes(currentUserId);
+
+    console.log('[DEBUG] Client access check:', { isOwner, isAssigned });
+
+    if (!isOwner && !isAssigned) {
+      console.log('[DEBUG] Redirecting - client does not own and is not assigned');
+      goto(`/programs/${programId}/days`);
+    } else {
+      console.log('[DEBUG] Client access granted - isOwner:', isOwner, 'isAssigned:', isAssigned);
+    }
+  }
+
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
       if (user) {
+        currentUserId = user.uid;
         const userDoc = await getDoc(doc(db, 'user', user.uid));
         if (userDoc.exists()) {
           userRole = userDoc.data().role;
-          if (userDoc.data().role !== 'admin' && userDoc.data().role !== 'coach') {
-            goto(`/programs/${$page.params.id}/days`);
-          }
+          // Check access after role is loaded
+          checkAccessAndRedirect();
         }
       }
     });
@@ -95,6 +150,10 @@
     onSnapshot(doc(db, 'programs', programId), (snapshot) => {
       if (snapshot.exists()) {
         program = { id: snapshot.id, ...snapshot.data() };
+
+        // Check access after program is loaded
+        checkAccessAndRedirect();
+
         // Backfill missing IDs in both days and publishedDays
         const daysChanged = backfillIds(program.days);
         const publishedChanged = backfillIds(program.publishedDays);
@@ -117,18 +176,60 @@
       exercises = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     });
 
-    // Load all programs for copy day feature
-    onSnapshot(collection(db, 'programs'), (snapshot) => {
-      allPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    });
+    // Load all programs for copy day feature (admin/coach only)
+    // This will be re-initialized after role is determined
+  });
+
+  // Watch for role changes and load programs appropriately
+  $effect(() => {
+    if (!userRole || !currentUserId) return;
+
+    if (userRole === 'admin' || userRole === 'coach') {
+      // Admin/Coach can load all programs for copy feature
+      const unsub = onSnapshot(collection(db, 'programs'),
+        (snapshot) => {
+          allPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        },
+        (error) => {
+          console.error('Failed to load programs for copy feature:', error.code, error.message);
+          toastMessage = `Failed to load programs: ${error.code}`;
+          setTimeout(() => { toastMessage = ''; }, 5000);
+        }
+      );
+      return () => unsub();
+    } else if (userRole === 'client') {
+      // Client: load only their own programs for copy feature
+      const ownedQuery = query(
+        collection(db, 'programs'),
+        where('createdByUserId', '==', currentUserId)
+      );
+      const unsub = onSnapshot(ownedQuery,
+        (snapshot) => {
+          allPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        },
+        (error) => {
+          console.error('Failed to load programs for copy feature:', error.code, error.message);
+          toastMessage = `Failed to load programs: ${error.code}`;
+          setTimeout(() => { toastMessage = ''; }, 5000);
+        }
+      );
+      return () => unsub();
+    }
   });
 
   async function toggleAssignment(clientId) {
-    const currentAssigned = program.assignedTo || [];
-    const newAssigned = currentAssigned.includes(clientId)
-      ? currentAssigned.filter(id => id !== clientId)
-      : [...currentAssigned, clientId];
-    await updateDoc(doc(db, 'programs', program.id), { assignedTo: newAssigned });
+    // Use assignedToUids as canonical, fall back to assignedTo for legacy data
+    const currentAssigned = program.assignedToUids || program.assignedTo || [];
+    // Handle legacy string format
+    const currentList = Array.isArray(currentAssigned) ? currentAssigned : [currentAssigned];
+    const newAssigned = currentList.includes(clientId)
+      ? currentList.filter(id => id !== clientId)
+      : [...currentList, clientId];
+    // Write to both assignedToUids (canonical) and assignedTo (backward compat)
+    await updateDoc(doc(db, 'programs', program.id), {
+      assignedToUids: newAssigned,
+      assignedTo: newAssigned
+    });
   }
 
   // Day functions
@@ -570,117 +671,168 @@
   }
 </script>
 
-{#if program && (userRole === 'admin' || userRole === 'coach')}
+{#if program && (userRole === 'admin' || userRole === 'coach' || isOwnClientProgram())}
   <h1>{program.name}</h1>
   {#if program.description}
     <p style="color: #666;">{program.description}</p>
   {/if}
 
-  {#if program.isClientCopy}
+  {#if isOwnClientProgram()}
+    <div style="background: #e8f5e9; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; font-size: 0.9em;">
+      <strong style="color: #388E3C;">Self-made Program</strong> — You can edit this program
+    </div>
+
+    <!-- Client Publish Section -->
+    {#if hasUnpublishedChanges}
+      <div style="background: #fff3e0; border: 2px solid #ff9800; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <strong style="color: #e65100;">Unpublished Changes</strong>
+            <p style="margin: 5px 0 0 0; font-size: 0.9em; color: #666;">
+              Your workouts won't reflect edits until you publish.
+            </p>
+          </div>
+          <button
+            onclick={publishChanges}
+            disabled={publishing}
+            style="padding: 10px 20px; background: #ff9800; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 5px;"
+          >
+            {publishing ? 'Publishing...' : 'Publish Changes'}
+          </button>
+        </div>
+      </div>
+    {:else if program.lastPublished}
+      <div style="background: #e8f5e9; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; font-size: 0.9em; color: #2e7d32;">
+        ✓ Published — Your workouts are up to date
+      </div>
+    {:else if program.days && program.days.length > 0}
+      <!-- Has days but never published -->
+      <div style="background: #fff3e0; border: 2px solid #ff9800; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <strong style="color: #e65100;">Ready to Publish</strong>
+            <p style="margin: 5px 0 0 0; font-size: 0.9em; color: #666;">
+              Publish your program to start workouts.
+            </p>
+          </div>
+          <button
+            onclick={publishChanges}
+            disabled={publishing}
+            style="padding: 10px 20px; background: #ff9800; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 5px;"
+          >
+            {publishing ? 'Publishing...' : 'Publish Changes'}
+          </button>
+        </div>
+      </div>
+    {/if}
+  {:else if program.isClientCopy}
     <div style="background: #e3f2fd; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; font-size: 0.9em;">
       <strong>Custom Program</strong> — Created for {getClientName(program.createdFor)}
     </div>
   {/if}
 
-  <!-- Publish Status Banner -->
-  {#if hasUnpublishedChanges}
-    <div style="background: #fff3e0; border: 2px solid #ff9800; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-        <div>
-          <strong style="color: #e65100;">Unpublished Changes</strong>
-          <p style="margin: 5px 0 0 0; font-size: 0.9em; color: #666;">
-            Clients won't see your changes until you publish.
-          </p>
-        </div>
-        <button
-          onclick={publishChanges}
-          disabled={publishing}
-          style="padding: 10px 20px; background: #ff9800; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 5px;"
-        >
-          {publishing ? 'Publishing...' : 'Publish to Clients'}
-        </button>
-      </div>
-    </div>
-  {:else if program.lastPublished}
-    <div style="background: #e8f5e9; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; font-size: 0.9em; color: #2e7d32;">
-      Published — Clients see the latest version
-    </div>
-  {/if}
-
-  <!-- Action Buttons -->
-  <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
-    <button onclick={() => showCopyModal = true} style="padding: 10px 15px; background: #2196F3; color: white; border: none; cursor: pointer; border-radius: 5px;">
-      Create Copy for Client
-    </button>
-  </div>
-
-  <!-- Copy Modal -->
-  {#if showCopyModal}
-    <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;">
-      <div style="background: white; padding: 25px; border-radius: 10px; max-width: 400px; width: 100%;">
-        <h3 style="margin: 0 0 15px 0;">Create Custom Copy</h3>
-        <p style="color: #666; margin-bottom: 15px;">
-          This will create a separate version of "{program.name}" specifically for one client. Changes to this copy won't affect the original.
-        </p>
-
-        <label style="display: block; margin-bottom: 15px;">
-          <strong>Select Client:</strong>
-          <select bind:value={selectedClientForCopy} style="width: 100%; padding: 10px; margin-top: 5px;">
-            <option value="">-- Choose a client --</option>
-            {#each clients as client}
-              <option value={client.id}>{client.displayName || client.email}</option>
-            {/each}
-          </select>
-        </label>
-
-        {#if selectedClientForCopy}
-          <p style="background: #f5f5f5; padding: 10px; border-radius: 5px; font-size: 0.9em;">
-            New program will be named: <strong>"{program.name} ({getClientName(selectedClientForCopy)})"</strong>
-          </p>
-        {/if}
-
-        <div style="display: flex; gap: 10px; margin-top: 20px;">
+  <!-- Admin/Coach only features -->
+  {#if userRole === 'admin' || userRole === 'coach'}
+    <!-- Publish Status Banner -->
+    {#if hasUnpublishedChanges}
+      <div style="background: #fff3e0; border: 2px solid #ff9800; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+          <div>
+            <strong style="color: #e65100;">Unpublished Changes</strong>
+            <p style="margin: 5px 0 0 0; font-size: 0.9em; color: #666;">
+              Clients won't see your changes until you publish.
+            </p>
+          </div>
           <button
-            onclick={createClientCopy}
-            disabled={!selectedClientForCopy}
-            style="flex: 1; padding: 12px; background: {selectedClientForCopy ? '#4CAF50' : '#ccc'}; color: white; border: none; cursor: {selectedClientForCopy ? 'pointer' : 'not-allowed'}; border-radius: 5px;"
+            onclick={publishChanges}
+            disabled={publishing}
+            style="padding: 10px 20px; background: #ff9800; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 5px;"
           >
-            Create Copy
-          </button>
-          <button onclick={() => { showCopyModal = false; selectedClientForCopy = ''; }} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
-            Cancel
+            {publishing ? 'Publishing...' : 'Publish to Clients'}
           </button>
         </div>
       </div>
-    </div>
-  {/if}
+    {:else if program.lastPublished}
+      <div style="background: #e8f5e9; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; font-size: 0.9em; color: #2e7d32;">
+        Published — Clients see the latest version
+      </div>
+    {/if}
 
-  <!-- Assign to Users -->
-  <details style="margin-bottom: 20px;">
-    <summary style="cursor: pointer; font-weight: bold;">Assign to Users ({program.assignedTo?.length || 0} assigned)</summary>
-    <div style="padding: 10px; background: #f5f5f5; margin-top: 5px;">
-      {#if clients.length === 0}
-        <p>No users yet.</p>
-      {:else}
-        {#each clients as client}
-          <label style="display: block; margin: 5px 0;">
-            <input
-              type="checkbox"
-              checked={program.assignedTo?.includes(client.id)}
-              onchange={() => toggleAssignment(client.id)}
-            />
-            {client.displayName || client.email}
-            {#if client.role && client.role !== 'client'}
-              <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
-            {/if}
-            {#if client.displayName}
-              <span style="color: #888; font-size: 0.85em;">({client.email})</span>
-            {/if}
-          </label>
-        {/each}
-      {/if}
+    <!-- Action Buttons -->
+    <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
+      <button onclick={() => showCopyModal = true} style="padding: 10px 15px; background: #2196F3; color: white; border: none; cursor: pointer; border-radius: 5px;">
+        Create Copy for Client
+      </button>
     </div>
-  </details>
+
+    <!-- Copy Modal -->
+    {#if showCopyModal}
+      <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;">
+        <div style="background: white; padding: 25px; border-radius: 10px; max-width: 400px; width: 100%;">
+          <h3 style="margin: 0 0 15px 0;">Create Custom Copy</h3>
+          <p style="color: #666; margin-bottom: 15px;">
+            This will create a separate version of "{program.name}" specifically for one client. Changes to this copy won't affect the original.
+          </p>
+
+          <label style="display: block; margin-bottom: 15px;">
+            <strong>Select Client:</strong>
+            <select bind:value={selectedClientForCopy} style="width: 100%; padding: 10px; margin-top: 5px;">
+              <option value="">-- Choose a client --</option>
+              {#each clients as client}
+                <option value={client.id}>{client.displayName || client.email}</option>
+              {/each}
+            </select>
+          </label>
+
+          {#if selectedClientForCopy}
+            <p style="background: #f5f5f5; padding: 10px; border-radius: 5px; font-size: 0.9em;">
+              New program will be named: <strong>"{program.name} ({getClientName(selectedClientForCopy)})"</strong>
+            </p>
+          {/if}
+
+          <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button
+              onclick={createClientCopy}
+              disabled={!selectedClientForCopy}
+              style="flex: 1; padding: 12px; background: {selectedClientForCopy ? '#4CAF50' : '#ccc'}; color: white; border: none; cursor: {selectedClientForCopy ? 'pointer' : 'not-allowed'}; border-radius: 5px;"
+            >
+              Create Copy
+            </button>
+            <button onclick={() => { showCopyModal = false; selectedClientForCopy = ''; }} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Assign to Users -->
+    <details style="margin-bottom: 20px;">
+      <summary style="cursor: pointer; font-weight: bold;">Assign to Users ({program.assignedTo?.length || 0} assigned)</summary>
+      <div style="padding: 10px; background: #f5f5f5; margin-top: 5px;">
+        {#if clients.length === 0}
+          <p>No users yet.</p>
+        {:else}
+          {#each clients as client}
+            <label style="display: block; margin: 5px 0;">
+              <input
+                type="checkbox"
+                checked={program.assignedTo?.includes(client.id)}
+                onchange={() => toggleAssignment(client.id)}
+              />
+              {client.displayName || client.email}
+              {#if client.role && client.role !== 'client'}
+                <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+              {/if}
+              {#if client.displayName}
+                <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+              {/if}
+            </label>
+          {/each}
+        {/if}
+      </div>
+    </details>
+  {/if}
 
   <!-- Add Day -->
   <h2>Days</h2>
@@ -709,7 +861,9 @@
               <button onclick={() => expandedDay = expandedDay === dayIndex ? null : dayIndex}>
                 {expandedDay === dayIndex ? 'Collapse' : 'Expand'}
               </button>
-              <button onclick={() => openCopyDayModal(dayIndex)} style="background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
+              {#if userRole === 'admin' || userRole === 'coach'}
+                <button onclick={() => openCopyDayModal(dayIndex)} style="background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
+              {/if}
               <button onclick={() => startEditDay(dayIndex)}>Rename</button>
               <button onclick={() => deleteDay(dayIndex)}>Delete</button>
             </div>
@@ -763,7 +917,9 @@
                     </div>
                     <div style="display: flex; gap: 5px;">
                       <button onclick={() => startEditSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Edit</button>
-                      <button onclick={() => openCopySectionModal(dayIndex, sectionIndex)} style="font-size: 0.8em; background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
+                      {#if userRole === 'admin' || userRole === 'coach'}
+                        <button onclick={() => openCopySectionModal(dayIndex, sectionIndex)} style="font-size: 0.8em; background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
+                      {/if}
                       <button onclick={() => deleteSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Remove</button>
                     </div>
                   </div>
@@ -955,10 +1111,11 @@
       </div>
     {/each}
   {/if}
-{:else if program}
-  <p>Redirecting...</p>
-{:else}
+{:else if !program || !userRole}
   <p>Loading...</p>
+{:else}
+  <!-- User doesn't have access - redirect in progress -->
+  <p>Redirecting...</p>
 {/if}
 
 <!-- Copy Day Modal -->
@@ -1084,6 +1241,3 @@
   </div>
 {/if}
 
-<nav style="margin-top: 20px;">
-  <a href="/programs">← Back to Programs</a>
-</nav>

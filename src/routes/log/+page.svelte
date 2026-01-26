@@ -71,6 +71,3 @@
     <p>{entry.date} - {entry.exercise}: {entry.weight}lbs x {entry.reps} reps</p>
   {/each}
 
-    <nav>
-    <a href="/">← Back to Home</a>
-  </nav>
