@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, setDoc, updateDoc, getDocs } from 'firebase/firestore';
+  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, setDoc, updateDoc, getDocs, query, where } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
 
@@ -88,9 +88,16 @@
     onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUserId = user.uid;
-        const userDoc = await getDoc(doc(db, 'user', user.uid));
-        if (userDoc.exists()) {
-          userRole = userDoc.data().role;
+        try {
+          const userDoc = await getDoc(doc(db, 'user', user.uid));
+          if (userDoc.exists()) {
+            userRole = userDoc.data().role;
+          } else {
+            showToast('User profile not found');
+          }
+        } catch (e) {
+          console.error('Failed to load user role:', e.code, e.message);
+          showToast(`Failed to load profile: ${e.message}`);
         }
       } else {
         userRole = null;
@@ -98,15 +105,16 @@
       }
     });
 
-    // Load exercises
-    onSnapshot(collection(db, 'exercises'), (snapshot) => {
-      exercises = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    });
-
-    // Load programs (to check exercise usage)
-    onSnapshot(collection(db, 'programs'), (snapshot) => {
-      programs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    });
+    // Load exercises with error handling
+    onSnapshot(collection(db, 'exercises'),
+      (snapshot) => {
+        exercises = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      },
+      (error) => {
+        console.error('Failed to load exercises:', error.code, error.message);
+        showToast(`Failed to load exercises: ${error.code} - ${error.message}`);
+      }
+    );
 
     // Load custom types
     onSnapshot(doc(db, 'settings', 'exerciseTypes'), (snapshot) => {
@@ -114,6 +122,70 @@
         customTypes = snapshot.data().types || [];
       }
     });
+  });
+
+  // Load programs based on role (to check exercise usage)
+  $effect(() => {
+    if (!userRole || !currentUserId) return;
+
+    if (userRole === 'admin' || userRole === 'coach') {
+      // Admin/Coach can load all programs
+      const unsub = onSnapshot(collection(db, 'programs'),
+        (snapshot) => {
+          programs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        },
+        (error) => {
+          console.error('Failed to load programs:', error.code, error.message);
+          showToast(`Failed to load programs: ${error.code} - ${error.message}`);
+        }
+      );
+      return () => unsub();
+    } else if (userRole === 'client') {
+      // Client: load owned + assigned programs
+      let ownedPrograms = [];
+      let assignedPrograms = [];
+
+      const ownedQuery = query(
+        collection(db, 'programs'),
+        where('createdByUserId', '==', currentUserId)
+      );
+      // Use canonical assignedToUids field for array-contains query
+      const assignedQuery = query(
+        collection(db, 'programs'),
+        where('assignedToUids', 'array-contains', currentUserId)
+      );
+
+      const unsub1 = onSnapshot(ownedQuery,
+        (snapshot) => {
+          ownedPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          const merged = [...ownedPrograms, ...assignedPrograms];
+          const uniqueMap = new Map(merged.map(p => [p.id, p]));
+          programs = Array.from(uniqueMap.values());
+        },
+        (error) => {
+          console.error('Failed to load owned programs:', error.code, error.message);
+          showToast(`Permission error: ${error.code} - ${error.message}`);
+        }
+      );
+
+      const unsub2 = onSnapshot(assignedQuery,
+        (snapshot) => {
+          assignedPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          const merged = [...ownedPrograms, ...assignedPrograms];
+          const uniqueMap = new Map(merged.map(p => [p.id, p]));
+          programs = Array.from(uniqueMap.values());
+        },
+        (error) => {
+          console.error('Failed to load assigned programs:', error.code, error.message);
+          showToast(`Permission error: ${error.code} - ${error.message}`);
+        }
+      );
+
+      return () => {
+        unsub1();
+        unsub2();
+      };
+    }
   });
 
   // Find which programs use a specific exercise

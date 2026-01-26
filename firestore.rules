@@ -21,63 +21,110 @@ service cloud.firestore {
       allow read, write: if request.auth != null;
     }
 
-    // Helper: check if program is client-owned by current user
-    function isOwnClientProgram(data) {
-      return data.createdByRole == 'client' && data.createdByUserId == request.auth.uid;
+    // ===== PROGRAM HELPERS =====
+
+    // Helper: check if program is global/legacy (not client-owned)
+    function isGlobalProgram(data) {
+      return !('createdByRole' in data) || data.createdByRole == null || data.createdByRole in ['coach', 'admin'];
     }
 
-    // Helper: check if user is assigned to program
-    function isAssignedToProgram(data) {
-      return request.auth.uid in data.assignedTo;
+    // Helper: check if program is client-owned by current user
+    // Uses createdByUserId as canonical field (does not require createdByRole)
+    function isOwnClientProgram(data) {
+      return 'createdByUserId' in data && data.createdByUserId == request.auth.uid;
+    }
+
+    // Helper: check if user is assigned to program (handles string or list)
+    function isProgramAssignedToUser(data) {
+      return 'assignedTo' in data && (
+        (data.assignedTo is list && request.auth.uid in data.assignedTo) ||
+        (data.assignedTo is string && data.assignedTo == request.auth.uid)
+      );
+    }
+
+    // Helper: validate client self-assignment for both assignedToUids and assignedTo
+    // Validates that assignment fields (if present) only contain the client's own uid
+    function isValidClientSelfAssignment(data) {
+      // Validate assignedToUids if present
+      let uidsValid = !('assignedToUids' in data) ||
+        data.assignedToUids == null ||
+        (data.assignedToUids is list && data.assignedToUids.size() <= 1 &&
+         (data.assignedToUids.size() == 0 || request.auth.uid in data.assignedToUids));
+      // Validate assignedTo if present (backward compat)
+      let assignedValid = !('assignedTo' in data) ||
+        data.assignedTo == null ||
+        (data.assignedTo is string && data.assignedTo == request.auth.uid) ||
+        (data.assignedTo is list && data.assignedTo.size() <= 1 &&
+         (data.assignedTo.size() == 0 || request.auth.uid in data.assignedTo));
+      return uidsValid && assignedValid;
     }
 
     // programs collection
     match /programs/{programId} {
-      // READ:
-      // - Coach/Admin: can read ALL programs (except client-created, filtered in UI)
-      // - Client: can read programs assigned to them OR their own client-created programs
-      allow read: if request.auth != null && (
+      // GET (single document by ID):
+      // - Coach/Admin: can get any program
+      // - Client: can get owned or assigned programs (supports legacy assignedTo fields)
+      allow get: if request.auth != null && (
         getUserRole() in ['coach', 'admin'] ||
-        isAssignedToProgram(resource.data) ||
-        isOwnClientProgram(resource.data)
+        ('createdByUserId' in resource.data && resource.data.createdByUserId == request.auth.uid) ||
+        // Canonical assignedToUids field
+        ('assignedToUids' in resource.data && request.auth.uid in resource.data.assignedToUids) ||
+        // Legacy: assignedTo as list
+        ('assignedTo' in resource.data && resource.data.assignedTo is list && request.auth.uid in resource.data.assignedTo) ||
+        // Legacy: assignedTo as string
+        ('assignedTo' in resource.data && resource.data.assignedTo is string && resource.data.assignedTo == request.auth.uid)
+      );
+
+      // LIST (queries):
+      // Coach/Admin: can list all programs
+      allow list: if request.auth != null && getUserRole() in ['coach', 'admin'];
+
+      // Client: can list owned or assigned programs
+      // NOTE: No getUserRole() here - simple field checks only for query-proofing.
+      // Uses canonical assignedToUids field for array-contains query authorization.
+      allow list: if request.auth != null && (
+        ('createdByUserId' in resource.data && resource.data.createdByUserId == request.auth.uid) ||
+        ('assignedToUids' in resource.data && request.auth.uid in resource.data.assignedToUids)
       );
 
       // CREATE:
-      // - Client: must set createdByRole='client', createdByUserId=own uid, assignedTo=[self only]
-      // - Coach/Admin: can create any program
+      // - Client: must set createdByRole='client', createdByUserId=own uid, assignedTo=self only
+      // - Coach/Admin: can create global programs (createdByRole missing/null or in ['coach','admin'])
       allow create: if request.auth != null && (
-        // Client create: must mark as client-owned and assign only to self
+        // Client create
         (getUserRole() == 'client' &&
          request.resource.data.createdByRole == 'client' &&
          request.resource.data.createdByUserId == request.auth.uid &&
-         request.resource.data.assignedTo.size() == 1 &&
-         request.resource.data.assignedTo[0] == request.auth.uid) ||
-        // Coach/Admin create: any program
-        getUserRole() in ['coach', 'admin']
+         isValidClientSelfAssignment(request.resource.data)) ||
+        // Coach/Admin create
+        (getUserRole() in ['coach', 'admin'] &&
+         (!('createdByRole' in request.resource.data) ||
+          request.resource.data.createdByRole == null ||
+          request.resource.data.createdByRole in ['coach', 'admin']))
       );
 
       // UPDATE:
-      // - Client: can update only their own client-created programs, cannot change ownership or assignedTo
-      // - Coach/Admin: can update any program that is not client-created
+      // - Client: can update only own programs, cannot change ownership, assignedTo must remain self-only
+      // - Coach/Admin: can update only global programs (not client-owned)
       allow update: if request.auth != null && (
-        // Client update: own client-created only, ownership and assignedTo unchanged
+        // Client update: own programs only
         (getUserRole() == 'client' &&
          isOwnClientProgram(resource.data) &&
          request.resource.data.createdByRole == resource.data.createdByRole &&
          request.resource.data.createdByUserId == resource.data.createdByUserId &&
-         request.resource.data.assignedTo == resource.data.assignedTo) ||
-        // Coach/Admin update: any non-client-created program
-        (getUserRole() in ['coach', 'admin'] && resource.data.createdByRole != 'client')
+         isValidClientSelfAssignment(request.resource.data)) ||
+        // Coach/Admin update: global programs only
+        (getUserRole() in ['coach', 'admin'] && isGlobalProgram(resource.data))
       );
 
       // DELETE:
-      // - Client: can delete only their own client-created programs
-      // - Coach/Admin: can delete any program that is not client-created
+      // - Client: can delete only own programs
+      // - Coach/Admin: can delete only global programs (not client-owned)
       allow delete: if request.auth != null && (
-        // Client delete: own client-created only
+        // Client delete: own programs only
         (getUserRole() == 'client' && isOwnClientProgram(resource.data)) ||
-        // Coach/Admin delete: any non-client-created program
-        (getUserRole() in ['coach', 'admin'] && resource.data.createdByRole != 'client')
+        // Coach/Admin delete: global programs only
+        (getUserRole() in ['coach', 'admin'] && isGlobalProgram(resource.data))
       );
     }
 

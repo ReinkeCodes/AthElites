@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+  import { collection, doc, getDoc, updateDoc, onSnapshot, getDocs } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -104,6 +104,63 @@
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     return date.toLocaleDateString();
   }
+
+  // Migration state
+  let migrationStatus = $state('');
+  let migrating = $state(false);
+
+  // Migrate programs: convert assignedTo to assignedToUids
+  async function migrateAssignedToUids() {
+    if (userRole !== 'admin') return;
+    migrating = true;
+    migrationStatus = 'Starting migration...';
+
+    try {
+      const programsSnapshot = await getDocs(collection(db, 'programs'));
+      let migrated = 0;
+      let skipped = 0;
+      let errors = 0;
+
+      for (const programDoc of programsSnapshot.docs) {
+        const data = programDoc.data();
+
+        // Skip if assignedToUids already exists and is populated
+        if (data.assignedToUids && Array.isArray(data.assignedToUids) && data.assignedToUids.length > 0) {
+          skipped++;
+          continue;
+        }
+
+        // Determine new assignedToUids value
+        let newAssignedToUids = [];
+        if (data.assignedTo) {
+          if (Array.isArray(data.assignedTo)) {
+            newAssignedToUids = data.assignedTo;
+          } else if (typeof data.assignedTo === 'string' && data.assignedTo) {
+            newAssignedToUids = [data.assignedTo];
+          }
+        }
+
+        // Update the document
+        try {
+          await updateDoc(doc(db, 'programs', programDoc.id), {
+            assignedToUids: newAssignedToUids
+          });
+          migrated++;
+          migrationStatus = `Migrating... ${migrated} updated, ${skipped} skipped`;
+        } catch (e) {
+          console.error('Failed to migrate program:', programDoc.id, e);
+          errors++;
+        }
+      }
+
+      migrationStatus = `Migration complete: ${migrated} updated, ${skipped} already had assignedToUids, ${errors} errors`;
+    } catch (e) {
+      console.error('Migration failed:', e);
+      migrationStatus = `Migration failed: ${e.message}`;
+    }
+
+    migrating = false;
+  }
 </script>
 
 <h1>User Roles</h1>
@@ -167,5 +224,29 @@
         </div>
       </div>
     {/each}
+  </div>
+
+  <!-- Migration Section -->
+  <div style="margin-top: 40px; padding-top: 20px; border-top: 2px solid #eee;">
+    <h2>Database Migrations</h2>
+    <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+      <h3 style="margin: 0 0 10px 0; font-size: 1em;">Migrate assignedTo → assignedToUids</h3>
+      <p style="color: #666; font-size: 0.9em; margin: 0 0 15px 0;">
+        Converts legacy string/array assignedTo field to canonical assignedToUids list field on all programs.
+        Safe to run multiple times - skips programs that already have assignedToUids.
+      </p>
+      <button
+        onclick={migrateAssignedToUids}
+        disabled={migrating}
+        style="padding: 10px 20px; background: {migrating ? '#ccc' : '#ff9800'}; color: white; border: none; border-radius: 5px; cursor: {migrating ? 'not-allowed' : 'pointer'};"
+      >
+        {migrating ? 'Migrating...' : 'Run Migration'}
+      </button>
+      {#if migrationStatus}
+        <p style="margin: 10px 0 0 0; padding: 10px; background: {migrationStatus.includes('failed') || migrationStatus.includes('error') ? '#ffebee' : '#e8f5e9'}; border-radius: 4px; font-size: 0.9em;">
+          {migrationStatus}
+        </p>
+      {/if}
+    </div>
   </div>
 {/if}

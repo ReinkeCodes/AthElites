@@ -10,13 +10,31 @@
   let assignedPrograms = $state([]);
   let loading = $state(true);
 
+  // Toast notification state
+  let toastMessage = $state('');
+  let toastType = $state('error');
+
+  function showToast(message, type = 'error') {
+    toastMessage = message;
+    toastType = type;
+    setTimeout(() => { toastMessage = ''; }, 6000);
+  }
+
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
       currentUser = user;
       if (user) {
-        const userDoc = await getDoc(doc(db, 'user', user.uid));
-        if (userDoc.exists()) {
-          userRole = userDoc.data().role;
+        try {
+          const userDoc = await getDoc(doc(db, 'user', user.uid));
+          if (userDoc.exists()) {
+            userRole = userDoc.data().role;
+          } else {
+            console.error('User document not found');
+            showToast('User profile not found. Please contact support.');
+          }
+        } catch (e) {
+          console.error('Failed to fetch user role:', e.code, e.message);
+          showToast(`Failed to load profile: ${e.message}`);
         }
         await loadRecentSessions();
         await loadAssignedPrograms();
@@ -38,7 +56,8 @@
       const snapshot = await getDocs(sessionsQuery);
       recentSessions = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     } catch (e) {
-      console.log('Could not load sessions:', e);
+      console.error('Could not load sessions:', e.code, e.message);
+      showToast(`Failed to load sessions: ${e.code} - ${e.message}`);
     }
   }
 
@@ -46,12 +65,48 @@
     if (!currentUser) return;
 
     try {
-      const programsSnapshot = await getDocs(collection(db, 'programs'));
-      assignedPrograms = programsSnapshot.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(p => p.assignedTo?.includes(currentUser.uid));
+      // Use split queries based on role to avoid permission errors
+      if (userRole === 'client') {
+        // Client: query owned + assigned programs separately
+        const ownedQuery = query(
+          collection(db, 'programs'),
+          where('createdByUserId', '==', currentUser.uid)
+        );
+        // Use canonical assignedToUids field for array-contains query
+        const assignedQuery = query(
+          collection(db, 'programs'),
+          where('assignedToUids', 'array-contains', currentUser.uid)
+        );
+
+        const [ownedSnapshot, assignedSnapshot] = await Promise.all([
+          getDocs(ownedQuery),
+          getDocs(assignedQuery)
+        ]);
+
+        // Merge and dedupe
+        const ownedPrograms = ownedSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        const assignedProgramsList = assignedSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        const merged = [...ownedPrograms, ...assignedProgramsList];
+        const uniqueMap = new Map(merged.map(p => [p.id, p]));
+        assignedPrograms = Array.from(uniqueMap.values());
+      } else if (userRole === 'admin' || userRole === 'coach') {
+        // Admin/Coach can query all programs
+        const programsSnapshot = await getDocs(collection(db, 'programs'));
+        assignedPrograms = programsSnapshot.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter(p =>
+            p.assignedToUids?.includes(currentUser.uid) ||
+            p.assignedTo?.includes?.(currentUser.uid) ||
+            p.assignedTo === currentUser.uid
+          );
+      } else {
+        // Unknown role - don't query
+        console.error('Unknown role, cannot load programs:', userRole);
+        assignedPrograms = [];
+      }
     } catch (e) {
-      console.log('Could not load programs:', e);
+      console.error('Could not load programs:', e.code, e.message);
+      showToast(`Permission error: ${e.code} - ${e.message}`);
     }
   }
 
@@ -141,6 +196,13 @@
     </div>
   {/if}
 
+{/if}
+
+<!-- Toast notification -->
+{#if toastMessage}
+  <div style="position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: {toastType === 'error' ? '#f44336' : '#4CAF50'}; color: white; padding: 12px 24px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 2000; max-width: 90%; text-align: center;">
+    {toastMessage}
+  </div>
 {/if}
 
 <style>

@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc } from 'firebase/firestore';
+  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, query, where } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
 
@@ -10,6 +10,18 @@
   let userRole = $state(null);
   let currentUserId = $state(null);
   let activeView = $state('all'); // 'all' or 'my'
+  let loading = $state(true);
+  let roleError = $state(null);
+
+  // Toast notification state
+  let toastMessage = $state('');
+  let toastType = $state('error'); // 'error' or 'success'
+
+  function showToast(message, type = 'error') {
+    toastMessage = message;
+    toastType = type;
+    setTimeout(() => { toastMessage = ''; }, 6000);
+  }
 
   // Client program creation state
   let clientNewProgramName = $state('');
@@ -19,11 +31,17 @@
   // Delete confirmation modal state
   let deleteConfirmProgram = $state(null);
 
+  // Unsubscribe functions for listeners
+  let unsubscribes = [];
+
   function getFilteredPrograms() {
     if (activeView === 'my' || userRole === 'client') {
       // Clients see: programs assigned to them OR programs they created
+      // Check both assignedToUids (canonical) and assignedTo (legacy) for display
       return programs.filter(p =>
-        p.assignedTo?.includes(currentUserId) ||
+        p.assignedToUids?.includes(currentUserId) ||
+        p.assignedTo?.includes?.(currentUserId) ||
+        p.assignedTo === currentUserId ||
         (p.createdByRole === 'client' && p.createdByUserId === currentUserId)
       );
     }
@@ -32,7 +50,12 @@
   }
 
   function getMyPrograms() {
-    return programs.filter(p => p.assignedTo?.includes(currentUserId));
+    // Check both assignedToUids (canonical) and assignedTo (legacy)
+    return programs.filter(p =>
+      p.assignedToUids?.includes(currentUserId) ||
+      p.assignedTo?.includes?.(currentUserId) ||
+      p.assignedTo === currentUserId
+    );
   }
 
   // Check if program is client-owned by current user
@@ -40,58 +63,194 @@
     return program.createdByRole === 'client' && program.createdByUserId === currentUserId;
   }
 
+  // Setup program listeners based on user role
+  function setupProgramListeners(uid, role) {
+    // Clean up any existing listeners
+    unsubscribes.forEach(unsub => unsub());
+    unsubscribes = [];
+
+    if (role === 'client') {
+      // TASK C: Split queries for clients - owned + assigned
+      let ownedPrograms = [];
+      let assignedPrograms = [];
+
+      // Query 1: Programs owned by this client
+      const ownedQuery = query(
+        collection(db, 'programs'),
+        where('createdByUserId', '==', uid)
+      );
+
+      // Query 2: Programs assigned to this client (uses canonical assignedToUids field)
+      const assignedQuery = query(
+        collection(db, 'programs'),
+        where('assignedToUids', 'array-contains', uid)
+      );
+
+      const unsub1 = onSnapshot(ownedQuery,
+        (snapshot) => {
+          ownedPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          // Merge and dedupe
+          const merged = [...ownedPrograms, ...assignedPrograms];
+          const uniqueMap = new Map(merged.map(p => [p.id, p]));
+          programs = Array.from(uniqueMap.values());
+          loading = false;
+        },
+        (error) => {
+          console.error('OWNED_QUERY permission error:', error.code, error.message);
+          showToast(`OWNED_QUERY permission error: ${error.code} - ${error.message}`);
+          loading = false;
+        }
+      );
+
+      const unsub2 = onSnapshot(assignedQuery,
+        (snapshot) => {
+          assignedPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          // Merge and dedupe
+          const merged = [...ownedPrograms, ...assignedPrograms];
+          const uniqueMap = new Map(merged.map(p => [p.id, p]));
+          programs = Array.from(uniqueMap.values());
+          loading = false;
+        },
+        (error) => {
+          console.error('ASSIGNED_QUERY permission error:', error.code, error.message);
+          showToast(`ASSIGNED_QUERY permission error: ${error.code} - ${error.message}`);
+          loading = false;
+        }
+      );
+
+      unsubscribes.push(unsub1, unsub2);
+    } else if (role === 'admin' || role === 'coach') {
+      // Coach/Admin: can read all programs (unfiltered)
+      const unsub = onSnapshot(collection(db, 'programs'),
+        (snapshot) => {
+          programs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          loading = false;
+        },
+        (error) => {
+          console.error('Firestore error (all programs):', error.code, error.message);
+          showToast(`Permission error: ${error.code} - ${error.message}`);
+          loading = false;
+        }
+      );
+      unsubscribes.push(unsub);
+    } else {
+      // Unknown role - do not query, show error
+      console.error('Unknown or missing role:', role);
+      showToast(`Unable to load programs: unknown role "${role}"`);
+      loading = false;
+    }
+  }
+
   onMount(() => {
-    onAuthStateChanged(auth, async (user) => {
+    const authUnsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUserId = user.uid;
-        const userDoc = await getDoc(doc(db, 'user', user.uid));
-        if (userDoc.exists()) {
-          userRole = userDoc.data().role;
+
+        // TASK B: Fetch role BEFORE querying programs
+        try {
+          const userDoc = await getDoc(doc(db, 'user', user.uid));
+          if (userDoc.exists()) {
+            const role = userDoc.data().role;
+            if (role) {
+              userRole = role;
+              roleError = null;
+              // Now that role is confirmed, setup listeners
+              setupProgramListeners(user.uid, role);
+            } else {
+              // Role field exists but is null/undefined
+              roleError = 'User role not set. Please contact your coach.';
+              showToast(roleError);
+              loading = false;
+            }
+          } else {
+            // User document doesn't exist
+            roleError = 'User profile not found. Please contact support.';
+            showToast(roleError);
+            loading = false;
+          }
+        } catch (e) {
+          console.error('Failed to fetch user role:', e.code, e.message);
+          roleError = `Failed to load user profile: ${e.message}`;
+          showToast(roleError);
+          loading = false;
         }
+      } else {
+        // Not logged in
+        currentUserId = null;
+        userRole = null;
+        programs = [];
+        loading = false;
       }
     });
 
-    onSnapshot(collection(db, 'programs'), (snapshot) => {
-      programs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    });
+    // Cleanup on unmount
+    return () => {
+      authUnsub();
+      unsubscribes.forEach(unsub => unsub());
+    };
   });
 
   async function createProgram(e) {
     e.preventDefault();
     if (!newProgramName.trim()) return;
-    await addDoc(collection(db, 'programs'), {
-      name: newProgramName,
-      description: newProgramDescription,
-      days: [],
-      assignedTo: [],
-      createdAt: new Date()
-    });
-    newProgramName = '';
-    newProgramDescription = '';
+    try {
+      await addDoc(collection(db, 'programs'), {
+        name: newProgramName,
+        description: newProgramDescription,
+        days: [],
+        assignedToUids: [], // Canonical field for queries
+        assignedTo: [], // Backward compat
+        createdAt: new Date()
+      });
+      newProgramName = '';
+      newProgramDescription = '';
+      showToast('Program created!', 'success');
+    } catch (error) {
+      console.error('Create program error:', error.code, error.message);
+      showToast(`Failed to create program: ${error.code} - ${error.message}`);
+    }
   }
 
-  // Client program creation
+  // TASK D: Client program creation with explicit ownership fields
   async function createClientProgram(e) {
     e.preventDefault();
     if (!clientNewProgramName.trim() || !currentUserId) return;
-    await addDoc(collection(db, 'programs'), {
+
+    // Log payload for debugging (TEMP)
+    const payload = {
       name: clientNewProgramName,
       description: clientNewProgramDescription,
       days: [],
       publishedDays: [],
-      assignedTo: [currentUserId], // Only assigned to self
+      assignedToUids: [currentUserId], // Canonical field for queries
+      assignedTo: [currentUserId], // Backward compat
       createdByRole: 'client',
       createdByUserId: currentUserId,
       createdAt: new Date()
-    });
-    clientNewProgramName = '';
-    clientNewProgramDescription = '';
-    showClientCreateForm = false;
+    };
+    console.log('Client create program payload:', payload);
+
+    try {
+      await addDoc(collection(db, 'programs'), payload);
+      clientNewProgramName = '';
+      clientNewProgramDescription = '';
+      showClientCreateForm = false;
+      showToast('Program created!', 'success');
+    } catch (error) {
+      console.error('CREATE_PROGRAM permission error:', error.code, error.message);
+      showToast(`CREATE_PROGRAM permission error: ${error.code} - ${error.message}`);
+    }
   }
 
   async function deleteProgram(id) {
     if (confirm('Delete this program and all its days?')) {
-      await deleteDoc(doc(db, 'programs', id));
+      try {
+        await deleteDoc(doc(db, 'programs', id));
+        showToast('Program deleted', 'success');
+      } catch (error) {
+        console.error('Delete program error:', error.code, error.message);
+        showToast(`Failed to delete program: ${error.code} - ${error.message}`);
+      }
     }
   }
 
@@ -102,8 +261,15 @@
 
   async function executeDeleteClientProgram() {
     if (deleteConfirmProgram) {
-      await deleteDoc(doc(db, 'programs', deleteConfirmProgram.id));
-      deleteConfirmProgram = null;
+      try {
+        await deleteDoc(doc(db, 'programs', deleteConfirmProgram.id));
+        deleteConfirmProgram = null;
+        showToast('Program deleted', 'success');
+      } catch (error) {
+        console.error('Delete client program error:', error.code, error.message);
+        showToast(`Failed to delete program: ${error.code} - ${error.message}`);
+        deleteConfirmProgram = null;
+      }
     }
   }
 
@@ -118,25 +284,32 @@
 
 <h1>Programs</h1>
 
-{#if userRole === 'admin' || userRole === 'coach'}
-  <!-- View Tabs -->
-  <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #eee;">
-    <button
-      onclick={() => activeView = 'all'}
-      style="flex: 1; padding: 12px; border: none; background: {activeView === 'all' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'all' ? 'bold' : 'normal'}; border-bottom: {activeView === 'all' ? '3px solid #2196F3' : 'none'}; margin-bottom: -2px;"
-    >
-      All Programs
-    </button>
-    <button
-      onclick={() => activeView = 'my'}
-      style="flex: 1; padding: 12px; border: none; background: {activeView === 'my' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'my' ? 'bold' : 'normal'}; border-bottom: {activeView === 'my' ? '3px solid #4CAF50' : 'none'}; margin-bottom: -2px;"
-    >
-      My Programs ({getMyPrograms().length})
-    </button>
+{#if loading}
+  <p style="color: #888; text-align: center; padding: 40px 0;">Loading programs...</p>
+{:else if roleError}
+  <div style="background: #ffebee; border: 1px solid #f44336; color: #c62828; padding: 15px; border-radius: 8px; margin: 20px 0;">
+    <strong>Error:</strong> {roleError}
   </div>
-{/if}
+{:else}
+  {#if userRole === 'admin' || userRole === 'coach'}
+    <!-- View Tabs -->
+    <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #eee;">
+      <button
+        onclick={() => activeView = 'all'}
+        style="flex: 1; padding: 12px; border: none; background: {activeView === 'all' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'all' ? 'bold' : 'normal'}; border-bottom: {activeView === 'all' ? '3px solid #2196F3' : 'none'}; margin-bottom: -2px;"
+      >
+        All Programs
+      </button>
+      <button
+        onclick={() => activeView = 'my'}
+        style="flex: 1; padding: 12px; border: none; background: {activeView === 'my' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'my' ? 'bold' : 'normal'}; border-bottom: {activeView === 'my' ? '3px solid #4CAF50' : 'none'}; margin-bottom: -2px;"
+      >
+        My Programs ({getMyPrograms().length})
+      </button>
+    </div>
+  {/if}
 
-{#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
+  {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
   <h2>Create Program</h2>
   <form onsubmit={createProgram} style="margin-bottom: 20px;">
     <div style="margin-bottom: 10px;">
@@ -267,6 +440,7 @@
     {/if}
   </div>
 {/if}
+{/if}
 
 <!-- Delete Confirmation Modal -->
 {#if deleteConfirmProgram}
@@ -290,6 +464,13 @@
         >Delete</button>
       </div>
     </div>
+  </div>
+{/if}
+
+<!-- Toast notification -->
+{#if toastMessage}
+  <div style="position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: {toastType === 'error' ? '#f44336' : '#4CAF50'}; color: white; padding: 12px 24px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 2000; max-width: 90%; text-align: center;">
+    {toastMessage}
   </div>
 {/if}
 

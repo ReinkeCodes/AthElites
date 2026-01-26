@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc, getDocs } from 'firebase/firestore';
+  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc, getDocs, query, where } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -176,18 +176,60 @@
       exercises = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
     });
 
-    // Load all programs for copy day feature
-    onSnapshot(collection(db, 'programs'), (snapshot) => {
-      allPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    });
+    // Load all programs for copy day feature (admin/coach only)
+    // This will be re-initialized after role is determined
+  });
+
+  // Watch for role changes and load programs appropriately
+  $effect(() => {
+    if (!userRole || !currentUserId) return;
+
+    if (userRole === 'admin' || userRole === 'coach') {
+      // Admin/Coach can load all programs for copy feature
+      const unsub = onSnapshot(collection(db, 'programs'),
+        (snapshot) => {
+          allPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        },
+        (error) => {
+          console.error('Failed to load programs for copy feature:', error.code, error.message);
+          toastMessage = `Failed to load programs: ${error.code}`;
+          setTimeout(() => { toastMessage = ''; }, 5000);
+        }
+      );
+      return () => unsub();
+    } else if (userRole === 'client') {
+      // Client: load only their own programs for copy feature
+      const ownedQuery = query(
+        collection(db, 'programs'),
+        where('createdByUserId', '==', currentUserId)
+      );
+      const unsub = onSnapshot(ownedQuery,
+        (snapshot) => {
+          allPrograms = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        },
+        (error) => {
+          console.error('Failed to load programs for copy feature:', error.code, error.message);
+          toastMessage = `Failed to load programs: ${error.code}`;
+          setTimeout(() => { toastMessage = ''; }, 5000);
+        }
+      );
+      return () => unsub();
+    }
   });
 
   async function toggleAssignment(clientId) {
-    const currentAssigned = program.assignedTo || [];
-    const newAssigned = currentAssigned.includes(clientId)
-      ? currentAssigned.filter(id => id !== clientId)
-      : [...currentAssigned, clientId];
-    await updateDoc(doc(db, 'programs', program.id), { assignedTo: newAssigned });
+    // Use assignedToUids as canonical, fall back to assignedTo for legacy data
+    const currentAssigned = program.assignedToUids || program.assignedTo || [];
+    // Handle legacy string format
+    const currentList = Array.isArray(currentAssigned) ? currentAssigned : [currentAssigned];
+    const newAssigned = currentList.includes(clientId)
+      ? currentList.filter(id => id !== clientId)
+      : [...currentList, clientId];
+    // Write to both assignedToUids (canonical) and assignedTo (backward compat)
+    await updateDoc(doc(db, 'programs', program.id), {
+      assignedToUids: newAssigned,
+      assignedTo: newAssigned
+    });
   }
 
   // Day functions
