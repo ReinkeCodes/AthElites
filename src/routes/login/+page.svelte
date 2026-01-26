@@ -12,6 +12,23 @@
   let showPassword = $state(false);
   let isSignupMode = $state(false);
 
+  function getLoginErrorMessage(err) {
+    const invalidCredentialCodes = [
+      'auth/wrong-password',
+      'auth/user-not-found',
+      'auth/invalid-credential',
+      'auth/invalid-email'
+    ];
+    if (invalidCredentialCodes.includes(err.code)) {
+      return 'Invalid email/username or password.';
+    }
+    return 'Login failed. Please try again.';
+  }
+
+  function clearError() {
+    if (error) error = '';
+  }
+
   async function login(e) {
     e.preventDefault();
     error = '';
@@ -20,7 +37,7 @@
       await signInWithEmailAndPassword(auth, email, password);
       goto('/');
     } catch (err) {
-      error = err.message;
+      error = getLoginErrorMessage(err);
     }
     loading = false;
   }
@@ -97,13 +114,13 @@
   <form onsubmit={login}>
     <div style="margin-bottom: 15px;">
       <label style="display: block; margin-bottom: 5px;">Email:</label>
-      <input type="email" bind:value={email} required style="width: 100%; padding: 10px; box-sizing: border-box;" />
+      <input type="email" bind:value={email} oninput={clearError} required style="width: 100%; padding: 10px; box-sizing: border-box;" />
     </div>
 
     <div style="margin-bottom: 15px;">
       <label style="display: block; margin-bottom: 5px;">Password:</label>
       <div style="display: flex; gap: 10px;">
-        <input type={showPassword ? 'text' : 'password'} bind:value={password} required style="flex: 1; padding: 10px;" />
+        <input type={showPassword ? 'text' : 'password'} bind:value={password} oninput={clearError} required style="flex: 1; padding: 10px;" />
         <button type="button" onclick={() => showPassword = !showPassword} style="padding: 10px;">
           {showPassword ? 'Hide' : 'Show'}
         </button>
