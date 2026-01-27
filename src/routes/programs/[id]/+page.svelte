@@ -48,6 +48,9 @@
   let selectedExerciseId = $state('');
   let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' });
 
+  // Video modal
+  let videoModalExercise = $state(null);
+
   // Editing exercise in section
   let editingExercise = $state(null); // format: "dayIndex-sectionIndex-exerciseIndex"
   let editExerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' });
@@ -403,6 +406,32 @@
 
   function getAllExerciseTypes() {
     return [...new Set(exercises.map(e => e.type))].sort();
+  }
+
+  // Extract YouTube video ID from URL (returns null if not YouTube)
+  function getYouTubeId(url) {
+    if (!url) return null;
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/
+    ];
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match) return match[1];
+    }
+    return null;
+  }
+
+  function openVideoModal(exercise) {
+    videoModalExercise = exercise;
+  }
+
+  function closeVideoModal() {
+    videoModalExercise = null;
+  }
+
+  function handleVideoModalKeydown(e) {
+    if (e.key === 'Escape') closeVideoModal();
   }
 
   // Check if there are unpublished changes
@@ -995,12 +1024,21 @@
                         <!-- View Mode -->
                         {@const repsLabel = ex.repsMetric === 'distance' ? '' : 'reps'}
                         {@const weightLabel = ex.weightMetric === 'time' ? '' : ''}
+                        {@const libraryEx = exercises.find(e => e.id === ex.exerciseId)}
                         <div style="display: flex; justify-content: space-between; align-items: start;">
                           <div style="display: flex; align-items: start; gap: 10px;">
                             <span style="color: #999; cursor: grab; font-size: 1.2em; user-select: none;" title="Drag to move">⋮⋮</span>
                             <div>
                               <strong>{ex.name}</strong>
                               <span style="color: #888; font-size: 0.8em;">({ex.type})</span>
+                              {#if libraryEx?.videoUrl?.trim()}
+                                <button
+                                  type="button"
+                                  aria-label="Play video"
+                                  onclick={(e) => { e.stopPropagation(); openVideoModal(libraryEx); }}
+                                  style="background: #fff; border: 1px solid #9C27B0; color: #9C27B0; padding: 2px 6px; border-radius: 3px; font-size: 0.7em; margin-left: 5px; cursor: pointer;"
+                                >▶ Video</button>
+                              {/if}
                               {#if ex.repsMetric === 'distance' || ex.weightMetric === 'time'}
                                 <span style="background: #e8f5e9; color: #2e7d32; padding: 2px 6px; border-radius: 3px; font-size: 0.7em; margin-left: 5px;">
                                   {ex.repsMetric === 'distance' ? 'Distance' : ''}{ex.repsMetric === 'distance' && ex.weightMetric === 'time' ? '/' : ''}{ex.weightMetric === 'time' ? 'Time' : ''}
@@ -1050,6 +1088,22 @@
                         {/each}
                       </select>
                     </div>
+                    <!-- Selected exercise info with video chip -->
+                    {#if selectedExerciseId}
+                      {@const selectedEx = exercises.find(e => e.id === selectedExerciseId)}
+                      {#if selectedEx}
+                        <div style="margin-bottom: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 0.9em;">
+                          <span style="color: #666;">({selectedEx.type})</span>
+                          {#if selectedEx.videoUrl?.trim()}
+                            <button
+                              type="button"
+                              onclick={(e) => { e.stopPropagation(); openVideoModal(selectedEx); }}
+                              style="background: #fff; border: 1px solid #9C27B0; color: #9C27B0; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; cursor: pointer;"
+                            >▶ Video</button>
+                          {/if}
+                        </div>
+                      {/if}
+                    {/if}
                     <!-- Metric selectors -->
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; padding: 10px; background: #f0f7ff; border-radius: 5px;">
                       <div>
@@ -1229,6 +1283,53 @@
         <button onclick={closeCopySectionModal} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
           Cancel
         </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Video Modal -->
+{#if videoModalExercise}
+  {@const ytId = getYouTubeId(videoModalExercise.videoUrl)}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-label="Video player"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 2000;"
+    onclick={(e) => { if (e.target === e.currentTarget) closeVideoModal(); }}
+    onkeydown={handleVideoModalKeydown}
+  >
+    <div style="background: white; border-radius: 8px; max-width: 90%; width: 640px; max-height: 90vh; overflow: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px; border-bottom: 1px solid #eee;">
+        <h3 style="margin: 0;">{videoModalExercise.name}</h3>
+        <button
+          onclick={closeVideoModal}
+          aria-label="Close"
+          style="background: none; border: none; font-size: 1.5em; cursor: pointer; padding: 4px 8px;"
+        >&times;</button>
+      </div>
+      <div style="padding: 16px;">
+        {#if ytId}
+          <div style="position: relative; padding-bottom: 56.25%; height: 0;">
+            <iframe
+              src="https://www.youtube.com/embed/{ytId}"
+              title="Video player"
+              frameborder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowfullscreen
+              style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 4px;"
+            ></iframe>
+          </div>
+        {:else}
+          <p style="margin: 0 0 12px 0;">This video cannot be embedded.</p>
+          <a
+            href={videoModalExercise.videoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style="display: inline-block; padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 4px;"
+          >Open link</a>
+        {/if}
       </div>
     </div>
   </div>
