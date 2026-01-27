@@ -50,6 +50,7 @@
 
   // Video modal
   let videoModalExercise = $state(null);
+  let pendingVideoExercise = $state(null);
 
   // Editing exercise in section
   let editingExercise = $state(null); // format: "dayIndex-sectionIndex-exerciseIndex"
@@ -423,7 +424,16 @@
   }
 
   function openVideoModal(exercise) {
-    videoModalExercise = exercise;
+    pendingVideoExercise = exercise;
+  }
+
+  function confirmOpenVideo() {
+    videoModalExercise = pendingVideoExercise;
+    pendingVideoExercise = null;
+  }
+
+  function cancelOpenVideo() {
+    pendingVideoExercise = null;
   }
 
   function closeVideoModal() {
@@ -432,6 +442,10 @@
 
   function handleVideoModalKeydown(e) {
     if (e.key === 'Escape') closeVideoModal();
+  }
+
+  function handleConfirmKeydown(e) {
+    if (e.key === 'Escape') cancelOpenVideo();
   }
 
   // Check if there are unpublished changes
@@ -1283,6 +1297,34 @@
         <button onclick={closeCopySectionModal} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
           Cancel
         </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Video Confirm Dialog -->
+{#if pendingVideoExercise}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-label="Open video confirmation"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 2001;"
+    onclick={(e) => { if (e.target === e.currentTarget) cancelOpenVideo(); }}
+    onkeydown={handleConfirmKeydown}
+  >
+    <div style="background: white; border-radius: 8px; padding: 20px; max-width: 90%; width: 320px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+      <h3 style="margin: 0 0 12px 0; font-size: 1.1em;">Open video?</h3>
+      <p style="margin: 0 0 20px 0; color: #666; font-size: 0.9em;">This video may load content from an external site (e.g., YouTube).</p>
+      <div style="display: flex; gap: 10px; justify-content: flex-end;">
+        <button
+          onclick={cancelOpenVideo}
+          style="padding: 8px 16px; background: #fff; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;"
+        >Cancel</button>
+        <button
+          onclick={confirmOpenVideo}
+          style="padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;"
+        >Continue</button>
       </div>
     </div>
   </div>
