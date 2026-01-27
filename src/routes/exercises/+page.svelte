@@ -21,10 +21,18 @@
   let editType = $state('');
   let editCustomType = $state('');
   let editNotes = $state('');
+  let editVideoUrl = $state('');
+
+  // Video URL
+  let newVideoUrl = $state('');
+  let videoUrlError = $state('');
 
   // Filter/sort
   let sortBy = $state('alphabetical');
   let filterType = $state('all');
+
+  // Video modal
+  let videoModalExercise = $state(null);
 
   // Toast notification
   let toastMessage = $state('');
@@ -34,6 +42,41 @@
     toastMessage = message;
     toastType = type;
     setTimeout(() => { toastMessage = ''; }, 5000);
+  }
+
+  function validateVideoUrl(url) {
+    const trimmed = url.trim();
+    if (!trimmed) return { valid: true, value: '' };
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      return { valid: false, error: 'URL must start with http:// or https://' };
+    }
+    return { valid: true, value: trimmed };
+  }
+
+  // Extract YouTube video ID from URL (returns null if not YouTube)
+  function getYouTubeId(url) {
+    if (!url) return null;
+    const patterns = [
+      /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/
+    ];
+    for (const pattern of patterns) {
+      const match = url.match(pattern);
+      if (match) return match[1];
+    }
+    return null;
+  }
+
+  function openVideoModal(exercise) {
+    videoModalExercise = exercise;
+  }
+
+  function closeVideoModal() {
+    videoModalExercise = null;
+  }
+
+  function handleModalKeydown(e) {
+    if (e.key === 'Escape') closeVideoModal();
   }
 
   // Default types + custom types from Firebase
@@ -216,6 +259,8 @@
     editType = getAllTypes().includes(exercise.type) ? exercise.type : 'Other';
     editCustomType = getAllTypes().includes(exercise.type) ? '' : exercise.type;
     editNotes = exercise.notes || '';
+    editVideoUrl = exercise.videoUrl || '';
+    videoUrlError = '';
   }
 
   // Cancel editing
@@ -225,11 +270,20 @@
     editType = '';
     editCustomType = '';
     editNotes = '';
+    editVideoUrl = '';
+    videoUrlError = '';
   }
 
   // Save edited exercise
   async function saveEdit() {
     if (!editName.trim()) return;
+
+    const videoValidation = validateVideoUrl(editVideoUrl);
+    if (!videoValidation.valid) {
+      videoUrlError = videoValidation.error;
+      return;
+    }
+    videoUrlError = '';
 
     let finalType = editType;
     if (editType === 'Other' && editCustomType.trim()) {
@@ -238,11 +292,19 @@
     }
 
     try {
-      await updateDoc(doc(db, 'exercises', editingId), {
+      const updateData = {
         name: editName,
         type: finalType,
         notes: editNotes
-      });
+      };
+      if (videoValidation.value) {
+        updateData.videoUrl = videoValidation.value;
+      } else {
+        // Use FieldValue.delete() equivalent - set to deleteField()
+        const { deleteField } = await import('firebase/firestore');
+        updateData.videoUrl = deleteField();
+      }
+      await updateDoc(doc(db, 'exercises', editingId), updateData);
       cancelEdit();
     } catch (err) {
       showToast(`Failed to update exercise: ${err.message}`);
@@ -261,6 +323,13 @@
     e.preventDefault();
     if (!newName.trim()) return;
 
+    const videoValidation = validateVideoUrl(newVideoUrl);
+    if (!videoValidation.valid) {
+      videoUrlError = videoValidation.error;
+      return;
+    }
+    videoUrlError = '';
+
     // Determine final type
     let finalType = newType;
     if (newType === 'Other' && customType.trim()) {
@@ -269,20 +338,25 @@
     }
 
     try {
-      await addDoc(collection(db, 'exercises'), {
+      const exerciseData = {
         name: newName,
         type: finalType,
         notes: newNotes,
         createdAt: new Date(),
         createdByRole: userRole,
         createdByUserId: currentUserId
-      });
+      };
+      if (videoValidation.value) {
+        exerciseData.videoUrl = videoValidation.value;
+      }
+      await addDoc(collection(db, 'exercises'), exerciseData);
 
       // Reset form
       newName = '';
       newType = 'Compound';
       customType = '';
       newNotes = '';
+      newVideoUrl = '';
     } catch (err) {
       showToast(`Failed to create exercise: ${err.message}`);
     }
@@ -339,6 +413,14 @@
 
     <div style="margin-bottom: 10px;">
       <textarea bind:value={newNotes} placeholder="Notes/cues (optional)" style="width: 100%; padding: 8px;"></textarea>
+    </div>
+
+    <div style="margin-bottom: 10px;">
+      <label style="display: block; font-size: 0.9em; margin-bottom: 4px;">Video URL (optional)</label>
+      <input type="text" bind:value={newVideoUrl} placeholder="Paste a link (e.g., YouTube)" style="width: 100%; padding: 8px;" />
+      {#if videoUrlError && !editingId}
+        <p style="color: #f44336; font-size: 0.85em; margin: 4px 0 0 0;">{videoUrlError}</p>
+      {/if}
     </div>
 
     <button type="submit">Create Exercise</button>
@@ -402,6 +484,13 @@
             placeholder="Notes/cues (optional)"
             style="padding: 8px;"
           ></textarea>
+          <div>
+            <label style="display: block; font-size: 0.9em; margin-bottom: 4px;">Video URL (optional)</label>
+            <input type="text" bind:value={editVideoUrl} placeholder="Paste a link (e.g., YouTube)" style="width: 100%; padding: 8px;" />
+            {#if videoUrlError && editingId}
+              <p style="color: #f44336; font-size: 0.85em; margin: 4px 0 0 0;">{videoUrlError}</p>
+            {/if}
+          </div>
           <div style="display: flex; gap: 10px;">
             <button onclick={saveEdit} style="padding: 8px 16px; background: #4CAF50; color: white; border: none; cursor: pointer; border-radius: 4px;">
               Save
@@ -431,8 +520,17 @@
               </p>
             {/if}
           </div>
-          {#if userRole === 'admin' || userRole === 'coach'}
-            <div style="display: flex; gap: 8px;">
+          <div style="display: flex; gap: 8px;">
+            {#if exercise.videoUrl?.trim()}
+              <button
+                onclick={() => openVideoModal(exercise)}
+                aria-label="Play video"
+                style="padding: 6px 12px; background: #fff; border: 1px solid #9C27B0; color: #9C27B0; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
+              >
+                ▶ Video
+              </button>
+            {/if}
+            {#if userRole === 'admin' || userRole === 'coach'}
               <button
                 onclick={() => startEdit(exercise)}
                 style="padding: 6px 12px; background: #fff; border: 1px solid #2196F3; color: #2196F3; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
@@ -447,9 +545,7 @@
                   Delete
                 </button>
               {/if}
-            </div>
-          {:else if userRole === 'client' && isMine}
-            <div style="display: flex; gap: 8px;">
+            {:else if userRole === 'client' && isMine}
               <button
                 onclick={() => startEdit(exercise)}
                 style="padding: 6px 12px; background: #fff; border: 1px solid #2196F3; color: #2196F3; cursor: pointer; border-radius: 4px; font-size: 0.9em;"
@@ -462,12 +558,59 @@
               >
                 Delete
               </button>
-            </div>
-          {/if}
+            {/if}
+          </div>
         </div>
       {/if}
     </div>
   {/each}
+{/if}
+
+<!-- Video Modal -->
+{#if videoModalExercise}
+  {@const ytId = getYouTubeId(videoModalExercise.videoUrl)}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-label="Video player"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 2000;"
+    onclick={(e) => { if (e.target === e.currentTarget) closeVideoModal(); }}
+    onkeydown={handleModalKeydown}
+  >
+    <div style="background: white; border-radius: 8px; max-width: 90%; width: 640px; max-height: 90vh; overflow: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 16px; border-bottom: 1px solid #eee;">
+        <h3 style="margin: 0;">{videoModalExercise.name}</h3>
+        <button
+          onclick={closeVideoModal}
+          aria-label="Close"
+          style="background: none; border: none; font-size: 1.5em; cursor: pointer; padding: 4px 8px;"
+        >&times;</button>
+      </div>
+      <div style="padding: 16px;">
+        {#if ytId}
+          <div style="position: relative; padding-bottom: 56.25%; height: 0;">
+            <iframe
+              src="https://www.youtube.com/embed/{ytId}"
+              title="Video player"
+              frameborder="0"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowfullscreen
+              style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 4px;"
+            ></iframe>
+          </div>
+        {:else}
+          <p style="margin: 0 0 12px 0;">This video cannot be embedded.</p>
+          <a
+            href={videoModalExercise.videoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style="display: inline-block; padding: 10px 20px; background: #2196F3; color: white; text-decoration: none; border-radius: 4px;"
+          >Open link</a>
+        {/if}
+      </div>
+    </div>
+  </div>
 {/if}
 
 <!-- Toast notification -->
