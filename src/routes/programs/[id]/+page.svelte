@@ -56,10 +56,14 @@
   let editingExercise = $state(null); // format: "dayIndex-sectionIndex-exerciseIndex"
   let editExerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' });
 
-  // Drag and drop
+  // Drag and drop (exercises)
   let draggedExercise = $state(null); // { dayIndex, sectionIndex, exerciseIndex, exercise }
   let dropTargetSection = $state(null); // "dayIndex-sectionIndex"
   let dropTargetExerciseIndex = $state(null); // index within section for reorder
+
+  // Drag and drop (sections)
+  let draggedSection = $state(null); // { dayIndex, sectionIndex, section }
+  let dropTargetSectionIndex = $state(null); // target index for section reorder
 
   // Generate stable unique IDs (Firestore-based, works on all browsers including mobile Safari)
   function generateId() {
@@ -634,8 +638,9 @@
     }
   }
 
-  // Drag and drop functions
+  // Drag and drop functions (exercises)
   function handleDragStart(e, dayIndex, sectionIndex, exerciseIndex) {
+    if (draggedSection) return; // Don't start exercise drag while section is being dragged
     const exercise = program.days[dayIndex].sections[sectionIndex].exercises[exerciseIndex];
     draggedExercise = { dayIndex, sectionIndex, exerciseIndex, exercise };
     e.dataTransfer.effectAllowed = 'move';
@@ -643,6 +648,7 @@
   }
 
   function handleDragOver(e, dayIndex, sectionIndex) {
+    if (draggedSection) return; // Ignore exercise drop zones when dragging a section
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     dropTargetSection = `${dayIndex}-${sectionIndex}`;
@@ -662,7 +668,7 @@
 
   async function handleDrop(e, targetDayIndex, targetSectionIndex) {
     e.preventDefault();
-    if (!draggedExercise) return;
+    if (!draggedExercise || draggedSection) return; // Ignore if no exercise or section is being dragged
 
     const { dayIndex: sourceDayIndex, sectionIndex: sourceSectionIndex, exerciseIndex: sourceExerciseIndex, exercise } = draggedExercise;
 
@@ -689,6 +695,7 @@
   }
 
   function handleExerciseDragOver(e, dayIndex, sectionIndex, exIndex) {
+    if (draggedSection) return; // Ignore when dragging a section
     e.preventDefault();
     e.stopPropagation();
     if (!draggedExercise) return;
@@ -711,6 +718,45 @@
     draggedExercise = null;
     dropTargetSection = null;
     dropTargetExerciseIndex = null;
+  }
+
+  // Section drag handlers
+  function handleSectionDragStart(e, dayIndex, sectionIndex) {
+    if (draggedExercise) return; // Don't start section drag while exercise is being dragged
+    const section = program.days[dayIndex].sections[sectionIndex];
+    draggedSection = { dayIndex, sectionIndex, section };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', '');
+  }
+
+  function handleSectionDragOver(e, dayIndex, sectionIndex) {
+    if (!draggedSection || draggedSection.dayIndex !== dayIndex) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dropTargetSectionIndex = sectionIndex;
+  }
+
+  function handleSectionDragEnd() {
+    draggedSection = null;
+    dropTargetSectionIndex = null;
+  }
+
+  async function handleSectionReorder(e, dayIndex, targetSectionIndex) {
+    if (!draggedSection || draggedSection.dayIndex !== dayIndex) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (draggedSection.sectionIndex === targetSectionIndex) {
+      draggedSection = null;
+      dropTargetSectionIndex = null;
+      return;
+    }
+    const updatedDays = [...program.days];
+    const sections = updatedDays[dayIndex].sections;
+    const [moved] = sections.splice(draggedSection.sectionIndex, 1);
+    sections.splice(targetSectionIndex, 0, moved);
+    await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
+    draggedSection = null;
+    dropTargetSectionIndex = null;
   }
 </script>
 
@@ -933,11 +979,11 @@
           {:else}
             {#each day.sections as section, sectionIndex}
               <div
-                style="border: 1px solid #ccc; padding: 10px; margin: 10px 0; background: {dropTargetSection === `${dayIndex}-${sectionIndex}` ? '#e3f2fd' : 'white'}; transition: background 0.2s; {dropTargetSection === `${dayIndex}-${sectionIndex}` ? 'border: 2px dashed #2196F3;' : ''}"
-                ondragover={(e) => handleDragOver(e, dayIndex, sectionIndex)}
+                style="border: 1px solid #ccc; padding: 10px; margin: 10px 0; background: {dropTargetSection === `${dayIndex}-${sectionIndex}` ? '#e3f2fd' : 'white'}; transition: background 0.2s; {dropTargetSection === `${dayIndex}-${sectionIndex}` ? 'border: 2px dashed #2196F3;' : ''} {dropTargetSectionIndex === sectionIndex && draggedSection && draggedSection.sectionIndex !== sectionIndex ? 'border-top: 3px solid #2196F3;' : ''} {draggedSection?.sectionIndex === sectionIndex ? 'opacity: 0.5;' : ''}"
+                ondragover={(e) => { handleDragOver(e, dayIndex, sectionIndex); handleSectionDragOver(e, dayIndex, sectionIndex); }}
                 ondragenter={() => { if (draggedExercise && (draggedExercise.dayIndex !== dayIndex || draggedExercise.sectionIndex !== sectionIndex)) dropTargetExerciseIndex = null; }}
-                ondragleave={handleDragLeave}
-                ondrop={(e) => handleDrop(e, dayIndex, sectionIndex)}
+                ondragleave={(e) => { handleDragLeave(e); if (!e.currentTarget.contains(e.relatedTarget)) dropTargetSectionIndex = null; }}
+                ondrop={(e) => { handleDrop(e, dayIndex, sectionIndex); handleSectionReorder(e, dayIndex, sectionIndex); }}
               >
                 {#if editingSectionIndex === `${dayIndex}-${sectionIndex}`}
                   <!-- Edit Section Mode -->
@@ -952,9 +998,17 @@
                   </div>
                 {:else}
                   <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <!-- Section drag handle -->
+                      <span
+                        draggable="true"
+                        ondragstart={(e) => handleSectionDragStart(e, dayIndex, sectionIndex)}
+                        ondragend={handleSectionDragEnd}
+                        style="cursor: grab; color: #999; font-size: 1.1em; padding: 4px; user-select: none;"
+                        title="Drag to reorder section"
+                      >⋮⋮</span>
                       <strong>{section.name}</strong>
-                      <span style="background: {section.mode === 'checkbox' ? '#fff3e0' : '#e8f5e9'}; padding: 2px 8px; border-radius: 10px; font-size: 0.75em; margin-left: 8px;">
+                      <span style="background: {section.mode === 'checkbox' ? '#fff3e0' : '#e8f5e9'}; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">
                         {section.mode === 'checkbox' ? 'Checkbox' : 'Full Tracking'}
                       </span>
                     </div>
