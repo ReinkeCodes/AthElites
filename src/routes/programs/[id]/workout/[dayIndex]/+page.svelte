@@ -975,6 +975,14 @@
               {#if exercise.notes}
                 <div style="font-size: 0.85em; opacity: 0.85; margin-top: 8px; font-style: italic; border-top: 1px solid rgba(255,255,255,0.2); padding-top: 8px;">{exercise.notes}</div>
               {/if}
+              <!-- Static custom requirements (clientInput=false) -->
+              {#if nonInputReqs.length > 0}
+                <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;">
+                  {#each nonInputReqs as req}
+                    <span style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.4); padding: 2px 8px; border-radius: 12px; font-size: 0.8em;">{req.name}: {req.value}</span>
+                  {/each}
+                </div>
+              {/if}
             </div>
 
             <!-- Logging UI content (below banner) -->
