@@ -5,6 +5,8 @@
   import { doc, getDoc } from 'firebase/firestore';
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import { browser } from '$app/environment';
+  import { goto } from '$app/navigation';
 
   let { children } = $props();
   let user = $state(null);
@@ -38,6 +40,11 @@
         }
       } else {
         userRole = null;
+        // Redirect to login on logout (from any page)
+        if (browser && window.location.pathname !== '/login') {
+          localStorage.removeItem('ael:lastPath');
+          goto('/login');
+        }
       }
     });
   });
@@ -50,6 +57,16 @@
   function closeMenu() {
     menuOpen = false;
   }
+
+  // Track last visited path for logged-in users (for resume functionality)
+  $effect(() => {
+    if (browser && user) {
+      const path = $page.url.pathname + $page.url.search;
+      if (path !== '/login' && path !== '/') {
+        localStorage.setItem('ael:lastPath', path);
+      }
+    }
+  });
 </script>
 
 <svelte:head>
