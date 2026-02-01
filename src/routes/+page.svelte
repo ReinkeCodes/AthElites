@@ -3,6 +3,8 @@
   import { collection, query, where, orderBy, limit, getDocs, getDoc, doc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { browser } from '$app/environment';
 
   let currentUser = $state(null);
   let userRole = $state(null);
@@ -24,6 +26,15 @@
     onAuthStateChanged(auth, async (user) => {
       currentUser = user;
       if (user) {
+        // Resume last path on initial app load only (not on every Home click)
+        if (browser && !sessionStorage.getItem('ael:resumed')) {
+          sessionStorage.setItem('ael:resumed', '1');
+          const lastPath = localStorage.getItem('ael:lastPath');
+          if (lastPath && lastPath !== '/login' && lastPath !== '/') {
+            goto(lastPath);
+            return;
+          }
+        }
         try {
           const userDoc = await getDoc(doc(db, 'user', user.uid));
           if (userDoc.exists()) {
