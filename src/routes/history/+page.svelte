@@ -5,11 +5,28 @@
   import { onMount } from 'svelte';
 
   let currentUserId = $state(null);
+  let userRole = $state(null);
+  let allUsers = $state([]);
+  let selectedUserId = $state(null);
   let workoutSessions = $state([]);
   let exercisePRs = $state({});
   let allLogs = $state([]);
   let loading = $state(true);
   let activeTab = $state('workouts'); // 'workouts' or 'prs'
+
+  // Derived target user for queries (admin can view other users)
+  function getTargetUserId() {
+    return (userRole === 'admin' && selectedUserId) ? selectedUserId : currentUserId;
+  }
+
+  // Sort users by first name for dropdown
+  function getSortedUsers() {
+    return allUsers.slice().sort((a, b) => {
+      const aName = (a.displayName?.split(' ')[0] || a.email || '').toLowerCase();
+      const bName = (b.displayName?.split(' ')[0] || b.email || '').toLowerCase();
+      return aName.localeCompare(bName);
+    });
+  }
   let selectedSession = $state(null);
   let selectedExercise = $state(null);
   let exerciseSessions = $state([]);
@@ -36,19 +53,48 @@
     onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUserId = user.uid;
+
+        // Fetch user role
+        try {
+          const userDoc = await getDoc(doc(db, 'user', user.uid));
+          userRole = userDoc.exists() ? (userDoc.data().role || 'client') : 'client';
+        } catch (e) {
+          userRole = 'client';
+        }
+
+        // If admin, set default selection and load all users
+        if (userRole === 'admin') {
+          selectedUserId = user.uid;
+          try {
+            const usersSnap = await getDocs(collection(db, 'user'));
+            allUsers = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+          } catch (e) {
+            console.log('Could not load users:', e);
+          }
+        }
+
         await Promise.all([loadWorkoutSessions(), loadAllLogs()]);
       }
       loading = false;
     });
   });
 
+  // Reload data when admin changes selected user
+  $effect(() => {
+    if (userRole === 'admin' && selectedUserId && !loading) {
+      loadWorkoutSessions();
+      loadAllLogs();
+    }
+  });
+
   async function loadWorkoutSessions() {
-    if (!currentUserId) return;
+    const targetUserId = getTargetUserId();
+    if (!targetUserId) return;
 
     try {
       const sessionsQuery = query(
         collection(db, 'workoutSessions'),
-        where('userId', '==', currentUserId)
+        where('userId', '==', targetUserId)
       );
       const snapshot = await getDocs(sessionsQuery);
       workoutSessions = snapshot.docs
@@ -64,12 +110,13 @@
   }
 
   async function loadAllLogs() {
-    if (!currentUserId) return;
+    const targetUserId = getTargetUserId();
+    if (!targetUserId) return;
 
     try {
       const logsQuery = query(
         collection(db, 'workoutLogs'),
-        where('userId', '==', currentUserId)
+        where('userId', '==', targetUserId)
       );
       const snapshot = await getDocs(logsQuery);
       allLogs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -245,9 +292,10 @@
 
   async function deleteSession(session) {
     if (!confirm(`Delete "${session.dayName}" workout from ${formatDate(session.finishedAt)}? This cannot be undone.`)) return;
+    const targetUserId = getTargetUserId();
     try {
       // Delete all logs for this session from Firestore
-      const logsQuery = query(collection(db, 'workoutLogs'), where('userId', '==', currentUserId), where('completedWorkoutId', '==', session.id));
+      const logsQuery = query(collection(db, 'workoutLogs'), where('userId', '==', targetUserId), where('completedWorkoutId', '==', session.id));
       const logsSnap = await getDocs(logsQuery);
 
       // Collect IDs of logs being deleted (more reliable than filtering by completedWorkoutId)
@@ -430,7 +478,24 @@
   }
 </script>
 
-<h1>Workout History</h1>
+<div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
+  <h1 style="margin: 0;">Workout History</h1>
+  {#if userRole === 'admin'}
+    <select
+      value={selectedUserId}
+      onchange={(e) => selectedUserId = e.target.value}
+      style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.95em; min-width: 180px;"
+    >
+      {#if allUsers.length === 0}
+        <option disabled>Loading users…</option>
+      {:else}
+        {#each getSortedUsers() as user}
+          <option value={user.id}>{user.displayName || user.email}</option>
+        {/each}
+      {/if}
+    </select>
+  {/if}
+</div>
 
 {#if loading}
   <p>Loading your history...</p>
