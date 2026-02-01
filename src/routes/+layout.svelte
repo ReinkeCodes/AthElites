@@ -20,7 +20,8 @@
     '/log',
     '/history',
     '/profile',
-    '/admin/users'
+    '/admin/users',
+    '/clients'
   ];
 
   // Check if back arrow should be visible
@@ -133,6 +134,11 @@
       <a href="/history" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
         History & PRs
       </a>
+      {#if userRole === 'admin'}
+        <a href="/clients" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
+          Clients
+        </a>
+      {/if}
       <a href="/exercises" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
         Exercise Library
       </a>
