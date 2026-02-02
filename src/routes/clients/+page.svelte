@@ -4,6 +4,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import SessionDetailModal from '$lib/components/SessionDetailModal.svelte';
 
   let loading = $state(true);
   let currentUserId = $state(null);
@@ -18,6 +19,9 @@
   let programCache = $state({});
   let prescribedSetsMap = $state({});
   let loggedSetsMap = $state({});
+  let selectedSession = $state(null);
+  let selectedSessionLogs = $state([]);
+  let sessionLogsLoading = $state(false);
 
   // Compute total prescribed sets for Full Tracking exercises only
   function computePrescribedSets(dayTemplate) {
@@ -226,6 +230,105 @@
       return { text: `${pct}% Completed`, color: '#dc2626', glow: '0 0 12px rgba(220, 38, 38, 0.35)' };
     }
   }
+
+  // Group logs by exercise for display (mirrors History page logic)
+  function groupLogsByExercise(logs) {
+    const grouped = {};
+    logs.forEach(log => {
+      const key = log.workoutExerciseId || log.exerciseId;
+      if (!grouped[key]) {
+        grouped[key] = {
+          workoutExerciseId: log.workoutExerciseId,
+          exerciseId: log.exerciseId,
+          exerciseName: log.exerciseName,
+          sets: []
+        };
+      }
+      grouped[key].sets.push({
+        setNumber: log.setNumber || 1,
+        reps: log.reps,
+        weight: log.weight,
+        rir: log.rir,
+        notes: log.notes,
+        repsMetric: log.repsMetric || 'reps',
+        weightMetric: log.weightMetric || 'weight',
+        customInputs: log.customInputs,
+        workoutExerciseId: log.workoutExerciseId,
+        programId: log.programId
+      });
+    });
+    return Object.values(grouped).map(exercise => {
+      exercise.sets.sort((a, b) => a.setNumber - b.setNumber);
+      return exercise;
+    });
+  }
+
+  // Open session detail modal and load logs for that session only
+  async function openSessionDetail(session) {
+    selectedSession = session;
+    sessionLogsLoading = true;
+    selectedSessionLogs = [];
+    try {
+      const logsQuery = query(
+        collection(db, 'workoutLogs'),
+        where('completedWorkoutId', '==', session.id)
+      );
+      const logsSnap = await getDocs(logsQuery);
+      selectedSessionLogs = logsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (e) {
+      console.log('Could not load session logs:', e);
+      selectedSessionLogs = [];
+    }
+    sessionLogsLoading = false;
+  }
+
+  function closeSessionDetail() {
+    selectedSession = null;
+    selectedSessionLogs = [];
+  }
+
+  // Close modal when user changes
+  $effect(() => {
+    if (selectedUserId) {
+      closeSessionDetail();
+    }
+  });
+
+  // Compute missing sets for a session (Full Tracking only)
+  function getMissingSets(session, logs) {
+    if (!session?.programId || !session?.dayName) return [];
+    const program = programCache[session.programId];
+    const dayTemplate = program?.publishedDays?.find(d => d.name === session.dayName);
+    if (!dayTemplate?.sections) return [];
+
+    // Build map of logged set numbers per exercise key
+    const loggedByExercise = {};
+    logs.forEach(log => {
+      const key = log.workoutExerciseId || log.exerciseId;
+      if (!key) return;
+      if (!loggedByExercise[key]) loggedByExercise[key] = new Set();
+      loggedByExercise[key].add(log.setNumber || 1);
+    });
+
+    const missing = [];
+    for (const section of dayTemplate.sections) {
+      if (section.mode === 'checkbox') continue;
+      for (const exercise of section.exercises || []) {
+        const key = exercise.workoutExerciseId || exercise.exerciseId;
+        const prescribedCount = parseInt(exercise.sets) || 3;
+        const loggedSets = loggedByExercise[key] || new Set();
+        // Count how many of sets 1..prescribedCount are NOT logged
+        let missingCount = 0;
+        for (let i = 1; i <= prescribedCount; i++) {
+          if (!loggedSets.has(i)) missingCount++;
+        }
+        if (missingCount > 0) {
+          missing.push({ name: exercise.name, count: missingCount });
+        }
+      }
+    }
+    return missing;
+  }
 </script>
 
 {#if loading}
@@ -289,7 +392,8 @@
     {#each workoutSessions as session}
       {@const completion = getCompletionInfo(session.id)}
       <div
-        style="background: white; border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 12px; cursor: default; transition: all 0.2s; box-shadow: {completion.glow};"
+        onclick={() => openSessionDetail(session)}
+        style="background: white; border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 12px; cursor: pointer; transition: all 0.2s; box-shadow: {completion.glow};"
         onmouseenter={(e) => e.currentTarget.style.borderColor = '#667eea'}
         onmouseleave={(e) => e.currentTarget.style.borderColor = '#ddd'}
       >
@@ -314,4 +418,21 @@
       </div>
     {/each}
   {/if}
+{/if}
+
+{#if selectedSession}
+<div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;" onclick={closeSessionDetail}>
+  <div style="background: white; border-radius: 12px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; padding: 20px;" onclick={(e) => e.stopPropagation()}>
+    {#if sessionLogsLoading}
+      <p style="color: #888; text-align: center; padding: 20px 0;">Loading session details...</p>
+    {:else}
+      <SessionDetailModal
+        session={selectedSession}
+        groupedLogs={groupLogsByExercise(selectedSessionLogs)}
+        onClose={closeSessionDetail}
+        missingSets={getMissingSets(selectedSession, selectedSessionLogs)}
+      />
+    {/if}
+  </div>
+</div>
 {/if}
