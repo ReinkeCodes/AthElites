@@ -774,8 +774,9 @@
 
         if (log && log.sets) {
           log.sets.forEach((set, setIndex) => {
-            // Only save sets that have data
-            if (set.weight || set.reps) {
+            // Only save sets that have data (weight, reps, notes, or custom inputs)
+            const hasCustomInput = set.customInputs && Object.values(set.customInputs).some(v => v);
+            if (set.weight || set.reps || set.notes || hasCustomInput) {
               logPromises.push(addDoc(collection(db, 'workoutLogs'), {
                 userId: currentUserId,
                 programId: program.id,

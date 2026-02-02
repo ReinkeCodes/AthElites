@@ -15,6 +15,36 @@
   let sessions7DaysPrev = $state(null);
   let sessions30Days = $state(null);
   let sessions30DaysPrev = $state(null);
+  let programCache = $state({});
+  let prescribedSetsMap = $state({});
+  let loggedSetsMap = $state({});
+
+  // Compute total prescribed sets for Full Tracking exercises only
+  function computePrescribedSets(dayTemplate) {
+    if (!dayTemplate?.sections) return null;
+    let total = 0;
+    for (const section of dayTemplate.sections) {
+      if (section.mode === 'checkbox') continue;
+      for (const exercise of section.exercises || []) {
+        total += parseInt(exercise.sets) || 3;
+      }
+    }
+    return total;
+  }
+
+  // Get Full Tracking exercise identifiers from template (for filtering logs)
+  function getFullTrackingIds(dayTemplate) {
+    const ids = { workoutExerciseIds: new Set(), exerciseIds: new Set() };
+    if (!dayTemplate?.sections) return ids;
+    for (const section of dayTemplate.sections) {
+      if (section.mode === 'checkbox') continue;
+      for (const exercise of section.exercises || []) {
+        if (exercise.workoutExerciseId) ids.workoutExerciseIds.add(exercise.workoutExerciseId);
+        if (exercise.exerciseId) ids.exerciseIds.add(exercise.exerciseId);
+      }
+    }
+    return ids;
+  }
 
   // Sort users by first name for dropdown
   function getSortedUsers() {
@@ -58,6 +88,8 @@
   async function loadWorkoutSessions() {
     if (!selectedUserId) return;
     sessionsLoading = true;
+    prescribedSetsMap = {};
+    loggedSetsMap = {};
 
     try {
       const sessionsQuery = query(
@@ -94,7 +126,71 @@
       sessions30Days = current30;
       sessions30DaysPrev = prev30;
 
-      workoutSessions = allSessions.slice(0, 10);
+      // Fetch programs for prescribed sets computation (cached)
+      const last10 = allSessions.slice(0, 10);
+      const programIds = [...new Set(last10.map(s => s.programId).filter(Boolean))];
+      const toFetch = programIds.filter(pid => !programCache[pid]);
+      await Promise.all(toFetch.map(async pid => {
+        try {
+          const snap = await getDoc(doc(db, 'programs', pid));
+          if (snap.exists()) programCache[pid] = { id: snap.id, ...snap.data() };
+        } catch (e) { /* ignore fetch errors */ }
+      }));
+      programCache = { ...programCache };
+
+      // Compute prescribed sets and Full Tracking IDs for each session
+      const setsMap = {};
+      const templateMap = {};
+      for (const session of last10) {
+        const program = programCache[session.programId];
+        const dayTemplate = program?.publishedDays?.find(d => d.name === session.dayName);
+        setsMap[session.id] = computePrescribedSets(dayTemplate);
+        templateMap[session.id] = getFullTrackingIds(dayTemplate);
+      }
+      prescribedSetsMap = setsMap;
+
+      // Query workoutLogs for last 10 sessions to compute logged sets
+      const loggedMap = {};
+      const sessionIds = last10.map(s => s.id).filter(Boolean);
+      if (sessionIds.length > 0) {
+        try {
+          // Firestore 'in' supports up to 30 items, so we're safe with 10
+          const logsQuery = query(
+            collection(db, 'workoutLogs'),
+            where('completedWorkoutId', 'in', sessionIds)
+          );
+          const logsSnap = await getDocs(logsQuery);
+          // Group logs by session and count distinct (exerciseGroupKey, setNumber)
+          const logsBySession = {};
+          logsSnap.docs.forEach(d => {
+            const log = d.data();
+            const sid = log.completedWorkoutId;
+            if (!logsBySession[sid]) logsBySession[sid] = [];
+            logsBySession[sid].push(log);
+          });
+          for (const session of last10) {
+            const logs = logsBySession[session.id] || [];
+            const ftIds = templateMap[session.id];
+            const seen = new Set();
+            for (const log of logs) {
+              const key = log.workoutExerciseId || log.exerciseId;
+              if (!key) continue;
+              // Check if this log is for a Full Tracking exercise
+              const isFullTracking = ftIds.workoutExerciseIds.has(log.workoutExerciseId) ||
+                (!log.workoutExerciseId && ftIds.exerciseIds.has(log.exerciseId));
+              if (!isFullTracking) continue;
+              const setNum = log.setNumber || 1;
+              seen.add(`${key}|${setNum}`);
+            }
+            loggedMap[session.id] = seen.size;
+          }
+        } catch (e) {
+          console.log('Could not load workout logs:', e);
+        }
+      }
+      loggedSetsMap = loggedMap;
+
+      workoutSessions = last10;
     } catch (e) {
       console.log('Could not load sessions:', e);
       workoutSessions = [];
@@ -102,6 +198,8 @@
       sessions7DaysPrev = 0;
       sessions30Days = 0;
       sessions30DaysPrev = 0;
+      prescribedSetsMap = {};
+      loggedSetsMap = {};
     }
     sessionsLoading = false;
   }
@@ -110,6 +208,23 @@
     if (!timestamp) return '';
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+
+  // Get completion info for a session (percent, text, color, glow)
+  function getCompletionInfo(sessionId) {
+    const prescribed = prescribedSetsMap[sessionId];
+    const logged = loggedSetsMap[sessionId] ?? 0;
+    if (!prescribed || prescribed === 0) {
+      return { text: '-', color: '#888', glow: 'none' };
+    }
+    const pct = Math.min(100, Math.max(0, Math.round((logged / prescribed) * 100)));
+    if (pct > 80) {
+      return { text: `${pct}% Completed`, color: '#16a34a', glow: '0 0 12px rgba(22, 163, 74, 0.35)' };
+    } else if (pct >= 50) {
+      return { text: `${pct}% Completed`, color: '#ca8a04', glow: '0 0 12px rgba(202, 138, 4, 0.35)' };
+    } else {
+      return { text: `${pct}% Completed`, color: '#dc2626', glow: '0 0 12px rgba(220, 38, 38, 0.35)' };
+    }
   }
 </script>
 
@@ -172,8 +287,9 @@
     <p style="color: #888; margin-bottom: 15px;">Last {workoutSessions.length} workout{workoutSessions.length !== 1 ? 's' : ''}</p>
 
     {#each workoutSessions as session}
+      {@const completion = getCompletionInfo(session.id)}
       <div
-        style="background: white; border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 12px; cursor: default; transition: all 0.2s;"
+        style="background: white; border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 12px; cursor: default; transition: all 0.2s; box-shadow: {completion.glow};"
         onmouseenter={(e) => e.currentTarget.style.borderColor = '#667eea'}
         onmouseleave={(e) => e.currentTarget.style.borderColor = '#ddd'}
       >
@@ -183,11 +299,17 @@
             <p style="margin: 3px 0 0 0; color: #666; font-size: 0.9em;">{session.programName}</p>
           </div>
           <div style="text-align: right;">
-            <div style="color: #888; font-size: 0.85em;">{formatDate(session.finishedAt)}</div>
+            <div style="display: flex; align-items: center; gap: 10px; justify-content: flex-end;">
+              <span style="color: {completion.color}; font-size: 0.85em; font-weight: 500;">{completion.text}</span>
+              <span style="color: #888; font-size: 0.85em;">{formatDate(session.finishedAt)}</span>
+            </div>
             {#if session.durationMinutes}
               <div style="color: #667eea; font-size: 0.85em; margin-top: 2px;">{session.durationMinutes} min</div>
             {/if}
           </div>
+        </div>
+        <div style="margin-top: 8px; color: #888; font-size: 0.85em;">
+          Prescribed Sets: {prescribedSetsMap[session.id] ?? '—'} &nbsp;&nbsp; Logged Sets: {loggedSetsMap[session.id] ?? '—'}
         </div>
       </div>
     {/each}
