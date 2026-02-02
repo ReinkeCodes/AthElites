@@ -1029,13 +1029,27 @@
                         {/if}
                       </div>
 
-                      <!-- Dot indicator -->
-                      <div style="display: flex; justify-content: center; gap: 8px; margin-bottom: 10px;">
-                        {#each log.sets as dotSet, dotIndex}
-                          {@const completionState = getSetCompletionState(dotSet)}
-                          {@const isActive = dotIndex === activeIdx}
-                          <div style="width: {isActive ? '12px' : '10px'}; height: {isActive ? '12px' : '10px'}; border-radius: 50%; background: {getDotColor(completionState)}; {isActive ? 'box-shadow: 0 0 0 2px #667eea;' : ''} transition: all 0.2s;"></div>
-                        {/each}
+                      <!-- Dot indicator with navigation arrows -->
+                      <div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 10px;">
+                        <button
+                          onclick={() => prevSet(exercise.workoutExerciseId)}
+                          disabled={activeIdx === 0}
+                          aria-label="Previous set"
+                          style="background: none; border: none; font-size: 1.5em; color: {activeIdx === 0 ? '#ccc' : '#555'}; cursor: {activeIdx === 0 ? 'default' : 'pointer'}; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
+                        >&lt;</button>
+                        <div style="display: flex; gap: 8px;">
+                          {#each log.sets as dotSet, dotIndex}
+                            {@const completionState = getSetCompletionState(dotSet)}
+                            {@const isActive = dotIndex === activeIdx}
+                            <div style="width: {isActive ? '12px' : '10px'}; height: {isActive ? '12px' : '10px'}; border-radius: 50%; background: {getDotColor(completionState)}; {isActive ? 'box-shadow: 0 0 0 2px #667eea;' : ''} transition: all 0.2s;"></div>
+                          {/each}
+                        </div>
+                        <button
+                          onclick={() => nextSet(exercise.workoutExerciseId)}
+                          disabled={activeIdx === log.sets.length - 1}
+                          aria-label="Next set"
+                          style="background: none; border: none; font-size: 1.5em; color: {activeIdx === log.sets.length - 1 ? '#ccc' : '#555'}; cursor: {activeIdx === log.sets.length - 1 ? 'default' : 'pointer'}; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
+                        >&gt;</button>
                       </div>
 
                       <!-- Vertical stacked inputs -->
