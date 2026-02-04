@@ -21,7 +21,8 @@
     '/history',
     '/profile',
     '/admin/users',
-    '/clients'
+    '/clients',
+    '/compare'
   ];
 
   // Check if back arrow should be visible
@@ -145,6 +146,11 @@
       {#if userRole === 'admin'}
         <a href="/admin/users" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
           User Roles
+        </a>
+      {/if}
+      {#if userRole === 'admin' || userRole === 'coach'}
+        <a href="/compare" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
+          Compare
         </a>
       {/if}
       <a href="/profile" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
