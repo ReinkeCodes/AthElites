@@ -14,6 +14,7 @@
   let trimA = $state({ in: 0, out: 0, duration: 0 });
   let trimATrack = $state(null);
   let trimADragging = $state(null); // 'in' | 'out' | null
+  let rateA = $state(1);
 
   // Pane B state
   let paneB = $state({ sourceType: null, localUrl: null, fileName: null, youtubeId: null, error: null });
@@ -22,6 +23,7 @@
   let trimB = $state({ in: 0, out: 0, duration: 0 });
   let trimBTrack = $state(null);
   let trimBDragging = $state(null); // 'in' | 'out' | null
+  let rateB = $state(1);
 
   // Shared controls state
   let isPlaying = $state(false);
@@ -40,12 +42,14 @@
     return getBothLocalLoaded() && trimA.duration > 0 && trimB.duration > 0;
   }
 
-  // Get the master segment length (min of both trimmed segments)
+  // Get the master segment length (rate-aware: min of effective durations)
   function getMasterSegmentLen() {
     if (!getTrimsValid()) return maxDuration;
-    const segmentLenA = trimA.out - trimA.in;
-    const segmentLenB = trimB.out - trimB.in;
-    return Math.min(segmentLenA, segmentLenB);
+    const safeRateA = rateA > 0 ? rateA : 1;
+    const safeRateB = rateB > 0 ? rateB : 1;
+    const effectiveA = Math.max(0, trimA.out - trimA.in) / safeRateA;
+    const effectiveB = Math.max(0, trimB.out - trimB.in) / safeRateB;
+    return Math.min(effectiveA, effectiveB);
   }
 
   // Get the scrubber max value
@@ -74,6 +78,8 @@
       // Check if we need to restart from trim start
       if (getTrimsValid()) {
         const masterLen = getMasterSegmentLen();
+        const safeRateA = rateA > 0 ? rateA : 1;
+        const safeRateB = rateB > 0 ? rateB : 1;
         const atEnd = currentTime >= masterLen - PLAY_END_EPSILON;
         const aOutOfBounds = videoA.currentTime < trimA.in || videoA.currentTime > trimA.out;
         const bOutOfBounds = videoB.currentTime < trimB.in || videoB.currentTime > trimB.out;
@@ -83,6 +89,10 @@
           currentTime = 0;
           videoA.currentTime = trimA.in;
           videoB.currentTime = trimB.in;
+        } else {
+          // Sync both videos to current compare-time before playing
+          videoA.currentTime = trimA.in + currentTime * safeRateA;
+          videoB.currentTime = trimB.in + currentTime * safeRateB;
         }
       }
 
@@ -99,15 +109,17 @@
     isPlaying = false;
   }
 
-  // Seek both videos (normalized timeline when trims are valid)
+  // Seek both videos (rate-aware mapping when trims are valid)
   function handleSeek(e) {
     const t = parseFloat(e.target.value);
     currentTime = t;
 
     if (getTrimsValid()) {
-      // Map normalized time to actual video times
-      const timeA = Math.min(trimA.out, Math.max(trimA.in, trimA.in + t));
-      const timeB = Math.min(trimB.out, Math.max(trimB.in, trimB.in + t));
+      // Map compare-time to actual video times: timeX = inX + (t * rateX)
+      const safeRateA = rateA > 0 ? rateA : 1;
+      const safeRateB = rateB > 0 ? rateB : 1;
+      const timeA = Math.min(trimA.out, Math.max(trimA.in, trimA.in + t * safeRateA));
+      const timeB = Math.min(trimB.out, Math.max(trimB.in, trimB.in + t * safeRateB));
       if (videoA) videoA.currentTime = timeA;
       if (videoB) videoB.currentTime = timeB;
     } else {
@@ -213,17 +225,36 @@
     window.removeEventListener('pointerup', handleTrimPointerUp);
   }
 
-  // Clamp currentTime when trim values change
+  // Clamp currentTime and re-seek when trim or rate values change
   $effect(() => {
     if (getTrimsValid()) {
       const masterLen = getMasterSegmentLen();
+      const safeRateA = rateA > 0 ? rateA : 1;
+      const safeRateB = rateB > 0 ? rateB : 1;
+
       if (currentTime > masterLen) {
         currentTime = masterLen;
+        // Seek both videos to clamped position
+        if (videoA) videoA.currentTime = trimA.in + currentTime * safeRateA;
+        if (videoB) videoB.currentTime = trimB.in + currentTime * safeRateB;
+
+        // Handle end-of-track behavior
+        if (isPlaying) {
+          if (loopEnabled) {
+            currentTime = 0;
+            if (videoA) videoA.currentTime = trimA.in;
+            if (videoB) videoB.currentTime = trimB.in;
+          } else {
+            if (videoA) videoA.pause();
+            if (videoB) videoB.pause();
+            isPlaying = false;
+          }
+        }
       }
     }
   });
 
-  // Poll currentTime while playing (trim-aware)
+  // Poll currentTime while playing (rate-aware)
   $effect(() => {
     if (!isPlaying || !videoA) return;
 
@@ -232,24 +263,27 @@
       if (!videoA || !isPlaying) return;
 
       if (getTrimsValid()) {
-        // Calculate normalized time relative to trim start
-        const t = videoA.currentTime - trimA.in;
+        // Derive compare-time from videoA position: t = (videoA.currentTime - inA) / rateA
+        const safeRateA = rateA > 0 ? rateA : 1;
+        const safeRateB = rateB > 0 ? rateB : 1;
+        const t = (videoA.currentTime - trimA.in) / safeRateA;
         const masterLen = getMasterSegmentLen();
 
-        if (t >= masterLen) {
+        if (t >= masterLen - PLAY_END_EPSILON) {
           if (loopEnabled) {
             // Loop back to start
             currentTime = 0;
             videoA.currentTime = trimA.in;
             if (videoB) videoB.currentTime = trimB.in;
           } else {
-            // Reached end of trimmed segment - pause
+            // Reached end - pause
             videoA.pause();
             videoB?.pause();
             isPlaying = false;
             currentTime = masterLen;
-            videoA.currentTime = trimA.in + masterLen;
-            if (videoB) videoB.currentTime = trimB.in + masterLen;
+            // Seek to end positions using rate-aware mapping
+            videoA.currentTime = trimA.in + masterLen * safeRateA;
+            if (videoB) videoB.currentTime = trimB.in + masterLen * safeRateB;
             return;
           }
         }
@@ -390,18 +424,42 @@
       paneAYoutubeInput = '';
       videoA = null;
       trimA = { in: 0, out: 0, duration: 0 };
+      rateA = 1;
     } else {
       if (paneB.localUrl) URL.revokeObjectURL(paneB.localUrl);
       paneB = { sourceType: null, localUrl: null, fileName: null, youtubeId: null, error: null };
       paneBYoutubeInput = '';
       videoB = null;
       trimB = { in: 0, out: 0, duration: 0 };
+      rateB = 1;
     }
   }
 
   function hasVideo(paneState) {
     return paneState.localUrl || paneState.youtubeId;
   }
+
+  // Playback rate options
+  const rateOptions = [0.25, 0.5, 1, 1.5, 2];
+
+  function handleRateChange(pane, rate) {
+    if (pane === 'A') {
+      rateA = rate;
+      if (videoA) videoA.playbackRate = rate;
+    } else {
+      rateB = rate;
+      if (videoB) videoB.playbackRate = rate;
+    }
+  }
+
+  // Apply rate when video element becomes available
+  $effect(() => {
+    if (videoA) videoA.playbackRate = rateA;
+  });
+
+  $effect(() => {
+    if (videoB) videoB.playbackRate = rateB;
+  });
 </script>
 
 {#if !loading}
@@ -448,13 +506,11 @@
           <button class="source-btn" onclick={() => selectSourceType('A', 'youtube')}>YouTube</button>
         </div>
       {:else if paneA.sourceType === 'local' && !paneA.localUrl}
-        <div class="file-picker">
-          <input
-            type="file"
-            accept="video/*"
-            capture="environment"
-            onchange={(e) => handleFileSelect('A', e)}
-          />
+        <div class="local-picker">
+          <button class="local-btn" onclick={() => document.getElementById('selectA').click()}>
+            Select Video
+          </button>
+          <input id="selectA" type="file" accept="video/*" onchange={(e) => handleFileSelect('A', e)} hidden />
         </div>
       {:else if paneA.sourceType === 'youtube' && !paneA.youtubeId}
         <div class="youtube-input">
@@ -512,6 +568,23 @@
               </div>
             </div>
           {/if}
+          <!-- Speed control for Pane A -->
+          <div class="speed-control">
+            <span class="speed-label">Speed:</span>
+            <div class="speed-buttons">
+              {#each rateOptions as opt}
+                <button
+                  class="speed-btn"
+                  class:selected={rateA === opt}
+                  onclick={() => handleRateChange('A', opt)}
+                >{opt}x</button>
+              {/each}
+            </div>
+          </div>
+          <div class="duration-readouts">
+            <span>Segment: {trimA.duration > 0 ? (trimA.out - trimA.in).toFixed(2) + 's' : '—'}</span>
+            <span>Effective: {trimA.duration > 0 ? ((trimA.out - trimA.in) / rateA).toFixed(2) + 's' : '—'}</span>
+          </div>
         </div>
       {:else if paneA.youtubeId}
         <div class="video-container">
@@ -544,13 +617,11 @@
           <button class="source-btn" onclick={() => selectSourceType('B', 'youtube')}>YouTube</button>
         </div>
       {:else if paneB.sourceType === 'local' && !paneB.localUrl}
-        <div class="file-picker">
-          <input
-            type="file"
-            accept="video/*"
-            capture="environment"
-            onchange={(e) => handleFileSelect('B', e)}
-          />
+        <div class="local-picker">
+          <button class="local-btn" onclick={() => document.getElementById('selectB').click()}>
+            Select Video
+          </button>
+          <input id="selectB" type="file" accept="video/*" onchange={(e) => handleFileSelect('B', e)} hidden />
         </div>
       {:else if paneB.sourceType === 'youtube' && !paneB.youtubeId}
         <div class="youtube-input">
@@ -608,6 +679,23 @@
               </div>
             </div>
           {/if}
+          <!-- Speed control for Pane B -->
+          <div class="speed-control">
+            <span class="speed-label">Speed:</span>
+            <div class="speed-buttons">
+              {#each rateOptions as opt}
+                <button
+                  class="speed-btn"
+                  class:selected={rateB === opt}
+                  onclick={() => handleRateChange('B', opt)}
+                >{opt}x</button>
+              {/each}
+            </div>
+          </div>
+          <div class="duration-readouts">
+            <span>Segment: {trimB.duration > 0 ? (trimB.out - trimB.in).toFixed(2) + 's' : '—'}</span>
+            <span>Effective: {trimB.duration > 0 ? ((trimB.out - trimB.in) / rateB).toFixed(2) + 's' : '—'}</span>
+          </div>
         </div>
       {:else if paneB.youtubeId}
         <div class="video-container">
@@ -749,6 +837,29 @@
     background: #e3f2fd;
   }
 
+  .local-picker {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 20px 0;
+    align-items: center;
+  }
+
+  .local-btn {
+    padding: 12px 20px;
+    background: #fff;
+    border: 1px solid #4CAF50;
+    color: #4CAF50;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1em;
+    min-width: 180px;
+  }
+
+  .local-btn:hover {
+    background: #e8f5e9;
+  }
+
   .file-picker {
     padding: 20px 0;
   }
@@ -819,6 +930,58 @@
     width: 100%;
     height: 100%;
     border-radius: 4px;
+  }
+
+  /* Speed control */
+  .speed-control {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .speed-label {
+    font-size: 0.85em;
+    color: #555;
+  }
+
+  .speed-buttons {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+
+  .speed-btn {
+    padding: 6px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    font-size: 0.85em;
+    cursor: pointer;
+    min-width: 44px;
+    color: #555;
+    transition: background-color 0.15s, border-color 0.15s;
+  }
+
+  .speed-btn:hover {
+    border-color: #4CAF50;
+    background: #f5f5f5;
+  }
+
+  .speed-btn.selected {
+    background: #4CAF50;
+    border-color: #4CAF50;
+    color: white;
+    font-weight: 600;
+  }
+
+  .duration-readouts {
+    margin-top: 8px;
+    display: flex;
+    gap: 16px;
+    font-size: 0.8em;
+    color: #777;
+    font-family: monospace;
   }
 
   /* Trim controls */
