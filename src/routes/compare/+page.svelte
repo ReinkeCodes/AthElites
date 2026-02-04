@@ -11,21 +11,46 @@
   let paneA = $state({ sourceType: null, localUrl: null, fileName: null, youtubeId: null, error: null });
   let paneAYoutubeInput = $state('');
   let videoA = $state(null);
+  let trimA = $state({ in: 0, out: 0, duration: 0 });
+  let trimATrack = $state(null);
+  let trimADragging = $state(null); // 'in' | 'out' | null
 
   // Pane B state
   let paneB = $state({ sourceType: null, localUrl: null, fileName: null, youtubeId: null, error: null });
   let paneBYoutubeInput = $state('');
   let videoB = $state(null);
+  let trimB = $state({ in: 0, out: 0, duration: 0 });
+  let trimBTrack = $state(null);
+  let trimBDragging = $state(null); // 'in' | 'out' | null
 
   // Shared controls state
   let isPlaying = $state(false);
   let currentTime = $state(0);
   let maxDuration = $state(0);
+  let loopEnabled = $state(false);
 
   // Check if both panes have local videos loaded
   function getBothLocalLoaded() {
     return paneA.sourceType === 'local' && paneA.localUrl &&
            paneB.sourceType === 'local' && paneB.localUrl;
+  }
+
+  // Check if both panes have valid trims (duration > 0 means trim is initialized)
+  function getTrimsValid() {
+    return getBothLocalLoaded() && trimA.duration > 0 && trimB.duration > 0;
+  }
+
+  // Get the master segment length (min of both trimmed segments)
+  function getMasterSegmentLen() {
+    if (!getTrimsValid()) return maxDuration;
+    const segmentLenA = trimA.out - trimA.in;
+    const segmentLenB = trimB.out - trimB.in;
+    return Math.min(segmentLenA, segmentLenB);
+  }
+
+  // Get the scrubber max value
+  function getScrubberMax() {
+    return getTrimsValid() ? getMasterSegmentLen() : maxDuration;
   }
 
   // Update max duration when videos are loaded
@@ -34,6 +59,8 @@
       maxDuration = Math.min(videoA.duration, videoB.duration);
     }
   }
+
+  const PLAY_END_EPSILON = 0.05;
 
   // Shared play/pause
   function togglePlayPause() {
@@ -44,6 +71,21 @@
       videoB.pause();
       isPlaying = false;
     } else {
+      // Check if we need to restart from trim start
+      if (getTrimsValid()) {
+        const masterLen = getMasterSegmentLen();
+        const atEnd = currentTime >= masterLen - PLAY_END_EPSILON;
+        const aOutOfBounds = videoA.currentTime < trimA.in || videoA.currentTime > trimA.out;
+        const bOutOfBounds = videoB.currentTime < trimB.in || videoB.currentTime > trimB.out;
+
+        if (atEnd || aOutOfBounds || bOutOfBounds) {
+          // Restart from trim starts
+          currentTime = 0;
+          videoA.currentTime = trimA.in;
+          videoB.currentTime = trimB.in;
+        }
+      }
+
       videoA.play();
       videoB.play();
       isPlaying = true;
@@ -57,12 +99,22 @@
     isPlaying = false;
   }
 
-  // Seek both videos
+  // Seek both videos (normalized timeline when trims are valid)
   function handleSeek(e) {
-    const time = parseFloat(e.target.value);
-    currentTime = time;
-    if (videoA) videoA.currentTime = time;
-    if (videoB) videoB.currentTime = time;
+    const t = parseFloat(e.target.value);
+    currentTime = t;
+
+    if (getTrimsValid()) {
+      // Map normalized time to actual video times
+      const timeA = Math.min(trimA.out, Math.max(trimA.in, trimA.in + t));
+      const timeB = Math.min(trimB.out, Math.max(trimB.in, trimB.in + t));
+      if (videoA) videoA.currentTime = timeA;
+      if (videoB) videoB.currentTime = timeB;
+    } else {
+      // Direct time when no trims
+      if (videoA) videoA.currentTime = t;
+      if (videoB) videoB.currentTime = t;
+    }
   }
 
   // Format time as MM:SS
@@ -73,16 +125,156 @@
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   }
 
-  // Poll currentTime while playing
+  // Format time as MM:SS.xx for trim readouts
+  function formatTimeDetailed(seconds) {
+    if (isNaN(seconds) || seconds === null) return '0:00.00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    const hundredths = Math.floor((seconds % 1) * 100);
+    return `${mins}:${secs.toString().padStart(2, '0')}.${hundredths.toString().padStart(2, '0')}`;
+  }
+
+  // Initialize trim values when video metadata loads
+  function initTrim(pane, duration) {
+    if (pane === 'A') {
+      trimA = { in: 0, out: duration, duration };
+    } else {
+      trimB = { in: 0, out: duration, duration };
+    }
+  }
+
+  // Reset trim to full duration
+  function resetTrim(pane) {
+    if (pane === 'A') {
+      trimA = { ...trimA, in: 0, out: trimA.duration };
+      if (videoA) videoA.currentTime = 0;
+    } else {
+      trimB = { ...trimB, in: 0, out: trimB.duration };
+      if (videoB) videoB.currentTime = 0;
+    }
+  }
+
+  // Calculate time from pointer position on track
+  function getTimeFromPointer(e, trackEl, duration) {
+    const rect = trackEl.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, x / rect.width));
+    return ratio * duration;
+  }
+
+  const MIN_TRIM_GAP = 0.05; // Minimum gap between IN and OUT
+
+  // Pointer down on trim handle
+  function handleTrimPointerDown(pane, handle, e) {
+    e.preventDefault();
+    if (pane === 'A') {
+      trimADragging = handle;
+    } else {
+      trimBDragging = handle;
+    }
+    // Add global listeners
+    window.addEventListener('pointermove', handleTrimPointerMove);
+    window.addEventListener('pointerup', handleTrimPointerUp);
+  }
+
+  // Pointer move while dragging
+  function handleTrimPointerMove(e) {
+    if (trimADragging && trimATrack) {
+      const time = getTimeFromPointer(e, trimATrack, trimA.duration);
+      if (trimADragging === 'in') {
+        const clamped = Math.min(time, trimA.out - MIN_TRIM_GAP);
+        trimA = { ...trimA, in: Math.max(0, clamped) };
+        if (videoA) videoA.currentTime = trimA.in;
+      } else {
+        const clamped = Math.max(time, trimA.in + MIN_TRIM_GAP);
+        trimA = { ...trimA, out: Math.min(trimA.duration, clamped) };
+        if (videoA) videoA.currentTime = trimA.out;
+      }
+    }
+    if (trimBDragging && trimBTrack) {
+      const time = getTimeFromPointer(e, trimBTrack, trimB.duration);
+      if (trimBDragging === 'in') {
+        const clamped = Math.min(time, trimB.out - MIN_TRIM_GAP);
+        trimB = { ...trimB, in: Math.max(0, clamped) };
+        if (videoB) videoB.currentTime = trimB.in;
+      } else {
+        const clamped = Math.max(time, trimB.in + MIN_TRIM_GAP);
+        trimB = { ...trimB, out: Math.min(trimB.duration, clamped) };
+        if (videoB) videoB.currentTime = trimB.out;
+      }
+    }
+  }
+
+  // Pointer up - stop dragging
+  function handleTrimPointerUp() {
+    trimADragging = null;
+    trimBDragging = null;
+    window.removeEventListener('pointermove', handleTrimPointerMove);
+    window.removeEventListener('pointerup', handleTrimPointerUp);
+  }
+
+  // Clamp currentTime when trim values change
+  $effect(() => {
+    if (getTrimsValid()) {
+      const masterLen = getMasterSegmentLen();
+      if (currentTime > masterLen) {
+        currentTime = masterLen;
+      }
+    }
+  });
+
+  // Poll currentTime while playing (trim-aware)
   $effect(() => {
     if (!isPlaying || !videoA) return;
 
     let animationId;
     function updateTime() {
-      if (videoA && isPlaying) {
-        currentTime = videoA.currentTime;
-        animationId = requestAnimationFrame(updateTime);
+      if (!videoA || !isPlaying) return;
+
+      if (getTrimsValid()) {
+        // Calculate normalized time relative to trim start
+        const t = videoA.currentTime - trimA.in;
+        const masterLen = getMasterSegmentLen();
+
+        if (t >= masterLen) {
+          if (loopEnabled) {
+            // Loop back to start
+            currentTime = 0;
+            videoA.currentTime = trimA.in;
+            if (videoB) videoB.currentTime = trimB.in;
+          } else {
+            // Reached end of trimmed segment - pause
+            videoA.pause();
+            videoB?.pause();
+            isPlaying = false;
+            currentTime = masterLen;
+            videoA.currentTime = trimA.in + masterLen;
+            if (videoB) videoB.currentTime = trimB.in + masterLen;
+            return;
+          }
+        }
+
+        currentTime = Math.max(0, t);
+      } else {
+        // Non-trim mode: check for end of master range
+        if (videoA.currentTime >= maxDuration - PLAY_END_EPSILON) {
+          if (loopEnabled) {
+            currentTime = 0;
+            videoA.currentTime = 0;
+            if (videoB) videoB.currentTime = 0;
+          } else {
+            videoA.pause();
+            videoB?.pause();
+            isPlaying = false;
+            currentTime = maxDuration;
+            return;
+          }
+        } else {
+          currentTime = videoA.currentTime;
+        }
       }
+
+      animationId = requestAnimationFrame(updateTime);
     }
     animationId = requestAnimationFrame(updateTime);
 
@@ -190,17 +382,20 @@
     isPlaying = false;
     currentTime = 0;
     maxDuration = 0;
+    loopEnabled = false;
 
     if (pane === 'A') {
       if (paneA.localUrl) URL.revokeObjectURL(paneA.localUrl);
       paneA = { sourceType: null, localUrl: null, fileName: null, youtubeId: null, error: null };
       paneAYoutubeInput = '';
       videoA = null;
+      trimA = { in: 0, out: 0, duration: 0 };
     } else {
       if (paneB.localUrl) URL.revokeObjectURL(paneB.localUrl);
       paneB = { sourceType: null, localUrl: null, fileName: null, youtubeId: null, error: null };
       paneBYoutubeInput = '';
       videoB = null;
+      trimB = { in: 0, out: 0, duration: 0 };
     }
   }
 
@@ -223,12 +418,16 @@
         type="range"
         class="scrubber"
         min="0"
-        max={maxDuration || 1}
+        max={getScrubberMax() || 1}
         step="0.1"
         value={currentTime}
         oninput={handleSeek}
       />
-      <span class="time-display">{formatTime(maxDuration)}</span>
+      <span class="time-display">{formatTime(getScrubberMax())}</span>
+      <label class="loop-toggle">
+        <input type="checkbox" bind:checked={loopEnabled} />
+        Loop
+      </label>
     </div>
   {/if}
 
@@ -279,9 +478,40 @@
             src={paneA.localUrl}
             controls
             playsinline
-            onloadedmetadata={updateMaxDuration}
+            onloadedmetadata={(e) => { updateMaxDuration(); initTrim('A', e.target.duration); }}
             onended={handleEnded}
           ></video>
+          <!-- Trim controls for Pane A -->
+          {#if trimA.duration > 0}
+            <div class="trim-control">
+              <div class="trim-readouts">
+                <span>IN: {formatTimeDetailed(trimA.in)}</span>
+                <button class="reset-trim-btn" onclick={() => resetTrim('A')}>Reset Trim</button>
+                <span>OUT: {formatTimeDetailed(trimA.out)}</span>
+              </div>
+              <div class="trim-track" bind:this={trimATrack}>
+                <div class="trim-range" style="left: {(trimA.in / trimA.duration) * 100}%; right: {100 - (trimA.out / trimA.duration) * 100}%"></div>
+                <div
+                  class="trim-handle trim-handle-in"
+                  style="left: {(trimA.in / trimA.duration) * 100}%"
+                  onpointerdown={(e) => handleTrimPointerDown('A', 'in', e)}
+                  role="slider"
+                  aria-label="Trim in point"
+                  aria-valuenow={trimA.in}
+                  tabindex="0"
+                ></div>
+                <div
+                  class="trim-handle trim-handle-out"
+                  style="left: {(trimA.out / trimA.duration) * 100}%"
+                  onpointerdown={(e) => handleTrimPointerDown('A', 'out', e)}
+                  role="slider"
+                  aria-label="Trim out point"
+                  aria-valuenow={trimA.out}
+                  tabindex="0"
+                ></div>
+              </div>
+            </div>
+          {/if}
         </div>
       {:else if paneA.youtubeId}
         <div class="video-container">
@@ -344,9 +574,40 @@
             src={paneB.localUrl}
             controls
             playsinline
-            onloadedmetadata={updateMaxDuration}
+            onloadedmetadata={(e) => { updateMaxDuration(); initTrim('B', e.target.duration); }}
             onended={handleEnded}
           ></video>
+          <!-- Trim controls for Pane B -->
+          {#if trimB.duration > 0}
+            <div class="trim-control">
+              <div class="trim-readouts">
+                <span>IN: {formatTimeDetailed(trimB.in)}</span>
+                <button class="reset-trim-btn" onclick={() => resetTrim('B')}>Reset Trim</button>
+                <span>OUT: {formatTimeDetailed(trimB.out)}</span>
+              </div>
+              <div class="trim-track" bind:this={trimBTrack}>
+                <div class="trim-range" style="left: {(trimB.in / trimB.duration) * 100}%; right: {100 - (trimB.out / trimB.duration) * 100}%"></div>
+                <div
+                  class="trim-handle trim-handle-in"
+                  style="left: {(trimB.in / trimB.duration) * 100}%"
+                  onpointerdown={(e) => handleTrimPointerDown('B', 'in', e)}
+                  role="slider"
+                  aria-label="Trim in point"
+                  aria-valuenow={trimB.in}
+                  tabindex="0"
+                ></div>
+                <div
+                  class="trim-handle trim-handle-out"
+                  style="left: {(trimB.out / trimB.duration) * 100}%"
+                  onpointerdown={(e) => handleTrimPointerDown('B', 'out', e)}
+                  role="slider"
+                  aria-label="Trim out point"
+                  aria-valuenow={trimB.out}
+                  tabindex="0"
+                ></div>
+              </div>
+            </div>
+          {/if}
         </div>
       {:else if paneB.youtubeId}
         <div class="video-container">
@@ -403,6 +664,21 @@
     height: 6px;
     cursor: pointer;
     accent-color: #4CAF50;
+  }
+
+  .loop-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: white;
+    font-size: 0.85em;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .loop-toggle input {
+    accent-color: #4CAF50;
+    cursor: pointer;
   }
 
   .compare-container {
@@ -545,6 +821,83 @@
     border-radius: 4px;
   }
 
+  /* Trim controls */
+  .trim-control {
+    margin-top: 12px;
+    padding: 10px;
+    background: #f0f0f0;
+    border-radius: 6px;
+  }
+
+  .trim-readouts {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    font-size: 0.8em;
+    font-family: monospace;
+    color: #555;
+  }
+
+  .reset-trim-btn {
+    padding: 4px 10px;
+    background: #fff;
+    border: 1px solid #888;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    color: #555;
+  }
+
+  .reset-trim-btn:hover {
+    background: #eee;
+    border-color: #666;
+  }
+
+  .trim-track {
+    position: relative;
+    height: 24px;
+    background: #ddd;
+    border-radius: 4px;
+    cursor: pointer;
+    touch-action: none;
+  }
+
+  .trim-range {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(76, 175, 80, 0.3);
+    border-radius: 4px;
+  }
+
+  .trim-handle {
+    position: absolute;
+    top: -2px;
+    width: 14px;
+    height: 28px;
+    background: #4CAF50;
+    border: 2px solid #fff;
+    border-radius: 4px;
+    cursor: ew-resize;
+    transform: translateX(-50%);
+    touch-action: none;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+
+  .trim-handle:hover,
+  .trim-handle:active {
+    background: #45a049;
+  }
+
+  .trim-handle-in {
+    border-left: 3px solid #fff;
+  }
+
+  .trim-handle-out {
+    border-right: 3px solid #fff;
+  }
+
   @media (max-width: 640px) {
     .compare-container {
       flex-direction: column;
@@ -561,6 +914,15 @@
     .scrubber {
       width: 100%;
       order: 3;
+    }
+
+    .trim-handle {
+      width: 18px;
+      height: 32px;
+    }
+
+    .trim-track {
+      height: 28px;
     }
   }
 </style>
