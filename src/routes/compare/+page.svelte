@@ -118,6 +118,50 @@
 
   // Shared play/pause
   function togglePlayPause() {
+    // Mixed mode (Local + YouTube)
+    const mixed = getMixedMode();
+    if (mixed) {
+      const localVideo = mixed.localPane === 'A' ? videoA : videoB;
+      const ytPlayer = mixed.ytPane === 'A' ? ytPlayerA : ytPlayerB;
+      const ytReady = mixed.ytPane === 'A' ? ytReadyA : ytReadyB;
+      if (!localVideo || !ytPlayer || !ytReady) return;
+
+      if (isPlaying) {
+        localVideo.pause();
+        try { ytPlayer.pauseVideo(); } catch (e) { /* player gone */ }
+        isPlaying = false;
+      } else {
+        const masterLen = getMasterSegmentLen();
+        if (masterLen <= 0) return;
+
+        const localTrim = mixed.localPane === 'A' ? trimA : trimB;
+        const localRate = mixed.localPane === 'A' ? rateA : rateB;
+        const safeRate = localRate > 0 ? localRate : 1;
+
+        // Reset to start if at/near end
+        if (currentTime >= masterLen - PLAY_END_EPSILON) {
+          currentTime = 0;
+        }
+
+        // Seek local pane
+        if (localTrim.duration > 0) {
+          localVideo.currentTime = Math.min(localTrim.out, Math.max(localTrim.in, localTrim.in + currentTime * safeRate));
+        } else {
+          localVideo.currentTime = currentTime;
+        }
+
+        // Seek and play YouTube pane
+        ytPlayer.seekTo(currentTime, true);
+
+        // Play both
+        localVideo.play();
+        ytPlayer.playVideo();
+        isPlaying = true;
+      }
+      return;
+    }
+
+    // Local+Local mode
     if (!videoA || !videoB) return;
 
     if (isPlaying) {
@@ -166,6 +210,15 @@
 
     const mixed = getMixedMode();
     if (mixed) {
+      // Pause master immediately on scrub start
+      if (isPlaying) {
+        const lv = mixed.localPane === 'A' ? videoA : videoB;
+        const yp = mixed.ytPane === 'A' ? ytPlayerA : ytPlayerB;
+        if (lv) lv.pause();
+        if (yp) try { yp.pauseVideo(); } catch (e) { /* player gone */ }
+        isPlaying = false;
+      }
+
       // Mixed mode: seek local pane with trim+rate mapping, YT pane directly
       const localTrim = mixed.localPane === 'A' ? trimA : trimB;
       const localRate = mixed.localPane === 'A' ? rateA : rateB;
@@ -338,9 +391,9 @@
     }
   });
 
-  // Poll currentTime while playing (rate-aware)
+  // Poll currentTime while playing (rate-aware) — Local+Local only
   $effect(() => {
-    if (!isPlaying || !videoA) return;
+    if (!isPlaying || getMixedMode() || !videoA) return;
 
     let animationId;
     function updateTime() {
@@ -395,6 +448,58 @@
       animationId = requestAnimationFrame(updateTime);
     }
     animationId = requestAnimationFrame(updateTime);
+
+    return () => {
+      if (animationId) cancelAnimationFrame(animationId);
+    };
+  });
+
+  // Mixed mode time progression (wall-clock based, no drift correction)
+  $effect(() => {
+    const mixed = getMixedMode();
+    if (!isPlaying || !mixed) return;
+
+    const localVideo = mixed.localPane === 'A' ? videoA : videoB;
+    const ytPlayer = mixed.ytPane === 'A' ? ytPlayerA : ytPlayerB;
+    const ytReady = mixed.ytPane === 'A' ? ytReadyA : ytReadyB;
+    if (!localVideo || !ytPlayer || !ytReady) return;
+
+    let animationId;
+    let lastTimestamp = performance.now();
+
+    function updateMixedTime(now) {
+      if (!isPlaying) return;
+
+      const delta = (now - lastTimestamp) / 1000;
+      lastTimestamp = now;
+
+      const newTime = currentTime + delta;
+      const masterLen = getMasterSegmentLen();
+
+      if (newTime >= masterLen - PLAY_END_EPSILON) {
+        if (loopEnabled) {
+          // Loop — wrap to start, re-seek both panes, keep playing
+          currentTime = 0;
+          const localTrim = mixed.localPane === 'A' ? trimA : trimB;
+          localVideo.currentTime = localTrim.duration > 0 ? localTrim.in : 0;
+          try { ytPlayer.seekTo(0, true); } catch (e) { /* player gone */ }
+          lastTimestamp = now;
+          animationId = requestAnimationFrame(updateMixedTime);
+          return;
+        }
+        // Reached end — pause both panes, clamp t
+        localVideo.pause();
+        try { ytPlayer.pauseVideo(); } catch (e) { /* player gone */ }
+        isPlaying = false;
+        currentTime = masterLen;
+        return;
+      }
+
+      currentTime = Math.max(0, newTime);
+      animationId = requestAnimationFrame(updateMixedTime);
+    }
+
+    animationId = requestAnimationFrame(updateMixedTime);
 
     return () => {
       if (animationId) cancelAnimationFrame(animationId);
@@ -653,8 +758,8 @@
           {isPlaying ? '⏸ Pause' : '▶ Play'}
         </button>
       {:else}
-        <button class="play-pause-btn" disabled title="Play not available for Local+YouTube yet">
-          ▶ Play
+        <button class="play-pause-btn" onclick={togglePlayPause} disabled={!getMixedScrubberEnabled()}>
+          {isPlaying ? '⏸ Pause' : '▶ Play'}
         </button>
       {/if}
       <span class="time-display">{formatTime(currentTime)}</span>
@@ -670,12 +775,10 @@
         disabled={scrubberDisabled}
       />
       <span class="time-display">{formatTime(getScrubberMax())}</span>
-      {#if !mixed}
-        <label class="loop-toggle">
-          <input type="checkbox" bind:checked={loopEnabled} />
-          Loop
-        </label>
-      {/if}
+      <label class="loop-toggle">
+        <input type="checkbox" bind:checked={loopEnabled} />
+        Loop
+      </label>
     </div>
   {/if}
 
