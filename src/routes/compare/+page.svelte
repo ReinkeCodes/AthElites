@@ -2,7 +2,7 @@
   import { auth, db } from '$lib/firebase.js';
   import { doc, getDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
 
   let loading = $state(true);
@@ -25,6 +25,15 @@
   let trimBDragging = $state(null); // 'in' | 'out' | null
   let rateB = $state(1);
 
+  // YouTube IFrame API state
+  let ytApiLoading = false;
+  let ytPlayerA = $state(null);
+  let ytPlayerB = $state(null);
+  let ytReadyA = $state(false);
+  let ytReadyB = $state(false);
+  let ytDurationA = $state(0);
+  let ytDurationB = $state(0);
+
   // Shared controls state
   let isPlaying = $state(false);
   let currentTime = $state(0);
@@ -42,8 +51,46 @@
     return getBothLocalLoaded() && trimA.duration > 0 && trimB.duration > 0;
   }
 
+  // Check if one pane is Local and the other is YouTube (mixed mode)
+  function getMixedMode() {
+    const aLocal = paneA.sourceType === 'local' && paneA.localUrl;
+    const bLocal = paneB.sourceType === 'local' && paneB.localUrl;
+    const aYT = paneA.sourceType === 'youtube' && paneA.youtubeId;
+    const bYT = paneB.sourceType === 'youtube' && paneB.youtubeId;
+    if (aLocal && bYT) return { localPane: 'A', ytPane: 'B' };
+    if (bLocal && aYT) return { localPane: 'B', ytPane: 'A' };
+    return null;
+  }
+
+  // Check if master controls should be visible
+  function getMasterControlsVisible() {
+    return getBothLocalLoaded() || getMixedMode() !== null;
+  }
+
+  // Check if scrubber is usable in mixed mode
+  function getMixedScrubberEnabled() {
+    const mixed = getMixedMode();
+    if (!mixed) return false;
+    const localTrim = mixed.localPane === 'A' ? trimA : trimB;
+    const ytReady = mixed.ytPane === 'A' ? ytReadyA : ytReadyB;
+    const ytDur = mixed.ytPane === 'A' ? ytDurationA : ytDurationB;
+    return localTrim.duration > 0 && ytReady && ytDur > 0;
+  }
+
   // Get the master segment length (rate-aware: min of effective durations)
   function getMasterSegmentLen() {
+    const mixed = getMixedMode();
+    if (mixed) {
+      const localTrim = mixed.localPane === 'A' ? trimA : trimB;
+      const localRate = mixed.localPane === 'A' ? rateA : rateB;
+      const ytDur = mixed.ytPane === 'A' ? ytDurationA : ytDurationB;
+      const safeRate = localRate > 0 ? localRate : 1;
+      const localEffective = localTrim.duration > 0
+        ? Math.max(0, localTrim.out - localTrim.in) / safeRate
+        : 0;
+      if (localEffective <= 0 || ytDur <= 0) return 0;
+      return Math.min(localEffective, ytDur);
+    }
     if (!getTrimsValid()) return maxDuration;
     const safeRateA = rateA > 0 ? rateA : 1;
     const safeRateB = rateB > 0 ? rateB : 1;
@@ -54,6 +101,9 @@
 
   // Get the scrubber max value
   function getScrubberMax() {
+    if (getMixedMode()) {
+      return getMixedScrubberEnabled() ? getMasterSegmentLen() : 0;
+    }
     return getTrimsValid() ? getMasterSegmentLen() : maxDuration;
   }
 
@@ -114,6 +164,29 @@
     const t = parseFloat(e.target.value);
     currentTime = t;
 
+    const mixed = getMixedMode();
+    if (mixed) {
+      // Mixed mode: seek local pane with trim+rate mapping, YT pane directly
+      const localTrim = mixed.localPane === 'A' ? trimA : trimB;
+      const localRate = mixed.localPane === 'A' ? rateA : rateB;
+      const localVideo = mixed.localPane === 'A' ? videoA : videoB;
+      const safeRate = localRate > 0 ? localRate : 1;
+
+      if (localTrim.duration > 0) {
+        const localTime = Math.min(localTrim.out, Math.max(localTrim.in, localTrim.in + t * safeRate));
+        if (localVideo) localVideo.currentTime = localTime;
+      } else {
+        if (localVideo) localVideo.currentTime = t;
+      }
+
+      const ytPlayer = mixed.ytPane === 'A' ? ytPlayerA : ytPlayerB;
+      const ytReady = mixed.ytPane === 'A' ? ytReadyA : ytReadyB;
+      if (ytPlayer && ytReady) {
+        ytPlayer.seekTo(t, true);
+      }
+      return;
+    }
+
     if (getTrimsValid()) {
       // Map compare-time to actual video times: timeX = inX + (t * rateX)
       const safeRateA = rateA > 0 ? rateA : 1;
@@ -126,6 +199,17 @@
       // Direct time when no trims
       if (videoA) videoA.currentTime = t;
       if (videoB) videoB.currentTime = t;
+    }
+  }
+
+  // Pause YouTube after scrub ends (mixed mode only)
+  function handleSeekEnd() {
+    const mixed = getMixedMode();
+    if (!mixed) return;
+    const ytPlayer = mixed.ytPane === 'A' ? ytPlayerA : ytPlayerB;
+    const ytReady = mixed.ytPane === 'A' ? ytReadyA : ytReadyB;
+    if (ytPlayer && ytReady) {
+      try { ytPlayer.pauseVideo(); } catch (e) { /* player gone */ }
     }
   }
 
@@ -338,6 +422,8 @@
     return () => {
       if (paneA.localUrl) URL.revokeObjectURL(paneA.localUrl);
       if (paneB.localUrl) URL.revokeObjectURL(paneB.localUrl);
+      destroyYTPlayer('A');
+      destroyYTPlayer('B');
     };
   });
 
@@ -352,6 +438,54 @@
       if (match) return match[1];
     }
     return null;
+  }
+
+  // Load the YouTube IFrame API script (once)
+  function loadYTApi() {
+    return new Promise((resolve, reject) => {
+      if (typeof window !== 'undefined' && window.YT && window.YT.Player) {
+        resolve();
+        return;
+      }
+      if (ytApiLoading) {
+        const check = setInterval(() => {
+          if (window.YT && window.YT.Player) {
+            clearInterval(check);
+            resolve();
+          }
+        }, 100);
+        setTimeout(() => { clearInterval(check); reject(new Error('YT API timeout')); }, 10000);
+        return;
+      }
+      ytApiLoading = true;
+      window.onYouTubeIframeAPIReady = () => {
+        ytApiLoading = false;
+        resolve();
+      };
+      const tag = document.createElement('script');
+      tag.src = 'https://www.youtube.com/iframe_api';
+      tag.onerror = () => { ytApiLoading = false; reject(new Error('Failed to load YT API')); };
+      document.head.appendChild(tag);
+    });
+  }
+
+  // Destroy a YouTube player instance and reset its state
+  function destroyYTPlayer(pane) {
+    if (pane === 'A') {
+      if (ytPlayerA) {
+        try { ytPlayerA.destroy(); } catch (e) { /* player already gone */ }
+        ytPlayerA = null;
+      }
+      ytReadyA = false;
+      ytDurationA = 0;
+    } else {
+      if (ytPlayerB) {
+        try { ytPlayerB.destroy(); } catch (e) { /* player already gone */ }
+        ytPlayerB = null;
+      }
+      ytReadyB = false;
+      ytDurationB = 0;
+    }
   }
 
   function selectSourceType(pane, type) {
@@ -382,7 +516,7 @@
     }
   }
 
-  function loadYoutube(pane) {
+  async function loadYoutube(pane) {
     const input = pane === 'A' ? paneAYoutubeInput : paneBYoutubeInput;
     const videoId = getYouTubeId(input);
 
@@ -402,10 +536,51 @@
       URL.revokeObjectURL(paneState.localUrl);
     }
 
+    // Destroy any existing YT player for this pane
+    destroyYTPlayer(pane);
+
     if (pane === 'A') {
       paneA = { ...paneA, youtubeId: videoId, localUrl: null, fileName: null, error: null };
     } else {
       paneB = { ...paneB, youtubeId: videoId, localUrl: null, fileName: null, error: null };
+    }
+
+    // Wait for Svelte to render the player div, then init YT player
+    await tick();
+
+    try {
+      await loadYTApi();
+      const elementId = pane === 'A' ? 'yt-player-a' : 'yt-player-b';
+      const el = document.getElementById(elementId);
+      if (!el) return;
+
+      const player = new window.YT.Player(elementId, {
+        videoId,
+        playerVars: { controls: 1, modestbranding: 1, rel: 0, origin: window.location.origin },
+        events: {
+          onReady: (event) => {
+            if (pane === 'A') {
+              ytPlayerA = player;
+              ytReadyA = true;
+              ytDurationA = event.target.getDuration() || 0;
+            } else {
+              ytPlayerB = player;
+              ytReadyB = true;
+              ytDurationB = event.target.getDuration() || 0;
+            }
+          },
+          onStateChange: (event) => {
+            // Capture duration if it wasn't available at onReady
+            const dur = event.target.getDuration();
+            if (dur > 0) {
+              if (pane === 'A' && ytDurationA === 0) ytDurationA = dur;
+              if (pane === 'B' && ytDurationB === 0) ytDurationB = dur;
+            }
+          }
+        }
+      });
+    } catch (e) {
+      console.error('Failed to init YouTube player:', e);
     }
   }
 
@@ -417,6 +592,9 @@
     currentTime = 0;
     maxDuration = 0;
     loopEnabled = false;
+
+    // Destroy YT player before state changes remove the DOM element
+    destroyYTPlayer(pane);
 
     if (pane === 'A') {
       if (paneA.localUrl) URL.revokeObjectURL(paneA.localUrl);
@@ -465,12 +643,20 @@
 {#if !loading}
   <h1>Compare</h1>
 
-  <!-- Shared controls (only when both panes have local videos) -->
-  {#if getBothLocalLoaded()}
+  <!-- Shared controls (when both panes have local videos, or Local+YouTube) -->
+  {#if getMasterControlsVisible()}
+    {@const mixed = getMixedMode()}
+    {@const scrubberDisabled = mixed ? !getMixedScrubberEnabled() : false}
     <div class="shared-controls">
-      <button class="play-pause-btn" onclick={togglePlayPause}>
-        {isPlaying ? '⏸ Pause' : '▶ Play'}
-      </button>
+      {#if !mixed}
+        <button class="play-pause-btn" onclick={togglePlayPause}>
+          {isPlaying ? '⏸ Pause' : '▶ Play'}
+        </button>
+      {:else}
+        <button class="play-pause-btn" disabled title="Play not available for Local+YouTube yet">
+          ▶ Play
+        </button>
+      {/if}
       <span class="time-display">{formatTime(currentTime)}</span>
       <input
         type="range"
@@ -480,12 +666,16 @@
         step="0.1"
         value={currentTime}
         oninput={handleSeek}
+        onchange={handleSeekEnd}
+        disabled={scrubberDisabled}
       />
       <span class="time-display">{formatTime(getScrubberMax())}</span>
-      <label class="loop-toggle">
-        <input type="checkbox" bind:checked={loopEnabled} />
-        Loop
-      </label>
+      {#if !mixed}
+        <label class="loop-toggle">
+          <input type="checkbox" bind:checked={loopEnabled} />
+          Loop
+        </label>
+      {/if}
     </div>
   {/if}
 
@@ -589,13 +779,7 @@
       {:else if paneA.youtubeId}
         <div class="video-container">
           <div class="youtube-wrapper">
-            <iframe
-              src="https://www.youtube.com/embed/{paneA.youtubeId}"
-              title="Pane A YouTube video"
-              frameborder="0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowfullscreen
-            ></iframe>
+            <div id="yt-player-a"></div>
           </div>
         </div>
       {/if}
@@ -700,13 +884,7 @@
       {:else if paneB.youtubeId}
         <div class="video-container">
           <div class="youtube-wrapper">
-            <iframe
-              src="https://www.youtube.com/embed/{paneB.youtubeId}"
-              title="Pane B YouTube video"
-              frameborder="0"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowfullscreen
-            ></iframe>
+            <div id="yt-player-b"></div>
           </div>
         </div>
       {/if}
@@ -736,8 +914,14 @@
     min-width: 90px;
   }
 
-  .play-pause-btn:hover {
+  .play-pause-btn:hover:not(:disabled) {
     background: #45a049;
+  }
+
+  .play-pause-btn:disabled {
+    background: #888;
+    cursor: not-allowed;
+    opacity: 0.6;
   }
 
   .time-display {
@@ -752,6 +936,11 @@
     height: 6px;
     cursor: pointer;
     accent-color: #4CAF50;
+  }
+
+  .scrubber:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
   }
 
   .loop-toggle {
@@ -921,9 +1110,10 @@
     position: relative;
     padding-bottom: 56.25%;
     height: 0;
+    overflow: hidden;
   }
 
-  .youtube-wrapper iframe {
+  .youtube-wrapper :global(iframe) {
     position: absolute;
     top: 0;
     left: 0;
