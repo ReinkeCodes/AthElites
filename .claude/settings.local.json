@@ -6,7 +6,8 @@
       "Bash(dir:*)",
       "Bash(cat:*)",
       "Bash(tree:*)",
-      "Bash(npx svelte-check:*)"
+      "Bash(npx svelte-check:*)",
+      "Bash(findstr:*)"
     ]
   }
 }

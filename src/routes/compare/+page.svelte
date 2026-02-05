@@ -33,6 +33,12 @@
   let ytReadyB = $state(false);
   let ytDurationA = $state(0);
   let ytDurationB = $state(0);
+  let ytInA = $state(0);
+  let ytInB = $state(0);
+  let ytRateA = $state(1);
+  let ytRateB = $state(1);
+  let ytAvailableRatesA = $state([1]);
+  let ytAvailableRatesB = $state([1]);
 
   // Shared controls state
   let isPlaying = $state(false);
@@ -84,12 +90,15 @@
       const localTrim = mixed.localPane === 'A' ? trimA : trimB;
       const localRate = mixed.localPane === 'A' ? rateA : rateB;
       const ytDur = mixed.ytPane === 'A' ? ytDurationA : ytDurationB;
+      const ytIn = mixed.ytPane === 'A' ? ytInA : ytInB;
+      const safeYtRate = (mixed.ytPane === 'A' ? ytRateA : ytRateB) || 1;
       const safeRate = localRate > 0 ? localRate : 1;
       const localEffective = localTrim.duration > 0
         ? Math.max(0, localTrim.out - localTrim.in) / safeRate
         : 0;
-      if (localEffective <= 0 || ytDur <= 0) return 0;
-      return Math.min(localEffective, ytDur);
+      const ytRemaining = Math.max(0, ytDur - ytIn) / safeYtRate;
+      if (localEffective <= 0 || ytRemaining <= 0) return 0;
+      return Math.min(localEffective, ytRemaining);
     }
     if (!getTrimsValid()) return maxDuration;
     const safeRateA = rateA > 0 ? rateA : 1;
@@ -151,7 +160,9 @@
         }
 
         // Seek and play YouTube pane
-        ytPlayer.seekTo(currentTime, true);
+        const ytIn = mixed.ytPane === 'A' ? ytInA : ytInB;
+        const safeYtRate = (mixed.ytPane === 'A' ? ytRateA : ytRateB) || 1;
+        ytPlayer.seekTo(ytIn + currentTime * safeYtRate, true);
 
         // Play both
         localVideo.play();
@@ -235,7 +246,9 @@
       const ytPlayer = mixed.ytPane === 'A' ? ytPlayerA : ytPlayerB;
       const ytReady = mixed.ytPane === 'A' ? ytReadyA : ytReadyB;
       if (ytPlayer && ytReady) {
-        ytPlayer.seekTo(t, true);
+        const ytIn = mixed.ytPane === 'A' ? ytInA : ytInB;
+        const safeYtRate = (mixed.ytPane === 'A' ? ytRateA : ytRateB) || 1;
+        ytPlayer.seekTo(ytIn + t * safeYtRate, true);
       }
       return;
     }
@@ -454,7 +467,10 @@
     };
   });
 
-  // Mixed mode time progression (wall-clock based, no drift correction)
+  // Mixed mode time progression (wall-clock based, gentle drift correction)
+  const YT_DRIFT_THRESHOLD = 0.25;   // seconds — correct only when drift exceeds this
+  const YT_DRIFT_COOLDOWN  = 750;    // ms — minimum interval between corrections
+
   $effect(() => {
     const mixed = getMixedMode();
     if (!isPlaying || !mixed) return;
@@ -466,6 +482,7 @@
 
     let animationId;
     let lastTimestamp = performance.now();
+    let lastCorrectionMs = 0;
 
     function updateMixedTime(now) {
       if (!isPlaying) return;
@@ -476,14 +493,18 @@
       const newTime = currentTime + delta;
       const masterLen = getMasterSegmentLen();
 
+      const ytIn = mixed.ytPane === 'A' ? ytInA : ytInB;
+      const safeYtRate = (mixed.ytPane === 'A' ? ytRateA : ytRateB) || 1;
+
       if (newTime >= masterLen - PLAY_END_EPSILON) {
         if (loopEnabled) {
           // Loop — wrap to start, re-seek both panes, keep playing
           currentTime = 0;
           const localTrim = mixed.localPane === 'A' ? trimA : trimB;
           localVideo.currentTime = localTrim.duration > 0 ? localTrim.in : 0;
-          try { ytPlayer.seekTo(0, true); } catch (e) { /* player gone */ }
+          try { ytPlayer.seekTo(ytIn, true); } catch (e) { /* player gone */ }
           lastTimestamp = now;
+          lastCorrectionMs = now;
           animationId = requestAnimationFrame(updateMixedTime);
           return;
         }
@@ -496,6 +517,22 @@
       }
 
       currentTime = Math.max(0, newTime);
+
+      // Gentle drift correction for YouTube
+      if (now - lastCorrectionMs >= YT_DRIFT_COOLDOWN) {
+        try {
+          const ytNow = ytPlayer.getCurrentTime();
+          if (typeof ytNow === 'number') {
+            const expectedYT = ytIn + currentTime * safeYtRate;
+            const drift = ytNow - expectedYT;
+            if (Math.abs(drift) > YT_DRIFT_THRESHOLD) {
+              ytPlayer.seekTo(expectedYT, true);
+              lastCorrectionMs = now;
+            }
+          }
+        } catch (e) { /* player gone */ }
+      }
+
       animationId = requestAnimationFrame(updateMixedTime);
     }
 
@@ -583,6 +620,9 @@
       }
       ytReadyA = false;
       ytDurationA = 0;
+      ytInA = 0;
+      ytRateA = 1;
+      ytAvailableRatesA = [1];
     } else {
       if (ytPlayerB) {
         try { ytPlayerB.destroy(); } catch (e) { /* player already gone */ }
@@ -590,6 +630,9 @@
       }
       ytReadyB = false;
       ytDurationB = 0;
+      ytInB = 0;
+      ytRateB = 1;
+      ytAvailableRatesB = [1];
     }
   }
 
@@ -664,14 +707,17 @@
         playerVars: { controls: 1, modestbranding: 1, rel: 0, origin: window.location.origin },
         events: {
           onReady: (event) => {
+            const rates = event.target.getAvailablePlaybackRates?.() || [1];
             if (pane === 'A') {
               ytPlayerA = player;
               ytReadyA = true;
               ytDurationA = event.target.getDuration() || 0;
+              ytAvailableRatesA = rates;
             } else {
               ytPlayerB = player;
               ytReadyB = true;
               ytDurationB = event.target.getDuration() || 0;
+              ytAvailableRatesB = rates;
             }
           },
           onStateChange: (event) => {
@@ -732,6 +778,35 @@
     } else {
       rateB = rate;
       if (videoB) videoB.playbackRate = rate;
+    }
+  }
+
+  function setYtStart(pane) {
+    const player = pane === 'A' ? ytPlayerA : ytPlayerB;
+    if (!player) return;
+    try {
+      const t = player.getCurrentTime();
+      if (typeof t === 'number') {
+        if (pane === 'A') ytInA = t;
+        else ytInB = t;
+        currentTime = 0;
+      }
+    } catch (e) { /* player gone */ }
+  }
+
+  function resetYtStart(pane) {
+    if (pane === 'A') ytInA = 0;
+    else ytInB = 0;
+    currentTime = 0;
+  }
+
+  function handleYtRateChange(pane, rate) {
+    if (pane === 'A') {
+      ytRateA = rate;
+      if (ytPlayerA) try { ytPlayerA.setPlaybackRate(rate); } catch (e) {}
+    } else {
+      ytRateB = rate;
+      if (ytPlayerB) try { ytPlayerB.setPlaybackRate(rate); } catch (e) {}
     }
   }
 
@@ -884,6 +959,27 @@
           <div class="youtube-wrapper">
             <div id="yt-player-a"></div>
           </div>
+          {#if ytReadyA && ytDurationA > 0}
+            <div class="yt-start-control">
+              <span class="yt-start-label">Start: {formatTimeDetailed(ytInA)}</span>
+              <button class="yt-start-btn" onclick={() => setYtStart('A')}>Set Start</button>
+              {#if ytInA > 0}
+                <button class="yt-start-btn reset" onclick={() => resetYtStart('A')}>Reset</button>
+              {/if}
+            </div>
+            <div class="speed-control">
+              <span class="speed-label">Speed:</span>
+              <div class="speed-buttons">
+                {#each ytAvailableRatesA as opt}
+                  <button
+                    class="speed-btn"
+                    class:selected={ytRateA === opt}
+                    onclick={() => handleYtRateChange('A', opt)}
+                  >{opt}x</button>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -989,6 +1085,27 @@
           <div class="youtube-wrapper">
             <div id="yt-player-b"></div>
           </div>
+          {#if ytReadyB && ytDurationB > 0}
+            <div class="yt-start-control">
+              <span class="yt-start-label">Start: {formatTimeDetailed(ytInB)}</span>
+              <button class="yt-start-btn" onclick={() => setYtStart('B')}>Set Start</button>
+              {#if ytInB > 0}
+                <button class="yt-start-btn reset" onclick={() => resetYtStart('B')}>Reset</button>
+              {/if}
+            </div>
+            <div class="speed-control">
+              <span class="speed-label">Speed:</span>
+              <div class="speed-buttons">
+                {#each ytAvailableRatesB as opt}
+                  <button
+                    class="speed-btn"
+                    class:selected={ytRateB === opt}
+                    onclick={() => handleYtRateChange('B', opt)}
+                  >{opt}x</button>
+                {/each}
+              </div>
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -1275,6 +1392,43 @@
     font-size: 0.8em;
     color: #777;
     font-family: monospace;
+  }
+
+  /* YouTube start control */
+  .yt-start-control {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .yt-start-label {
+    font-size: 0.85em;
+    font-family: monospace;
+    color: #555;
+  }
+
+  .yt-start-btn {
+    padding: 4px 10px;
+    background: #fff;
+    border: 1px solid #2196F3;
+    color: #2196F3;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8em;
+  }
+
+  .yt-start-btn:hover {
+    background: #e3f2fd;
+  }
+
+  .yt-start-btn.reset {
+    border-color: #888;
+    color: #555;
+  }
+
+  .yt-start-btn.reset:hover {
+    background: #eee;
   }
 
   /* Trim controls */
