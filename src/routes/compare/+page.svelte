@@ -1,5 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
+  import { hideNav } from '$lib/stores/ui.js';
   import { doc, getDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount, tick } from 'svelte';
@@ -45,6 +46,13 @@
   let currentTime = $state(0);
   let maxDuration = $state(0);
   let loopEnabled = $state(false);
+  let focusMode = $state(false);
+  let isPortrait = $state(false);
+
+  // Sync focusMode → hideNav store (hides global nav in layout)
+  $effect(() => {
+    hideNav.set(focusMode);
+  });
 
   // Check if both panes have local videos loaded
   function getBothLocalLoaded() {
@@ -164,10 +172,17 @@
         const safeYtRate = (mixed.ytPane === 'A' ? ytRateA : ytRateB) || 1;
         ytPlayer.seekTo(ytIn + currentTime * safeYtRate, true);
 
-        // Play both
-        localVideo.play();
-        ytPlayer.playVideo();
+        // Play both – mute local for iOS autoplay policy
+        localVideo.muted = true;
         isPlaying = true;
+
+        localVideo.play().catch((err) => {
+          console.warn('[Compare] iOS play blocked for local pane:', err);
+          localVideo.pause();
+          try { ytPlayer.pauseVideo(); } catch (e) { /* player gone */ }
+          isPlaying = false;
+        });
+        ytPlayer.playVideo();
       }
       return;
     }
@@ -201,9 +216,17 @@
         }
       }
 
-      videoA.play();
-      videoB.play();
+      // Mute both for iOS autoplay policy
+      videoA.muted = true;
+      videoB.muted = true;
       isPlaying = true;
+
+      Promise.all([videoA.play(), videoB.play()]).catch((err) => {
+        console.warn('[Compare] iOS play blocked:', err);
+        videoA.pause();
+        videoB.pause();
+        isPlaying = false;
+      });
     }
   }
 
@@ -544,6 +567,14 @@
   });
 
   onMount(() => {
+    // Portrait detection for focus mode overlay
+    function checkOrientation() {
+      isPortrait = window.innerWidth < window.innerHeight && window.innerWidth < 768;
+    }
+    checkOrientation();
+    window.addEventListener('resize', checkOrientation);
+    window.addEventListener('orientationchange', checkOrientation);
+
     onAuthStateChanged(auth, async (user) => {
       if (!user) {
         goto('/login');
@@ -562,6 +593,9 @@
 
     // Cleanup on unmount
     return () => {
+      hideNav.set(false); // Restore global nav on navigation away
+      window.removeEventListener('resize', checkOrientation);
+      window.removeEventListener('orientationchange', checkOrientation);
       if (paneA.localUrl) URL.revokeObjectURL(paneA.localUrl);
       if (paneB.localUrl) URL.revokeObjectURL(paneB.localUrl);
       destroyYTPlayer('A');
@@ -821,13 +855,27 @@
 </script>
 
 {#if !loading}
-  <h1>Compare</h1>
+<div class="compare-page" class:focus-mode={focusMode}>
+
+  {#if focusMode}
+    <div class="focus-header">
+      <button class="exit-focus-btn" onclick={() => focusMode = false}>Exit Focus</button>
+    </div>
+    {#if isPortrait}
+      <div class="portrait-overlay">
+        <p>Rotate your phone to landscape for Focus Mode</p>
+        <button class="exit-focus-btn" onclick={() => focusMode = false}>Exit Focus</button>
+      </div>
+    {/if}
+  {:else}
+    <h1>Compare</h1>
+  {/if}
 
   <!-- Shared controls (when both panes have local videos, or Local+YouTube) -->
   {#if getMasterControlsVisible()}
     {@const mixed = getMixedMode()}
     {@const scrubberDisabled = mixed ? !getMixedScrubberEnabled() : false}
-    <div class="shared-controls">
+    <div class="shared-controls" class:shared-controls-sticky={focusMode}>
       {#if !mixed}
         <button class="play-pause-btn" onclick={togglePlayPause}>
           {isPlaying ? '⏸ Pause' : '▶ Play'}
@@ -854,6 +902,9 @@
         <input type="checkbox" bind:checked={loopEnabled} />
         Loop
       </label>
+      {#if !focusMode}
+        <button class="focus-btn" onclick={() => focusMode = true}>Focus</button>
+      {/if}
     </div>
   {/if}
 
@@ -1110,6 +1161,8 @@
       {/if}
     </div>
   </div>
+
+</div>
 {/if}
 
 <style>
@@ -1534,5 +1587,120 @@
     .trim-track {
       height: 28px;
     }
+  }
+
+  /* Focus mode */
+  .focus-header {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 12px;
+    background: #222;
+  }
+
+  .exit-focus-btn {
+    padding: 6px 14px;
+    background: #555;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+  }
+
+  .exit-focus-btn:hover {
+    background: #666;
+  }
+
+  .focus-btn {
+    padding: 6px 12px;
+    background: #2196F3;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85em;
+    margin-left: auto;
+  }
+
+  .focus-btn:hover {
+    background: #1976D2;
+  }
+
+  .focus-mode {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .focus-mode .compare-container {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .focus-mode .pane {
+    display: flex;
+    flex-direction: column;
+    max-height: 100%;
+  }
+
+  .focus-mode .video-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .focus-mode .video-container video {
+    flex: 1;
+    max-height: 100%;
+    object-fit: contain;
+  }
+
+  .focus-mode .youtube-wrapper {
+    flex: 1;
+    padding-bottom: 0;
+    height: 100%;
+  }
+
+  .focus-mode .shared-controls-sticky {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+  }
+
+  /* Hide setup UI in focus mode */
+  .focus-mode .pane-header,
+  .focus-mode .source-chooser,
+  .focus-mode .local-picker,
+  .focus-mode .youtube-input,
+  .focus-mode .file-name,
+  .focus-mode .trim-control,
+  .focus-mode .speed-control,
+  .focus-mode .duration-readouts,
+  .focus-mode .yt-start-control {
+    display: none;
+  }
+
+  /* Portrait orientation overlay for focus mode on mobile */
+  .portrait-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.95);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    color: white;
+    text-align: center;
+    padding: 20px;
+    gap: 20px;
+  }
+
+  .portrait-overlay p {
+    font-size: 1.25rem;
+    max-width: 280px;
+    line-height: 1.5;
   }
 </style>

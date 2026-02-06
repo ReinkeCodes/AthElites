@@ -1,6 +1,7 @@
 <script>
   import favicon from '$lib/assets/favicon.svg';
   import { auth, db } from '$lib/firebase.js';
+  import { hideNav } from '$lib/stores/ui.js';
   import { onAuthStateChanged, signOut } from 'firebase/auth';
   import { doc, getDoc } from 'firebase/firestore';
   import { onMount } from 'svelte';
@@ -86,6 +87,7 @@
   </style>
 </svelte:head>
 
+{#if !$hideNav}
 <!-- Mobile-friendly nav -->
 <nav style="background: #333; padding: 10px 15px; position: sticky; top: 0; z-index: 100;">
   <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -165,6 +167,7 @@
     </div>
   {/if}
 </nav>
+{/if}
 
 <main style="padding: 15px; max-width: 800px; margin: 0 auto;">
   {@render children()}
