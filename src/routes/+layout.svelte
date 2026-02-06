@@ -1,6 +1,7 @@
 <script>
   import favicon from '$lib/assets/favicon.svg';
   import { auth, db } from '$lib/firebase.js';
+  import { hideNav } from '$lib/stores/ui.js';
   import { onAuthStateChanged, signOut } from 'firebase/auth';
   import { doc, getDoc } from 'firebase/firestore';
   import { onMount } from 'svelte';
@@ -21,7 +22,8 @@
     '/history',
     '/profile',
     '/admin/users',
-    '/clients'
+    '/clients',
+    '/compare'
   ];
 
   // Check if back arrow should be visible
@@ -85,6 +87,7 @@
   </style>
 </svelte:head>
 
+{#if !$hideNav}
 <!-- Mobile-friendly nav -->
 <nav style="background: #333; padding: 10px 15px; position: sticky; top: 0; z-index: 100;">
   <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -147,6 +150,11 @@
           User Roles
         </a>
       {/if}
+      {#if userRole === 'admin' || userRole === 'coach'}
+        <a href="/compare" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
+          Compare
+        </a>
+      {/if}
       <a href="/profile" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
         Profile
       </a>
@@ -159,6 +167,7 @@
     </div>
   {/if}
 </nav>
+{/if}
 
 <main style="padding: 15px; max-width: 800px; margin: 0 auto;">
   {@render children()}

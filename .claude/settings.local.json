@@ -4,7 +4,10 @@
       "Bash(npm run test:run:*)",
       "Bash(npm run build:*)",
       "Bash(dir:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(tree:*)",
+      "Bash(npx svelte-check:*)",
+      "Bash(findstr:*)"
     ]
   }
 }
