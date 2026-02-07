@@ -42,6 +42,12 @@
   // Exercises library (for video URLs)
   let exercises = $state([]);
 
+  // Single-flight lock to prevent double Finish execution
+  let isSavingFinish = $state(false);
+
+  // Zero sets confirmation modal state
+  let showZeroSetsConfirm = $state(false);
+
   // Active set index per exercise (for progressive disclosure in full tracking mode)
   // Structure: { workoutExerciseId: activeSetIndex }
   let activeSetIndices = $state({});
@@ -738,77 +744,125 @@
     }
   }
 
-  async function finishWorkout() {
-    if (!currentUserId || !day) return;
-
-    // Mark current section as visited
-    visitedSections.add(currentSectionIndex);
-
-    const loggedAt = new Date();
-    const workoutEndTime = new Date();
-    const durationMinutes = Math.round((workoutEndTime - workoutStartTime) / 60000);
-
-    // Get workoutTemplateId from the active day (publishedDays preferred)
-    const sourceDay = (program.publishedDays || program.days)?.[parseInt($page.params.dayIndex)];
-    const workoutTemplateId = sourceDay?.workoutTemplateId || day.workoutTemplateId || null;
-
-    // Create workout session first to get its ID
-    const sessionRef = await addDoc(collection(db, 'workoutSessions'), {
-      userId: currentUserId,
-      programId: program.id,
-      programName: program.name,
-      dayName: day.name,
-      workoutTemplateId,
-      startedAt: workoutStartTime,
-      finishedAt: workoutEndTime,
-      durationMinutes: durationMinutes
-    });
-    const completedWorkoutId = sessionRef.id;
-
-    // Save all exercise logs to Firestore - one entry per SET
-    const logPromises = [];
-
-    for (const section of day.sections || []) {
+  // Compute count of eligible sets that would be written to Firestore
+  // A set is eligible if: weight OR reps OR notes OR any truthy customInputs value
+  function computeExpectedSetWrites() {
+    if (!day?.sections) return 0;
+    let count = 0;
+    for (const section of day.sections) {
       for (const exercise of section.exercises || []) {
         const log = exerciseLogs[exercise.workoutExerciseId];
-
         if (log && log.sets) {
-          log.sets.forEach((set, setIndex) => {
-            // Only save sets that have data (weight, reps, notes, or custom inputs)
+          for (const set of log.sets) {
             const hasCustomInput = set.customInputs && Object.values(set.customInputs).some(v => v);
             if (set.weight || set.reps || set.notes || hasCustomInput) {
-              logPromises.push(addDoc(collection(db, 'workoutLogs'), {
-                userId: currentUserId,
-                programId: program.id,
-                programName: program.name,
-                dayName: day.name,
-                completedWorkoutId: completedWorkoutId,
-                workoutExerciseId: exercise.workoutExerciseId || null,
-                exerciseId: exercise.exerciseId,
-                exerciseName: exercise.name,
-                setNumber: setIndex + 1,
-                totalSets: log.sets.length,
-                reps: set.reps,
-                weight: set.weight,
-                rir: set.rir,
-                notes: set.notes,
-                targetReps: log.targetReps,
-                targetWeight: log.targetWeight,
-                targetRir: log.targetRir,
-                repsMetric: exercise.repsMetric || 'reps',
-                weightMetric: exercise.weightMetric || 'weight',
-                customInputs: set.customInputs || null,
-                loggedAt: loggedAt
-              }));
+              count++;
             }
-          });
+          }
         }
       }
     }
+    return count;
+  }
 
-    await Promise.all(logPromises);
+  async function finishWorkout() {
+    if (!currentUserId || !day) return;
+    if (isSavingFinish) return; // Prevent double-tap / duplicate executions
+    isSavingFinish = true;
 
-    goto(`/programs/${program.id}/summary?day=${$page.params.dayIndex}&duration=${durationMinutes}&session=${completedWorkoutId}`);
+    // Check if user has 0 eligible sets
+    const expectedSetWrites = computeExpectedSetWrites();
+    if (expectedSetWrites === 0) {
+      showZeroSetsConfirm = true;
+      return; // Wait for user to confirm or cancel
+    }
+
+    await executeFinishWorkout();
+  }
+
+  function cancelZeroSetsConfirm() {
+    showZeroSetsConfirm = false;
+    isSavingFinish = false;
+  }
+
+  async function confirmZeroSetsSave() {
+    showZeroSetsConfirm = false;
+    await executeFinishWorkout();
+  }
+
+  async function executeFinishWorkout() {
+    try {
+      // Mark current section as visited
+      visitedSections.add(currentSectionIndex);
+
+      const loggedAt = new Date();
+      const workoutEndTime = new Date();
+      const durationMinutes = Math.round((workoutEndTime - workoutStartTime) / 60000);
+
+      // Get workoutTemplateId from the active day (publishedDays preferred)
+      const sourceDay = (program.publishedDays || program.days)?.[parseInt($page.params.dayIndex)];
+      const workoutTemplateId = sourceDay?.workoutTemplateId || day.workoutTemplateId || null;
+
+      // Create workout session first to get its ID
+      const sessionRef = await addDoc(collection(db, 'workoutSessions'), {
+        userId: currentUserId,
+        programId: program.id,
+        programName: program.name,
+        dayName: day.name,
+        workoutTemplateId,
+        startedAt: workoutStartTime,
+        finishedAt: workoutEndTime,
+        durationMinutes: durationMinutes
+      });
+      const completedWorkoutId = sessionRef.id;
+
+      // Save all exercise logs to Firestore - one entry per SET
+      const logPromises = [];
+
+      for (const section of day.sections || []) {
+        for (const exercise of section.exercises || []) {
+          const log = exerciseLogs[exercise.workoutExerciseId];
+
+          if (log && log.sets) {
+            log.sets.forEach((set, setIndex) => {
+              // Only save sets that have data (weight, reps, notes, or custom inputs)
+              const hasCustomInput = set.customInputs && Object.values(set.customInputs).some(v => v);
+              if (set.weight || set.reps || set.notes || hasCustomInput) {
+                logPromises.push(addDoc(collection(db, 'workoutLogs'), {
+                  userId: currentUserId,
+                  programId: program.id,
+                  programName: program.name,
+                  dayName: day.name,
+                  completedWorkoutId: completedWorkoutId,
+                  workoutExerciseId: exercise.workoutExerciseId || null,
+                  exerciseId: exercise.exerciseId,
+                  exerciseName: exercise.name,
+                  setNumber: setIndex + 1,
+                  totalSets: log.sets.length,
+                  reps: set.reps,
+                  weight: set.weight,
+                  rir: set.rir,
+                  notes: set.notes,
+                  targetReps: log.targetReps,
+                  targetWeight: log.targetWeight,
+                  targetRir: log.targetRir,
+                  repsMetric: exercise.repsMetric || 'reps',
+                  weightMetric: exercise.weightMetric || 'weight',
+                  customInputs: set.customInputs || null,
+                  loggedAt: loggedAt
+                }));
+              }
+            });
+          }
+        }
+      }
+
+      await Promise.all(logPromises);
+
+      goto(`/programs/${program.id}/summary?day=${$page.params.dayIndex}&duration=${durationMinutes}&session=${completedWorkoutId}`);
+    } finally {
+      isSavingFinish = false;
+    }
   }
 
   function formatDate(timestamp) {
@@ -1192,8 +1246,8 @@
           Next Section
         </button>
       {:else}
-        <button onclick={finishWorkout} style="padding: 12px 24px; background: #2196F3; color: white; border: none; cursor: pointer;">
-          Finish Workout
+        <button onclick={finishWorkout} disabled={isSavingFinish} style="padding: 12px 24px; background: {isSavingFinish ? '#90CAF9' : '#2196F3'}; color: white; border: none; cursor: {isSavingFinish ? 'not-allowed' : 'pointer'}; opacity: {isSavingFinish ? 0.7 : 1};">
+          {isSavingFinish ? 'Saving…' : 'Finish Workout'}
         </button>
       {/if}
     </div>
@@ -1317,6 +1371,32 @@
         <button onclick={closeHistoryModal} style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">
           Close
         </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Zero Sets Confirmation Dialog -->
+{#if showZeroSetsConfirm}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-label="Zero sets confirmation"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 2001;"
+    onclick={(e) => { if (e.target === e.currentTarget) cancelZeroSetsConfirm(); }}
+    onkeydown={(e) => { if (e.key === 'Escape') cancelZeroSetsConfirm(); }}
+  >
+    <div style="background: white; border-radius: 8px; padding: 20px; max-width: 90%; width: 320px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+      <h3 style="margin: 0 0 12px 0; font-size: 1.1em;">You have 0 logged sets. Save this workout anyway?</h3>
+      <div style="display: flex; gap: 10px; justify-content: flex-end;">
+        <button
+          onclick={cancelZeroSetsConfirm}
+          style="padding: 8px 16px; background: #fff; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;"
+        >Cancel</button>
+        <button
+          onclick={confirmZeroSetsSave}
+          style="padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;"
+        >Save anyway</button>
       </div>
     </div>
   </div>
