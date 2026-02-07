@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc } from 'firebase/firestore';
+  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc, getCountFromServer } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -47,6 +47,17 @@
 
   // Zero sets confirmation modal state
   let showZeroSetsConfirm = $state(false);
+
+  // Verification failure modal state
+  let showVerificationError = $state(false);
+
+  // Slow save hint state
+  let showSavingHint = $state(false);
+
+  // Timer references for cleanup
+  let savingHintTimer = null;
+  let hardTimeoutTimer = null;
+  let finishAborted = false;
 
   // Active set index per exercise (for progressive disclosure in full tracking mode)
   // Structure: { workoutExerciseId: activeSetIndex }
@@ -790,7 +801,34 @@
     await executeFinishWorkout();
   }
 
+  function clearFinishTimers() {
+    if (savingHintTimer) { clearTimeout(savingHintTimer); savingHintTimer = null; }
+    if (hardTimeoutTimer) { clearTimeout(hardTimeoutTimer); hardTimeoutTimer = null; }
+    showSavingHint = false;
+  }
+
   async function executeFinishWorkout() {
+    // Reset aborted flag and start timers
+    finishAborted = false;
+
+    // Soft hint after 3s
+    savingHintTimer = setTimeout(() => {
+      if (isSavingFinish && !finishAborted) {
+        console.log('[DEBUG] Showing saving hint'); // TEMP: remove after confirming
+        showSavingHint = true;
+      }
+    }, 3000);
+
+    // Hard timeout after 12s
+    hardTimeoutTimer = setTimeout(() => {
+      if (isSavingFinish && !finishAborted) {
+        finishAborted = true;
+        clearFinishTimers();
+        showVerificationError = true;
+        isSavingFinish = false;
+      }
+    }, 12000);
+
     try {
       // Mark current section as visited
       visitedSections.add(currentSectionIndex);
@@ -814,6 +852,7 @@
         finishedAt: workoutEndTime,
         durationMinutes: durationMinutes
       });
+      if (finishAborted) return; // Hard timeout fired
       const completedWorkoutId = sessionRef.id;
 
       // Save all exercise logs to Firestore - one entry per SET
@@ -858,11 +897,46 @@
       }
 
       await Promise.all(logPromises);
+      if (finishAborted) return; // Hard timeout fired
 
+      // Server read-back verification
+      const expectedSetWrites = logPromises.length;
+      try {
+        const verifyQuery = query(
+          collection(db, 'workoutLogs'),
+          where('completedWorkoutId', '==', completedWorkoutId)
+        );
+        const countSnapshot = await getCountFromServer(verifyQuery);
+        if (finishAborted) return; // Hard timeout fired
+        const actualSetWrites = countSnapshot.data().count;
+
+        if (actualSetWrites !== expectedSetWrites) {
+          // Verification failed - mismatch
+          clearFinishTimers();
+          showVerificationError = true;
+          isSavingFinish = false;
+          return;
+        }
+      } catch (verifyError) {
+        // Verification failed - error during check
+        console.error('Verification error:', verifyError);
+        clearFinishTimers();
+        showVerificationError = true;
+        isSavingFinish = false;
+        return;
+      }
+
+      // Verification passed - clear timers and navigate to summary
+      clearFinishTimers();
       goto(`/programs/${program.id}/summary?day=${$page.params.dayIndex}&duration=${durationMinutes}&session=${completedWorkoutId}`);
     } finally {
+      clearFinishTimers();
       isSavingFinish = false;
     }
+  }
+
+  function dismissVerificationError() {
+    showVerificationError = false;
   }
 
   function formatDate(timestamp) {
@@ -1371,6 +1445,41 @@
         <button onclick={closeHistoryModal} style="padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer;">
           Close
         </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Saving Overlay (appears after 3s if still saving) -->
+{#if isSavingFinish && showSavingHint && !showVerificationError}
+  <div
+    role="status"
+    aria-live="polite"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 2000;"
+  >
+    <div style="background: white; border-radius: 8px; padding: 24px 32px; max-width: 90%; width: 300px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); text-align: center;">
+      <p style="margin: 0 0 8px 0; font-size: 1.1em; font-weight: 500;">Saving… keep this tab open.</p>
+      <p style="margin: 0; font-size: 0.85em; color: #666;">This can take a moment on slow connections.</p>
+    </div>
+  </div>
+{/if}
+
+<!-- Verification Error Dialog -->
+{#if showVerificationError}
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-label="Save verification error"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 2001;"
+  >
+    <div style="background: white; border-radius: 8px; padding: 20px; max-width: 90%; width: 320px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+      <h3 style="margin: 0 0 12px 0; font-size: 1.1em; color: #d32f2f;">Workout not saved</h3>
+      <p style="margin: 0 0 16px 0; color: #666; font-size: 0.9em;">Some sets did not persist. Please try again.</p>
+      <div style="display: flex; justify-content: flex-end;">
+        <button
+          onclick={dismissVerificationError}
+          style="padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;"
+        >OK</button>
       </div>
     </div>
   </div>
