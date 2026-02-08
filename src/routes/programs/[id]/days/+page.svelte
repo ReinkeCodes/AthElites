@@ -38,13 +38,13 @@
     e.preventDefault();
     const targetRoute = `/programs/${program.id}/workout/${dayIndex}`;
 
-    // No draft or draft matches this workout → proceed
-    if (!activeDraft || (activeDraft.programId === program.id && activeDraft.dayIndex === dayIndex)) {
+    // No draft → proceed immediately
+    if (!activeDraft) {
       goto(targetRoute);
       return;
     }
 
-    // Draft exists for different workout → show modal
+    // Draft exists → show modal before any navigation
     pendingWorkoutRoute = targetRoute;
     showDraftModal = true;
   }
