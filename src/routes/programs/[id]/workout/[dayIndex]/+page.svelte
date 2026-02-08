@@ -5,6 +5,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { setDraft, getDraftKey as getDraftKeyHelper } from '$lib/workoutDraft.js';
 
   let program = $state(null);
   let day = $state(null);
@@ -65,15 +66,12 @@
   let isWorkoutInitialized = false; // Gate autosave until init + hydration done
 
   function getDraftKey() {
-    return currentUserId ? `activeWorkoutDraft:${currentUserId}` : null;
+    return currentUserId ? getDraftKeyHelper(currentUserId) : null;
   }
 
   function saveDraft() {
-    const key = getDraftKey();
-    if (!key || !program?.id || !day) return;
-    const draft = {
-      version: 1,
-      userId: currentUserId,
+    if (!currentUserId || !program?.id || !day) return;
+    const draftData = {
       programId: program.id,
       programName: program.name || 'Workout',
       dayIndex: parseInt($page.params.dayIndex),
@@ -83,14 +81,9 @@
       exerciseCompleted,
       activeSetIndices,
       visitedSectionsArray: Array.from(visitedSections),
-      currentSectionIndex,
-      updatedAtISO: new Date().toISOString()
+      currentSectionIndex
     };
-    try {
-      localStorage.setItem(key, JSON.stringify(draft));
-    } catch (e) {
-      console.warn('Could not save workout draft:', e);
-    }
+    setDraft(currentUserId, draftData);
   }
 
   function scheduleDraftSave() {
