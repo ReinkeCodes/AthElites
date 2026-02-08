@@ -6,12 +6,37 @@
 import { browser } from '$app/environment';
 
 const DRAFT_VERSION = 1;
+const STALE_DRAFT_DAYS = 7;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
  * Get the localStorage key for the user's draft
  */
 export function getDraftKey(userId) {
   return userId ? `activeWorkoutDraft:${userId}` : null;
+}
+
+/**
+ * Check if a draft is stale (older than STALE_DRAFT_DAYS)
+ * @returns {boolean} true if stale, false otherwise (including if updatedAt is missing/invalid)
+ */
+export function isDraftStale(draft) {
+  if (!draft || typeof draft.updatedAt !== 'number') return false;
+  const ageMs = Date.now() - draft.updatedAt;
+  return ageMs > STALE_DRAFT_DAYS * MS_PER_DAY;
+}
+
+/**
+ * Get human-readable age text for a draft
+ * @returns {string} "today", "yesterday", or "X days ago"
+ */
+export function getDraftAgeText(draft) {
+  if (!draft || typeof draft.updatedAt !== 'number') return '';
+  const ageMs = Date.now() - draft.updatedAt;
+  const ageDays = Math.floor(ageMs / MS_PER_DAY);
+  if (ageDays === 0) return 'today';
+  if (ageDays === 1) return 'yesterday';
+  return `${ageDays} days ago`;
 }
 
 /**
