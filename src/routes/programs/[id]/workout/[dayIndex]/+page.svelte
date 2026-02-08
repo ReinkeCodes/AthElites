@@ -75,7 +75,9 @@
       version: 1,
       userId: currentUserId,
       programId: program.id,
+      programName: program.name || 'Workout',
       dayIndex: parseInt($page.params.dayIndex),
+      dayName: day.name || `Day ${parseInt($page.params.dayIndex) + 1}`,
       workoutStartTimeISO: workoutStartTime?.toISOString() || null,
       exerciseLogs,
       exerciseCompleted,
@@ -875,7 +877,6 @@
 
     // Check if user has 0 eligible sets
     const expectedSetWrites = computeExpectedSetWrites();
-    console.log('[FINISH] expectedSetWrites', expectedSetWrites);
     if (expectedSetWrites === 0) {
       showZeroSetsConfirm = true;
       return; // Wait for user to confirm or cancel
@@ -907,7 +908,6 @@
     // Soft hint after 3s
     savingHintTimer = setTimeout(() => {
       if (isSavingFinish && !finishAborted) {
-        console.log('[DEBUG] Showing saving hint'); // TEMP: remove after confirming
         showSavingHint = true;
       }
     }, 3000);
@@ -947,7 +947,6 @@
       });
       if (finishAborted) return; // Hard timeout fired
       const completedWorkoutId = sessionRef.id;
-      console.log('[FINISH] completedWorkoutId', completedWorkoutId);
 
       // Save all exercise logs to Firestore - one entry per SET
       const logPromises = [];
@@ -990,9 +989,7 @@
         }
       }
 
-      console.log('[FINISH] willWrite logPromises.length', logPromises.length);
       await Promise.all(logPromises);
-      console.log('[FINISH] Promise.all resolved');
       if (finishAborted) return; // Hard timeout fired
 
       // Server read-back verification
@@ -1006,7 +1003,6 @@
         const verifySnapshot = await getDocsFromServer(verifyQuery);
         if (finishAborted) return; // Hard timeout fired
         const actualSetWrites = verifySnapshot.size;
-        console.log('[FINISH] actualSetWrites', actualSetWrites);
 
         if (actualSetWrites !== expectedSetWrites) {
           // Verification failed - mismatch

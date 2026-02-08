@@ -16,6 +16,39 @@
   let toastMessage = $state('');
   let toastType = $state('error');
 
+  // Active draft state
+  let activeDraft = $state(null);
+  let showDiscardConfirm = $state(false);
+
+  function loadActiveDraft() {
+    if (!browser || !currentUser) return;
+    try {
+      const key = `activeWorkoutDraft:${currentUser.uid}`;
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        activeDraft = JSON.parse(raw);
+      } else {
+        activeDraft = null;
+      }
+    } catch (e) {
+      activeDraft = null;
+    }
+  }
+
+  function clearActiveDraft() {
+    if (!browser || !currentUser) return;
+    localStorage.removeItem(`activeWorkoutDraft:${currentUser.uid}`);
+    activeDraft = null;
+    showDiscardConfirm = false;
+  }
+
+  function getDraftLabel() {
+    if (!activeDraft) return '';
+    const programName = activeDraft.programName || 'Workout';
+    const dayName = activeDraft.dayName || `Day ${(activeDraft.dayIndex || 0) + 1}`;
+    return `${programName} — ${dayName}`;
+  }
+
   function showToast(message, type = 'error') {
     toastMessage = message;
     toastType = type;
@@ -49,6 +82,7 @@
         }
         await loadRecentSessions();
         await loadAssignedPrograms();
+        loadActiveDraft();
       }
       loading = false;
     });
@@ -148,6 +182,19 @@
     </a>
   </div>
 {:else}
+  <!-- Active Draft Buttons -->
+  {#if activeDraft}
+    <div style="display: grid; gap: 10px; margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-radius: 10px; border: 2px solid #2196F3;">
+      <p style="margin: 0 0 5px 0; color: #1565c0; font-weight: 500; font-size: 0.9em;">Unfinished workout: {getDraftLabel()}</p>
+      <a href="/programs/{activeDraft.programId}/workout/{activeDraft.dayIndex}" style="display: block; padding: 15px; background: #2196F3; color: white; text-decoration: none; border-radius: 8px; text-align: center; font-weight: bold;">
+        Continue active workout
+      </a>
+      <button onclick={() => showDiscardConfirm = true} style="padding: 10px; background: transparent; color: #d32f2f; border: 1px solid #d32f2f; border-radius: 6px; cursor: pointer; font-size: 0.9em;">
+        Discard active session
+      </button>
+    </div>
+  {/if}
+
   <!-- Quick Actions -->
   <div style="display: grid; gap: 10px; margin-bottom: 30px;">
     {#if assignedPrograms.length > 0}
@@ -207,6 +254,25 @@
     </div>
   {/if}
 
+{/if}
+
+<!-- Discard Confirmation Modal -->
+{#if showDiscardConfirm}
+  <div
+    role="dialog"
+    aria-modal="true"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 2001;"
+    onclick={(e) => { if (e.target === e.currentTarget) showDiscardConfirm = false; }}
+  >
+    <div style="background: white; border-radius: 8px; padding: 20px; max-width: 90%; width: 320px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+      <h3 style="margin: 0 0 12px 0; font-size: 1.1em;">Discard active workout?</h3>
+      <p style="margin: 0 0 20px 0; color: #666; font-size: 0.9em;">This will permanently delete your unfinished workout on this device.</p>
+      <div style="display: flex; gap: 10px; justify-content: flex-end;">
+        <button onclick={() => showDiscardConfirm = false} style="padding: 8px 16px; background: #fff; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;">Cancel</button>
+        <button onclick={clearActiveDraft} style="padding: 8px 16px; background: #d32f2f; color: white; border: none; border-radius: 4px; cursor: pointer;">Discard</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
 <!-- Toast notification -->
