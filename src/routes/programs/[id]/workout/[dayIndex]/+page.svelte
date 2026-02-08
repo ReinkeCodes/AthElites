@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc, getCountFromServer } from 'firebase/firestore';
+  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc, getDocsFromServer } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -58,6 +58,90 @@
   let savingHintTimer = null;
   let hardTimeoutTimer = null;
   let finishAborted = false;
+
+  // Draft persistence
+  let draftSaveTimer = null;
+  let didHydrateFromDraft = false; // One-time flag: true after draft restore attempted
+  let isWorkoutInitialized = false; // Gate autosave until init + hydration done
+
+  function getDraftKey() {
+    return currentUserId ? `activeWorkoutDraft:${currentUserId}` : null;
+  }
+
+  function saveDraft() {
+    const key = getDraftKey();
+    if (!key || !program?.id || !day) return;
+    const draft = {
+      version: 1,
+      userId: currentUserId,
+      programId: program.id,
+      programName: program.name || 'Workout',
+      dayIndex: parseInt($page.params.dayIndex),
+      dayName: day.name || `Day ${parseInt($page.params.dayIndex) + 1}`,
+      workoutStartTimeISO: workoutStartTime?.toISOString() || null,
+      exerciseLogs,
+      exerciseCompleted,
+      activeSetIndices,
+      visitedSectionsArray: Array.from(visitedSections),
+      currentSectionIndex,
+      updatedAtISO: new Date().toISOString()
+    };
+    try {
+      localStorage.setItem(key, JSON.stringify(draft));
+    } catch (e) {
+      console.warn('Could not save workout draft:', e);
+    }
+  }
+
+  function scheduleDraftSave() {
+    if (draftSaveTimer) clearTimeout(draftSaveTimer);
+    draftSaveTimer = setTimeout(() => saveDraft(), 800);
+  }
+
+  function loadDraft() {
+    const key = getDraftKey();
+    if (!key || !program?.id) return false;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return false;
+      const draft = JSON.parse(raw);
+      if (draft.programId !== program.id || draft.dayIndex !== parseInt($page.params.dayIndex)) {
+        return false; // Different workout, don't restore
+      }
+      // Restore state
+      if (draft.workoutStartTimeISO) workoutStartTime = new Date(draft.workoutStartTimeISO);
+      if (draft.exerciseLogs) exerciseLogs = draft.exerciseLogs;
+      if (draft.exerciseCompleted) exerciseCompleted = draft.exerciseCompleted;
+      if (draft.activeSetIndices) activeSetIndices = draft.activeSetIndices;
+      if (draft.visitedSectionsArray) visitedSections = new Set(draft.visitedSectionsArray);
+      if (typeof draft.currentSectionIndex === 'number') currentSectionIndex = draft.currentSectionIndex;
+      return true;
+    } catch (e) {
+      console.warn('Corrupt workout draft, removing:', e);
+      localStorage.removeItem(key);
+      return false;
+    }
+  }
+
+  function clearDraft() {
+    const key = getDraftKey();
+    if (key) {
+      localStorage.removeItem(key);
+    }
+    if (draftSaveTimer) {
+      clearTimeout(draftSaveTimer);
+      draftSaveTimer = null;
+    }
+  }
+
+  // Auto-save draft on state changes (debounced)
+  $effect(() => {
+    // Access reactive state to establish dependencies
+    const _ = [exerciseLogs, exerciseCompleted, activeSetIndices, currentSectionIndex, visitedSections];
+    if (currentUserId && program?.id && day && isWorkoutInitialized) {
+      scheduleDraftSave();
+    }
+  });
 
   // Active set index per exercise (for progressive disclosure in full tracking mode)
   // Structure: { workoutExerciseId: activeSetIndex }
@@ -299,9 +383,19 @@
               }
             }
           }
-          exerciseLogs = logs;
-          exerciseCompleted = completed;
-          activeSetIndices = setIndices;
+          // Only initialize state if not already hydrated (prevents onSnapshot overwrites)
+          if (!didHydrateFromDraft) {
+            exerciseLogs = logs;
+            exerciseCompleted = completed;
+            activeSetIndices = setIndices;
+
+            // Try to restore from draft (same workout only)
+            if (currentUserId) {
+              loadDraft(); // Will overwrite defaults if draft matches
+            }
+            didHydrateFromDraft = true;
+            isWorkoutInitialized = true;
+          }
 
           // Load history for each exercise
           if (currentUserId) {
@@ -814,7 +908,6 @@
     // Soft hint after 3s
     savingHintTimer = setTimeout(() => {
       if (isSavingFinish && !finishAborted) {
-        console.log('[DEBUG] Showing saving hint'); // TEMP: remove after confirming
         showSavingHint = true;
       }
     }, 3000);
@@ -904,11 +997,12 @@
       try {
         const verifyQuery = query(
           collection(db, 'workoutLogs'),
+          where('userId', '==', currentUserId),
           where('completedWorkoutId', '==', completedWorkoutId)
         );
-        const countSnapshot = await getCountFromServer(verifyQuery);
+        const verifySnapshot = await getDocsFromServer(verifyQuery);
         if (finishAborted) return; // Hard timeout fired
-        const actualSetWrites = countSnapshot.data().count;
+        const actualSetWrites = verifySnapshot.size;
 
         if (actualSetWrites !== expectedSetWrites) {
           // Verification failed - mismatch
@@ -926,7 +1020,8 @@
         return;
       }
 
-      // Verification passed - clear timers and navigate to summary
+      // Verification passed - clear draft and timers, then navigate to summary
+      clearDraft();
       clearFinishTimers();
       goto(`/programs/${program.id}/summary?day=${$page.params.dayIndex}&duration=${durationMinutes}&session=${completedWorkoutId}`);
     } finally {

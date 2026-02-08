@@ -4,10 +4,66 @@
   import { doc, onSnapshot, getDoc, updateDoc, collection } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { browser } from '$app/environment';
 
   let program = $state(null);
   let userRole = $state(null);
   let currentUserId = $state(null);
+
+  // Draft interception state
+  let activeDraft = $state(null);
+  let showDraftModal = $state(false);
+  let pendingWorkoutRoute = $state(null);
+
+  function loadActiveDraft() {
+    if (!browser || !currentUserId) return;
+    try {
+      const key = `activeWorkoutDraft:${currentUserId}`;
+      const raw = localStorage.getItem(key);
+      activeDraft = raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      activeDraft = null;
+    }
+  }
+
+  function getDraftLabel() {
+    if (!activeDraft) return '';
+    const programName = activeDraft.programName || 'Workout';
+    const dayName = activeDraft.dayName || `Day ${(activeDraft.dayIndex || 0) + 1}`;
+    return `${programName} — ${dayName}`;
+  }
+
+  function handleStartWorkout(e, dayIndex) {
+    e.preventDefault();
+    const targetRoute = `/programs/${program.id}/workout/${dayIndex}`;
+
+    // No draft or draft matches this workout → proceed
+    if (!activeDraft || (activeDraft.programId === program.id && activeDraft.dayIndex === dayIndex)) {
+      goto(targetRoute);
+      return;
+    }
+
+    // Draft exists for different workout → show modal
+    pendingWorkoutRoute = targetRoute;
+    showDraftModal = true;
+  }
+
+  function resumeDraft() {
+    showDraftModal = false;
+    goto(`/programs/${activeDraft.programId}/workout/${activeDraft.dayIndex}`);
+  }
+
+  function discardAndProceed() {
+    if (browser && currentUserId) {
+      localStorage.removeItem(`activeWorkoutDraft:${currentUserId}`);
+    }
+    activeDraft = null;
+    showDraftModal = false;
+    if (pendingWorkoutRoute) {
+      goto(pendingWorkoutRoute);
+    }
+  }
 
   // Generate stable unique IDs (Firestore-based, works on all browsers including mobile Safari)
   function generateId() {
@@ -42,6 +98,7 @@
         if (userDoc.exists()) {
           userRole = userDoc.data().role;
         }
+        loadActiveDraft();
       }
     });
 
@@ -101,7 +158,7 @@
     <div style="display: grid; gap: 15px;">
       {#each program.days as day, dayIndex}
         {@const sections = getSectionSummaries(day)}
-        <a href="/programs/{program.id}/workout/{dayIndex}" style="text-decoration: none; color: inherit;">
+        <a href="/programs/{program.id}/workout/{dayIndex}" onclick={(e) => handleStartWorkout(e, dayIndex)} style="text-decoration: none; color: inherit;">
           <div style="border: 2px solid #4CAF50; padding: 20px; border-radius: 10px; background: #f9fff9; cursor: pointer; transition: all 0.2s;" onmouseenter={(e) => e.currentTarget.style.background = '#e8f5e9'} onmouseleave={(e) => e.currentTarget.style.background = '#f9fff9'}>
             <div style="display: flex; justify-content: space-between; align-items: start;">
               <h3 style="margin: 0;">{day.name}</h3>
@@ -146,5 +203,24 @@
   {/if}
 {:else}
   <p>Loading...</p>
+{/if}
+
+<!-- Draft Interception Modal (Option B) -->
+{#if showDraftModal}
+  <div
+    role="dialog"
+    aria-modal="true"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 2001;"
+    onclick={(e) => { if (e.target === e.currentTarget) showDraftModal = false; }}
+  >
+    <div style="background: white; border-radius: 8px; padding: 20px; max-width: 90%; width: 340px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+      <h3 style="margin: 0 0 12px 0; font-size: 1.1em;">Pick up where you left off?</h3>
+      <p style="margin: 0 0 20px 0; color: #666; font-size: 0.9em;">We found an unfinished workout: <strong>{getDraftLabel()}</strong>. You can resume it, or discard it to start a new session.</p>
+      <div style="display: flex; gap: 10px; justify-content: flex-end;">
+        <button onclick={discardAndProceed} style="padding: 8px 16px; background: #fff; color: #d32f2f; border: 1px solid #d32f2f; border-radius: 4px; cursor: pointer;">Discard</button>
+        <button onclick={resumeDraft} style="padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Resume</button>
+      </div>
+    </div>
+  </div>
 {/if}
 
