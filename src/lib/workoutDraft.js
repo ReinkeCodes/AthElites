@@ -7,7 +7,16 @@ import { browser } from '$app/environment';
 
 const DRAFT_VERSION = 1;
 const STALE_DRAFT_DAYS = 7;
+const EXPIRE_DRAFT_DAYS = 14;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Check if a dayIndex is valid (non-negative integer)
+ * @returns {boolean} true only if Number.isInteger(x) && x >= 0
+ */
+export function isValidDayIndex(x) {
+  return Number.isInteger(x) && x >= 0;
+}
 
 /**
  * Get the localStorage key for the user's draft
@@ -24,6 +33,17 @@ export function isDraftStale(draft) {
   if (!draft || typeof draft.updatedAt !== 'number') return false;
   const ageMs = Date.now() - draft.updatedAt;
   return ageMs > STALE_DRAFT_DAYS * MS_PER_DAY;
+}
+
+/**
+ * Check if a draft is expired (older than EXPIRE_DRAFT_DAYS)
+ * Expired drafts should be auto-discarded and are not resumable.
+ * @returns {boolean} true if expired, false otherwise (including if updatedAt is missing/invalid)
+ */
+export function isDraftExpired(draft) {
+  if (!draft || typeof draft.updatedAt !== 'number') return false;
+  const ageMs = Date.now() - draft.updatedAt;
+  return ageMs > EXPIRE_DRAFT_DAYS * MS_PER_DAY;
 }
 
 /**
@@ -197,8 +217,9 @@ export function setDraft(userId, draftData) {
 
   const now = Date.now();
 
-  // Check existing draft for createdAt preservation (check canonical key first)
+  // Check existing draft for createdAt preservation AND dayIndex fallback
   let createdAt = now;
+  let existingDayIndex = null;
   try {
     const raw = localStorage.getItem(canonicalKey);
     if (raw) {
@@ -206,13 +227,42 @@ export function setDraft(userId, draftData) {
       if (typeof existing.createdAt === 'number') {
         createdAt = existing.createdAt;
       }
+      // Preserve existing valid dayIndex for fallback
+      if (isValidDayIndex(existing.dayIndex)) {
+        existingDayIndex = existing.dayIndex;
+      }
     }
   } catch (_) {
     // Ignore parse errors, use new createdAt
   }
 
+  // Validate incoming dayIndex
+  let finalDayIndex = draftData.dayIndex;
+  if (!isValidDayIndex(finalDayIndex)) {
+    // Incoming dayIndex is invalid
+    if (existingDayIndex !== null) {
+      // Preserve existing valid dayIndex
+      finalDayIndex = existingDayIndex;
+      if (import.meta.env.DEV) {
+        console.warn('[Draft] Invalid dayIndex in write, preserving existing:', {
+          incoming: draftData.dayIndex,
+          preserved: existingDayIndex
+        });
+      }
+    } else {
+      // No valid dayIndex available - abort save
+      if (import.meta.env.DEV) {
+        console.warn('[Draft] Aborting save: no valid dayIndex available', {
+          incoming: draftData.dayIndex
+        });
+      }
+      return false;
+    }
+  }
+
   const draft = {
     ...draftData,
+    dayIndex: finalDayIndex, // Use validated dayIndex
     version: DRAFT_VERSION,
     userId,
     createdAt,

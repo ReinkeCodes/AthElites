@@ -64,6 +64,7 @@
   let draftSaveTimer = null;
   let didHydrateFromDraft = false; // One-time flag: true after draft restore attempted
   let isWorkoutInitialized = false; // Gate autosave until init + hydration done
+  let draftDirty = false; // True when state changed since last successful draft write
 
   function getDraftKey() {
     return currentUserId ? getDraftKeyHelper(currentUserId) : null;
@@ -83,12 +84,26 @@
       visitedSectionsArray: Array.from(visitedSections),
       currentSectionIndex
     };
-    setDraft(currentUserId, draftData);
+    const success = setDraft(currentUserId, draftData);
+    if (success) {
+      draftDirty = false;
+    }
+  }
+
+  // Immediate flush for pagehide/visibilitychange (no debounce)
+  function flushDraftIfDirty() {
+    if (draftDirty && currentUserId && program?.id && day && isWorkoutInitialized) {
+      if (draftSaveTimer) {
+        clearTimeout(draftSaveTimer);
+        draftSaveTimer = null;
+      }
+      saveDraft();
+    }
   }
 
   function scheduleDraftSave() {
     if (draftSaveTimer) clearTimeout(draftSaveTimer);
-    draftSaveTimer = setTimeout(() => saveDraft(), 800);
+    draftSaveTimer = setTimeout(() => saveDraft(), 400); // Fast debounce for per-set autosave
   }
 
   function loadDraft() {
@@ -132,6 +147,7 @@
     // Access reactive state to establish dependencies
     const _ = [exerciseLogs, exerciseCompleted, activeSetIndices, currentSectionIndex, visitedSections];
     if (currentUserId && program?.id && day && isWorkoutInitialized) {
+      draftDirty = true; // Mark dirty immediately; cleared after successful write
       scheduleDraftSave();
     }
   });
@@ -324,6 +340,19 @@
   onMount(() => {
     workoutStartTime = new Date();
 
+    // Background/pagehide flush handlers (iOS Safari needs pagehide)
+    function handlePageHide() {
+      flushDraftIfDirty();
+    }
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'hidden') {
+        flushDraftIfDirty();
+      }
+    }
+
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUserId = user.uid;
@@ -401,6 +430,12 @@
         }
       }
     });
+
+    // Cleanup listeners on unmount
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   });
 
   async function loadExerciseHistory() {
