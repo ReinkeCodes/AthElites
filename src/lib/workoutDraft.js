@@ -7,6 +7,7 @@ import { browser } from '$app/environment';
 
 const DRAFT_VERSION = 1;
 const STALE_DRAFT_DAYS = 7;
+const EXPIRE_DRAFT_DAYS = 14;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
@@ -32,6 +33,17 @@ export function isDraftStale(draft) {
   if (!draft || typeof draft.updatedAt !== 'number') return false;
   const ageMs = Date.now() - draft.updatedAt;
   return ageMs > STALE_DRAFT_DAYS * MS_PER_DAY;
+}
+
+/**
+ * Check if a draft is expired (older than EXPIRE_DRAFT_DAYS)
+ * Expired drafts should be auto-discarded and are not resumable.
+ * @returns {boolean} true if expired, false otherwise (including if updatedAt is missing/invalid)
+ */
+export function isDraftExpired(draft) {
+  if (!draft || typeof draft.updatedAt !== 'number') return false;
+  const ageMs = Date.now() - draft.updatedAt;
+  return ageMs > EXPIRE_DRAFT_DAYS * MS_PER_DAY;
 }
 
 /**

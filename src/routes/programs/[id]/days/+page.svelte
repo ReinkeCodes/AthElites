@@ -6,7 +6,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
-  import { isDraftStale, getDraftAgeText } from '$lib/workoutDraft.js';
+  import { isDraftStale, getDraftAgeText, isDraftExpired } from '$lib/workoutDraft.js';
 
   let program = $state(null);
   let userRole = $state(null);
@@ -45,7 +45,17 @@
       return;
     }
 
-    // Draft exists → show modal before any navigation
+    // Check if draft is expired (>14 days) - auto-discard and proceed
+    if (isDraftExpired(activeDraft)) {
+      if (browser && currentUserId) {
+        localStorage.removeItem(`activeWorkoutDraft:${currentUserId}`);
+      }
+      activeDraft = null;
+      goto(targetRoute);
+      return;
+    }
+
+    // Draft exists and not expired → show modal before any navigation
     pendingWorkoutRoute = targetRoute;
     showDraftModal = true;
   }
