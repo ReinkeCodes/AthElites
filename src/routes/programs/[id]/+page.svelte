@@ -43,6 +43,9 @@
   let editSectionName = $state('');
   let editSectionMode = $state('full');
 
+  // Assign users search
+  let assignUserSearch = $state('');
+
   // Exercise in section
   let addingExerciseToSection = $state(null);
   let exerciseSearchQuery = $state('');
@@ -429,10 +432,35 @@
     return (str || '').toLowerCase().replace(/[\s\-_\/\(\)]/g, '');
   }
 
+  // Fuzzy match: ordered subsequence (case-insensitive)
+  function fuzzyMatch(query, text) {
+    if (!query) return true;
+    const q = query.toLowerCase();
+    const t = (text || '').toLowerCase();
+    let qi = 0;
+    for (let i = 0; i < t.length && qi < q.length; i++) {
+      if (t[i] === q[qi]) qi++;
+    }
+    return qi === q.length;
+  }
+
+  // Get filtered and sorted clients for Assign-to-Users
+  function getFilteredClients() {
+    const q = assignUserSearch.trim();
+    return clients
+      .filter(c => {
+        if (!q) return true;
+        // Match displayName if present, otherwise match email
+        const target = c.displayName || c.email || '';
+        return fuzzyMatch(q, target);
+      })
+      .sort((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || '', undefined, { sensitivity: 'base' }));
+  }
+
   function getExercisesByType(type) {
-    const query = exerciseSearchQuery.toLowerCase();
+    const query = exerciseSearchQuery.trim();
     return exercises
-      .filter(e => e.type === type && (!query || e.name.toLowerCase().includes(query)))
+      .filter(e => e.type === type && fuzzyMatch(query, e.name))
       .sort((a, b) => normalizeForSort(a.name).localeCompare(normalizeForSort(b.name)));
   }
 
@@ -904,7 +932,7 @@
             <strong>Select Client:</strong>
             <select bind:value={selectedClientForCopy} style="width: 100%; padding: 10px; margin-top: 5px;">
               <option value="">-- Choose a client --</option>
-              {#each clients as client}
+              {#each clients.toSorted((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || '', undefined, { sensitivity: 'base' })) as client}
                 <option value={client.id}>{client.displayName || client.email}</option>
               {/each}
             </select>
@@ -933,28 +961,34 @@
     {/if}
 
     <!-- Assign to Users -->
-    <details style="margin-bottom: 20px;">
+    <details style="margin-bottom: 20px;" ontoggle={(e) => { if (!e.currentTarget.open) assignUserSearch = ''; }}>
       <summary style="cursor: pointer; font-weight: bold;">Assign to Users ({program.assignedTo?.length || 0} assigned)</summary>
       <div style="padding: 10px; background: #f5f5f5; margin-top: 5px;">
         {#if clients.length === 0}
           <p>No users yet.</p>
         {:else}
-          {#each clients as client}
-            <label style="display: block; margin: 5px 0;">
-              <input
-                type="checkbox"
-                checked={program.assignedTo?.includes(client.id)}
-                onchange={() => toggleAssignment(client.id)}
-              />
-              {client.displayName || client.email}
-              {#if client.role && client.role !== 'client'}
-                <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
-              {/if}
-              {#if client.displayName}
-                <span style="color: #888; font-size: 0.85em;">({client.email})</span>
-              {/if}
-            </label>
-          {/each}
+          <input type="text" bind:value={assignUserSearch} placeholder="Search users…" style="width: 100%; padding: 6px 8px; margin-bottom: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em;" />
+          {@const filtered = getFilteredClients()}
+          {#if filtered.length === 0}
+            <p style="color: #999; font-size: 0.9em; margin: 8px 0;">No matches</p>
+          {:else}
+            {#each filtered as client}
+              <label style="display: block; margin: 5px 0;">
+                <input
+                  type="checkbox"
+                  checked={program.assignedTo?.includes(client.id)}
+                  onchange={() => toggleAssignment(client.id)}
+                />
+                {client.displayName || client.email}
+                {#if client.role && client.role !== 'client'}
+                  <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                {/if}
+                {#if client.displayName}
+                  <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                {/if}
+              </label>
+            {/each}
+          {/if}
         {/if}
       </div>
     </details>
