@@ -5,7 +5,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
-  import { isDraftStale, getDraftAgeText } from '$lib/workoutDraft.js';
+  import { isDraftStale, getDraftAgeText, isValidDayIndex } from '$lib/workoutDraft.js';
 
   let currentUser = $state(null);
   let userRole = $state(null);
@@ -275,6 +275,7 @@
 {#if showContinueModal && activeDraft}
   {@const isStale = isDraftStale(activeDraft)}
   {@const ageText = getDraftAgeText(activeDraft)}
+  {@const isCorrupted = !isValidDayIndex(activeDraft.dayIndex)}
   <div
     role="dialog"
     aria-modal="true"
@@ -282,15 +283,24 @@
     onclick={(e) => { if (e.target === e.currentTarget) showContinueModal = false; }}
   >
     <div style="background: white; border-radius: 8px; padding: 20px; max-width: 90%; width: 340px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
-      <h3 style="margin: 0 0 12px 0; font-size: 1.1em;">Pick up where you left off?</h3>
-      <p style="margin: 0 0 {isStale ? '10px' : '20px'} 0; color: #666; font-size: 0.9em;">You have an unfinished workout: <strong>{getDraftLabel()}</strong>. Resume it, or discard to start fresh.</p>
-      {#if isStale}
-        <p style="margin: 0 0 20px 0; color: #e65100; font-size: 0.85em; background: #fff3e0; padding: 8px 12px; border-radius: 4px;">This workout is from {ageText} and may be out of date.</p>
+      {#if isCorrupted}
+        <h3 style="margin: 0 0 12px 0; font-size: 1.1em; color: #d32f2f;">Corrupted workout draft</h3>
+        <p style="margin: 0 0 20px 0; color: #666; font-size: 0.9em;">This active workout is missing its day reference and can't be resumed. Discard to start fresh.</p>
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+          <button onclick={() => showContinueModal = false} style="padding: 8px 16px; background: #fff; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;">Cancel</button>
+          <button onclick={handleContinueDiscard} style="padding: 8px 16px; background: #d32f2f; color: white; border: none; border-radius: 4px; cursor: pointer;">Discard</button>
+        </div>
+      {:else}
+        <h3 style="margin: 0 0 12px 0; font-size: 1.1em;">Pick up where you left off?</h3>
+        <p style="margin: 0 0 {isStale ? '10px' : '20px'} 0; color: #666; font-size: 0.9em;">You have an unfinished workout: <strong>{getDraftLabel()}</strong>. Resume it, or discard to start fresh.</p>
+        {#if isStale}
+          <p style="margin: 0 0 20px 0; color: #e65100; font-size: 0.85em; background: #fff3e0; padding: 8px 12px; border-radius: 4px;">This workout is from {ageText} and may be out of date.</p>
+        {/if}
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+          <button onclick={handleContinueDiscard} style="padding: 8px 16px; background: {isStale ? '#d32f2f' : '#fff'}; color: {isStale ? 'white' : '#d32f2f'}; border: 1px solid #d32f2f; border-radius: 4px; cursor: pointer;">Discard</button>
+          <button onclick={handleContinueResume} style="padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Resume</button>
+        </div>
       {/if}
-      <div style="display: flex; gap: 10px; justify-content: flex-end;">
-        <button onclick={handleContinueDiscard} style="padding: 8px 16px; background: {isStale ? '#d32f2f' : '#fff'}; color: {isStale ? 'white' : '#d32f2f'}; border: 1px solid #d32f2f; border-radius: 4px; cursor: pointer;">Discard</button>
-        <button onclick={handleContinueResume} style="padding: 8px 16px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer;">Resume</button>
-      </div>
     </div>
   </div>
 {/if}
