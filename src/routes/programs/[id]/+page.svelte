@@ -43,9 +43,16 @@
   let editSectionName = $state('');
   let editSectionMode = $state('full');
 
+  // Assign users search
+  let assignUserSearch = $state('');
+
   // Exercise in section
   let addingExerciseToSection = $state(null);
+  let exerciseSearchQuery = $state('');
+  let exerciseTypeFilter = $state('');
   let selectedExerciseId = $state('');
+  let isPickerOpen = $state(false);
+  let pickerContainerRef = $state(null);
   let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' });
 
   // Video modal
@@ -225,6 +232,18 @@
     }
   });
 
+  // Outside click detection for exercise picker
+  $effect(() => {
+    if (!isPickerOpen || !pickerContainerRef) return;
+    function handleOutsideClick(e) {
+      if (pickerContainerRef && !pickerContainerRef.contains(e.target)) {
+        isPickerOpen = false;
+      }
+    }
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  });
+
   async function toggleAssignment(clientId) {
     // Use assignedToUids as canonical, fall back to assignedTo for legacy data
     const currentAssigned = program.assignedToUids || program.assignedTo || [];
@@ -341,6 +360,9 @@
 
     selectedExerciseId = '';
     exerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' };
+    exerciseSearchQuery = '';
+    exerciseTypeFilter = '';
+    isPickerOpen = false;
     addingExerciseToSection = null;
   }
 
@@ -405,12 +427,55 @@
     editExerciseDetails.customReqs = editExerciseDetails.customReqs.filter((_, i) => i !== index);
   }
 
+  // Normalize string for sorting: lowercase, remove common punctuation
+  function normalizeForSort(str) {
+    return (str || '').toLowerCase().replace(/[\s\-_\/\(\)]/g, '');
+  }
+
+  // Fuzzy match: ordered subsequence (case-insensitive)
+  function fuzzyMatch(query, text) {
+    if (!query) return true;
+    const q = query.toLowerCase();
+    const t = (text || '').toLowerCase();
+    let qi = 0;
+    for (let i = 0; i < t.length && qi < q.length; i++) {
+      if (t[i] === q[qi]) qi++;
+    }
+    return qi === q.length;
+  }
+
+  // Get filtered and sorted clients for Assign-to-Users
+  function getFilteredClients() {
+    const q = assignUserSearch.trim();
+    return clients
+      .filter(c => {
+        if (!q) return true;
+        // Match displayName if present, otherwise match email
+        const target = c.displayName || c.email || '';
+        return fuzzyMatch(q, target);
+      })
+      .sort((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || '', undefined, { sensitivity: 'base' }));
+  }
+
   function getExercisesByType(type) {
-    return exercises.filter(e => e.type === type);
+    const query = exerciseSearchQuery.trim();
+    return exercises
+      .filter(e => e.type === type && fuzzyMatch(query, e.name))
+      .sort((a, b) => normalizeForSort(a.name).localeCompare(normalizeForSort(b.name)));
+  }
+
+  function getAllTypesUnfiltered() {
+    return [...new Set(exercises.map(e => e.type))]
+      .sort((a, b) => normalizeForSort(a).localeCompare(normalizeForSort(b)));
   }
 
   function getAllExerciseTypes() {
-    return [...new Set(exercises.map(e => e.type))].sort();
+    const baseTypes = exerciseTypeFilter
+      ? [exerciseTypeFilter]
+      : [...new Set(exercises.map(e => e.type))];
+    return baseTypes
+      .filter(type => getExercisesByType(type).length > 0)
+      .sort((a, b) => normalizeForSort(a).localeCompare(normalizeForSort(b)));
   }
 
   // Extract YouTube video ID from URL (returns null if not YouTube)
@@ -867,7 +932,7 @@
             <strong>Select Client:</strong>
             <select bind:value={selectedClientForCopy} style="width: 100%; padding: 10px; margin-top: 5px;">
               <option value="">-- Choose a client --</option>
-              {#each clients as client}
+              {#each clients.toSorted((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || '', undefined, { sensitivity: 'base' })) as client}
                 <option value={client.id}>{client.displayName || client.email}</option>
               {/each}
             </select>
@@ -896,28 +961,34 @@
     {/if}
 
     <!-- Assign to Users -->
-    <details style="margin-bottom: 20px;">
+    <details style="margin-bottom: 20px;" ontoggle={(e) => { if (!e.currentTarget.open) assignUserSearch = ''; }}>
       <summary style="cursor: pointer; font-weight: bold;">Assign to Users ({program.assignedTo?.length || 0} assigned)</summary>
       <div style="padding: 10px; background: #f5f5f5; margin-top: 5px;">
         {#if clients.length === 0}
           <p>No users yet.</p>
         {:else}
-          {#each clients as client}
-            <label style="display: block; margin: 5px 0;">
-              <input
-                type="checkbox"
-                checked={program.assignedTo?.includes(client.id)}
-                onchange={() => toggleAssignment(client.id)}
-              />
-              {client.displayName || client.email}
-              {#if client.role && client.role !== 'client'}
-                <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
-              {/if}
-              {#if client.displayName}
-                <span style="color: #888; font-size: 0.85em;">({client.email})</span>
-              {/if}
-            </label>
-          {/each}
+          <input type="text" bind:value={assignUserSearch} placeholder="Search users…" style="width: 100%; padding: 6px 8px; margin-bottom: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em;" />
+          {@const filtered = getFilteredClients()}
+          {#if filtered.length === 0}
+            <p style="color: #999; font-size: 0.9em; margin: 8px 0;">No matches</p>
+          {:else}
+            {#each filtered as client}
+              <label style="display: block; margin: 5px 0;">
+                <input
+                  type="checkbox"
+                  checked={program.assignedTo?.includes(client.id)}
+                  onchange={() => toggleAssignment(client.id)}
+                />
+                {client.displayName || client.email}
+                {#if client.role && client.role !== 'client'}
+                  <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                {/if}
+                {#if client.displayName}
+                  <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                {/if}
+              </label>
+            {/each}
+          {/if}
         {/if}
       </div>
     </details>
@@ -1144,23 +1215,54 @@
                 <!-- Add Exercise to Section -->
                 {#if addingExerciseToSection === `${dayIndex}-${sectionIndex}`}
                   <div style="margin-top: 10px; padding: 10px; background: #e8f5e9; border-radius: 5px;">
-                    <div style="margin-bottom: 8px;">
-                      <select bind:value={selectedExerciseId} style="padding: 5px; width: 100%;">
-                        <option value="">-- Select Exercise --</option>
-                        {#each getAllExerciseTypes() as type}
-                          <optgroup label={type}>
+                    <div style="margin-bottom: 8px; position: relative;" bind:this={pickerContainerRef}>
+                      <input
+                        type="text"
+                        bind:value={exerciseSearchQuery}
+                        placeholder="Select exercise…"
+                        onfocus={() => isPickerOpen = true}
+                        onkeydown={(e) => e.key === 'Escape' && (isPickerOpen = false)}
+                        style="padding: 6px 8px; width: 100%; box-sizing: border-box; border: 1px solid #ccc; border-radius: {isPickerOpen ? '4px 4px 0 0' : '4px'}; font-size: 0.9em;"
+                      />
+                      {#if isPickerOpen}
+                        <div style="border: 1px solid #ccc; border-top: none; border-radius: 0 0 4px 4px; background: white; position: absolute; left: 0; right: 0; z-index: 10;">
+                          <div style="padding: 4px 6px; border-bottom: 1px solid #e0e0e0; background: #fafafa;">
+                            <select bind:value={exerciseTypeFilter} style="width: 100%; padding: 3px 4px; font-size: 0.8em; border: 1px solid #ccc; border-radius: 3px;">
+                              <option value="">All types</option>
+                              {#each getAllTypesUnfiltered() as t}
+                                <option value={t}>{t}</option>
+                              {/each}
+                            </select>
+                          </div>
+                          <div style="max-height: 180px; overflow-y: auto;">
+                          {#each getAllExerciseTypes() as type}
+                            <div style="padding: 4px 8px; background: #f5f5f5; font-weight: 600; font-size: 0.8em; color: #555; position: sticky; top: 0; border-bottom: 1px solid #e0e0e0;">{type}</div>
                             {#each getExercisesByType(type) as ex}
-                              <option value={ex.id}>{ex.name}</option>
+                              <div
+                                role="option"
+                                aria-selected={selectedExerciseId === ex.id}
+                                onclick={() => { selectedExerciseId = ex.id; isPickerOpen = false; }}
+                                onkeydown={(e) => e.key === 'Enter' && (selectedExerciseId = ex.id, isPickerOpen = false)}
+                                tabindex="0"
+                                style="padding: 4px 8px 4px 16px; cursor: pointer; font-size: 0.85em; line-height: 1.3; background: {selectedExerciseId === ex.id ? '#e3f2fd' : 'white'}; border-bottom: 1px solid #f0f0f0;"
+                                onmouseenter={(e) => { if (selectedExerciseId !== ex.id) e.currentTarget.style.background = '#f5f5f5'; }}
+                                onmouseleave={(e) => { e.currentTarget.style.background = selectedExerciseId === ex.id ? '#e3f2fd' : 'white'; }}
+                              >{ex.name}</div>
                             {/each}
-                          </optgroup>
-                        {/each}
-                      </select>
+                          {/each}
+                          {#if getAllExerciseTypes().length === 0}
+                            <div style="padding: 8px; text-align: center; color: #999; font-size: 0.85em;">No matches</div>
+                          {/if}
+                          </div>
+                        </div>
+                      {/if}
                     </div>
                     <!-- Selected exercise info with video chip -->
                     {#if selectedExerciseId}
                       {@const selectedEx = exercises.find(e => e.id === selectedExerciseId)}
                       {#if selectedEx}
                         <div style="margin-bottom: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 0.9em;">
+                          <strong>{selectedEx.name}</strong>
                           <span style="color: #666;">({selectedEx.type})</span>
                           {#if selectedEx.videoUrl?.trim()}
                             <button
@@ -1219,7 +1321,7 @@
                     </div>
 
                     <button onclick={() => addExerciseToSection(dayIndex, sectionIndex)}>Add Exercise</button>
-                    <button onclick={() => addingExerciseToSection = null}>Cancel</button>
+                    <button onclick={() => { exerciseSearchQuery = ''; exerciseTypeFilter = ''; isPickerOpen = false; addingExerciseToSection = null; }}>Cancel</button>
                   </div>
                 {:else}
                   <button onclick={() => addingExerciseToSection = `${dayIndex}-${sectionIndex}`} style="margin-top: 8px;">
