@@ -36,6 +36,17 @@
   let programsCache = $state({});
   let selectedExerciseHistory = $state(null); // e1rm and repRanges for selected exercise
 
+  // Performance Analysis state
+  let analysisExerciseId = $state('');
+  let analysisMetric = $state('weight'); // 'weight' | 'volume' | 'e1rm'
+  let windowMode = $state('time'); // 'time' | 'sessions'
+  let timeWindow = $state('all'); // 'week' | 'month' | 'year' | 'all'
+  let sessionsWindow = $state(10); // 5 | 10 | 20 | 50
+  let aggregationMode = $state('raw'); // 'raw' | 'average'
+  let avgByTime = $state('month'); // 'week' | 'month' | 'year'
+  let avgBySessions = $state(5); // 5 | 10 | 20 | 50
+  let analysisCustomReqIdx = $state('');
+
   async function loadProgram(programId) {
     if (!programId || programsCache[programId]) return;
     const snap = await getDoc(doc(db, 'programs', programId));
@@ -516,6 +527,176 @@
 
     selectedExerciseHistory = { e1rm: best1RM, repRanges };
   }
+
+  // Performance Analysis helpers
+  function getLoggedExercises() {
+    const exerciseMap = {};
+    allLogs.forEach(log => {
+      if (log.exerciseId && log.exerciseName && log.completedWorkoutId) {
+        if (!exerciseMap[log.exerciseId]) {
+          exerciseMap[log.exerciseId] = log.exerciseName;
+        }
+      }
+    });
+    return Object.entries(exerciseMap)
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  function getCustomReqOptions() {
+    if (!analysisExerciseId) return [];
+    const exerciseLogs = allLogs.filter(l => l.exerciseId === analysisExerciseId && l.completedWorkoutId);
+    const reqMap = {};
+    exerciseLogs.forEach(log => {
+      if (!log.customInputs) return;
+      Object.entries(log.customInputs).forEach(([idx, val]) => {
+        const numVal = parseFloat(val);
+        if (!isNaN(numVal)) {
+          // Try to get name from program cache
+          const prog = programsCache[log.programId];
+          const exTemplate = prog?.days?.flatMap(d => d.sections?.flatMap(s => s.exercises || []) || [])
+            .find(e => e.workoutExerciseId === log.workoutExerciseId);
+          const req = exTemplate?.customReqs?.filter(r => r.clientInput)?.[parseInt(idx)];
+          const name = req?.name || `Custom ${parseInt(idx) + 1}`;
+          if (!reqMap[idx]) reqMap[idx] = { idx, name, hasNumeric: true };
+        }
+      });
+    });
+    return Object.values(reqMap);
+  }
+
+  function getChartData() {
+    if (!analysisExerciseId) return [];
+    const exerciseLogs = allLogs.filter(l => l.exerciseId === analysisExerciseId && l.completedWorkoutId);
+
+    // Group by session
+    const sessionMap = {};
+    exerciseLogs.forEach(log => {
+      const sid = log.completedWorkoutId;
+      if (!sessionMap[sid]) {
+        sessionMap[sid] = { date: log.loggedAt, sets: [] };
+      }
+      sessionMap[sid].sets.push(log);
+    });
+
+    // Compute metric per session
+    const points = [];
+    Object.values(sessionMap).forEach(session => {
+      let value = null;
+      if (analysisMetric === 'weight') {
+        session.sets.forEach(s => {
+          const w = parseFloat(s.weight) || 0;
+          if (w > 0 && (value === null || w > value)) value = w;
+        });
+      } else if (analysisMetric === 'volume') {
+        value = 0;
+        session.sets.forEach(s => {
+          const w = parseFloat(s.weight) || 0;
+          const r = parseInt(s.reps) || 0;
+          if (w > 0 && r > 0) value += w * r;
+        });
+        if (value === 0) value = null;
+      } else if (analysisMetric === 'e1rm') {
+        session.sets.forEach(s => {
+          const w = parseFloat(s.weight) || 0;
+          const r = parseInt(s.reps) || 0;
+          if (w > 0 && r > 0) {
+            const e = Math.round(w * (1 + r / 30));
+            if (value === null || e > value) value = e;
+          }
+        });
+      } else if (analysisMetric === 'pct_e1rm') {
+        let peakWeight = null;
+        let peakE1rm = null;
+        session.sets.forEach(s => {
+          const w = parseFloat(s.weight) || 0;
+          const r = parseInt(s.reps) || 0;
+          if (w > 0) { if (peakWeight === null || w > peakWeight) peakWeight = w; }
+          if (w > 0 && r > 0) { const e = w * (1 + r / 30); if (peakE1rm === null || e > peakE1rm) peakE1rm = e; }
+        });
+        if (peakWeight && peakE1rm) value = Math.round(100 * peakWeight / peakE1rm * 10) / 10;
+      } else if (analysisMetric === 'custom' && analysisCustomReqIdx !== '') {
+        session.sets.forEach(s => {
+          if (s.customInputs && s.customInputs[analysisCustomReqIdx] !== undefined) {
+            const v = parseFloat(s.customInputs[analysisCustomReqIdx]);
+            if (!isNaN(v) && (value === null || v > value)) value = v;
+          }
+        });
+      }
+      if (value !== null) {
+        points.push({ date: session.date, value });
+      }
+    });
+
+    // Sort chronologically
+    points.sort((a, b) => {
+      const da = a.date?.toDate ? a.date.toDate() : new Date(a.date);
+      const db = b.date?.toDate ? b.date.toDate() : new Date(b.date);
+      return da - db;
+    });
+    return points;
+  }
+
+  function formatChartDate(d) {
+    const date = d?.toDate ? d.toDate() : new Date(d);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+
+  function applyWindow(points) {
+    if (points.length === 0) return points;
+    if (windowMode === 'time') {
+      if (timeWindow === 'all') return points;
+      const now = Date.now();
+      const days = timeWindow === 'week' ? 7 : timeWindow === 'month' ? 30 : 365;
+      const cutoff = now - days * 24 * 60 * 60 * 1000;
+      return points.filter(p => {
+        const d = p.date?.toDate ? p.date.toDate() : new Date(p.date);
+        return d.getTime() >= cutoff;
+      });
+    } else {
+      // By sessions: take last N
+      return points.slice(-sessionsWindow);
+    }
+  }
+
+  function applyAggregation(points) {
+    if (aggregationMode === 'raw' || points.length === 0) return points;
+
+    if (windowMode === 'time') {
+      // Bucket by time period
+      const buckets = {};
+      points.forEach(p => {
+        const d = p.date?.toDate ? p.date.toDate() : new Date(p.date);
+        let key;
+        if (avgByTime === 'week') {
+          const year = d.getFullYear();
+          const jan1 = new Date(year, 0, 1);
+          const week = Math.ceil(((d - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+          key = `${year}-W${week}`;
+        } else if (avgByTime === 'month') {
+          key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        } else {
+          key = `${d.getFullYear()}`;
+        }
+        if (!buckets[key]) buckets[key] = { values: [], firstDate: d };
+        buckets[key].values.push(p.value);
+        if (d < buckets[key].firstDate) buckets[key].firstDate = d;
+      });
+      return Object.values(buckets)
+        .map(b => ({ date: b.firstDate, value: Math.round(b.values.reduce((a, v) => a + v, 0) / b.values.length) }))
+        .sort((a, b) => a.date - b.date);
+    } else {
+      // Bucket by consecutive blocks of N sessions
+      const result = [];
+      for (let i = 0; i < points.length; i += avgBySessions) {
+        const block = points.slice(i, i + avgBySessions);
+        if (block.length === 0) continue;
+        const avg = Math.round(block.reduce((a, p) => a + p.value, 0) / block.length);
+        result.push({ date: block[block.length - 1].date, value: avg });
+      }
+      return result;
+    }
+  }
 </script>
 
 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 10px;">
@@ -555,6 +736,12 @@
       style="flex: 1; padding: 12px; border: none; background: {activeTab === 'prs' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeTab === 'prs' ? 'bold' : 'normal'}; border-bottom: {activeTab === 'prs' ? '3px solid #ff9800' : 'none'}; margin-bottom: -2px;"
     >
       Personal Records
+    </button>
+    <button
+      onclick={() => { activeTab = 'analysis'; selectedSession = null; }}
+      style="flex: 1; padding: 12px; border: none; background: {activeTab === 'analysis' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeTab === 'analysis' ? 'bold' : 'normal'}; border-bottom: {activeTab === 'analysis' ? '3px solid #9c27b0' : 'none'}; margin-bottom: -2px;"
+    >
+      Performance Analysis <span style="font-size: 1.1em; color: #d32f2f; font-weight: 600;">(Beta)</span>
     </button>
   </div>
 
@@ -601,7 +788,7 @@
       {/if}
     {/if}
 
-  {:else}
+  {:else if activeTab === 'prs'}
     <!-- PRs Tab -->
     {#if getPRsList().length === 0}
       <p style="color: #888; text-align: center; padding: 40px 0;">No personal records yet. Complete some workouts to set your first PRs!</p>
@@ -626,6 +813,164 @@
         </div>
       {/each}
     {/if}
+
+  {:else if activeTab === 'analysis'}
+    <!-- Performance Analysis Tab -->
+    <div style="margin-bottom: 15px;">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
+        <div>
+          <label style="font-size: 0.85em; color: #666; display: block; margin-bottom: 4px;">Exercise</label>
+          <select bind:value={analysisExerciseId} style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px;">
+            <option value="">Select exercise...</option>
+            {#each getLoggedExercises() as ex}
+              <option value={ex.id}>{ex.name}</option>
+            {/each}
+          </select>
+        </div>
+        <div>
+          <label style="font-size: 0.85em; color: #666; display: block; margin-bottom: 4px;">Metric</label>
+          <select bind:value={analysisMetric} style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px;">
+            <option value="weight">Weight (max)</option>
+            <option value="volume">Volume (total)</option>
+            <option value="e1rm">Estimated 1RM</option>
+            <option value="pct_e1rm">% of e1RM</option>
+            <option value="custom">Custom Requirement</option>
+          </select>
+        </div>
+      </div>
+
+      {#if analysisMetric === 'custom'}
+        <div style="margin-bottom: 15px;">
+          <label style="font-size: 0.85em; color: #666; display: block; margin-bottom: 4px;">Requirement</label>
+          <select bind:value={analysisCustomReqIdx} style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px;">
+            <option value="">Select requirement...</option>
+            {#each getCustomReqOptions() as req}
+              <option value={req.idx}>{req.name}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
+
+      <!-- Window controls -->
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+        <div style="display: flex; border: 1px solid #ddd; border-radius: 6px; overflow: hidden;">
+          <button onclick={() => windowMode = 'time'} style="padding: 6px 12px; border: none; background: {windowMode === 'time' ? '#9c27b0' : '#f5f5f5'}; color: {windowMode === 'time' ? 'white' : '#333'}; cursor: pointer; font-size: 0.85em;">By Time</button>
+          <button onclick={() => windowMode = 'sessions'} style="padding: 6px 12px; border: none; background: {windowMode === 'sessions' ? '#9c27b0' : '#f5f5f5'}; color: {windowMode === 'sessions' ? 'white' : '#333'}; cursor: pointer; font-size: 0.85em;">By Sessions</button>
+        </div>
+        {#if windowMode === 'time'}
+          <select bind:value={timeWindow} style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85em;">
+            <option value="week">Last Week</option>
+            <option value="month">Last Month</option>
+            <option value="year">Last Year</option>
+            <option value="all">All Time</option>
+          </select>
+        {:else}
+          <select bind:value={sessionsWindow} style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85em;">
+            <option value={5}>Last 5 Sessions</option>
+            <option value={10}>Last 10 Sessions</option>
+            <option value={20}>Last 20 Sessions</option>
+            <option value={50}>Last 50 Sessions</option>
+          </select>
+        {/if}
+      </div>
+
+      <!-- Aggregation controls -->
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+        <div style="display: flex; border: 1px solid #ddd; border-radius: 6px; overflow: hidden;">
+          <button onclick={() => aggregationMode = 'raw'} style="padding: 6px 12px; border: none; background: {aggregationMode === 'raw' ? '#9c27b0' : '#f5f5f5'}; color: {aggregationMode === 'raw' ? 'white' : '#333'}; cursor: pointer; font-size: 0.85em;">Raw</button>
+          <button onclick={() => aggregationMode = 'average'} style="padding: 6px 12px; border: none; background: {aggregationMode === 'average' ? '#9c27b0' : '#f5f5f5'}; color: {aggregationMode === 'average' ? 'white' : '#333'}; cursor: pointer; font-size: 0.85em;">Average</button>
+        </div>
+        {#if aggregationMode === 'average'}
+          {#if windowMode === 'time'}
+            <select bind:value={avgByTime} style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85em;">
+              <option value="week">Average by Week</option>
+              <option value="month">Average by Month</option>
+              <option value="year">Average by Year</option>
+            </select>
+          {:else}
+            <select bind:value={avgBySessions} style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85em;">
+              <option value={5}>Average every 5</option>
+              <option value={10}>Average every 10</option>
+              <option value={20}>Average every 20</option>
+              <option value={50}>Average every 50</option>
+            </select>
+          {/if}
+        {/if}
+      </div>
+
+      {#if !analysisExerciseId}
+        <div style="text-align: center; padding: 40px 20px; color: #888;">
+          <p>Select an exercise to view performance trends</p>
+        </div>
+      {:else if analysisMetric === 'custom' && analysisCustomReqIdx === ''}
+        <div style="text-align: center; padding: 40px 20px; color: #888;">
+          <p>Select a requirement to view trends</p>
+        </div>
+      {:else}
+        {@const rawData = getChartData()}
+        {@const windowedData = applyWindow(rawData)}
+        {@const chartData = applyAggregation(windowedData)}
+        {#if rawData.length === 0}
+          <div style="text-align: center; padding: 40px 20px; color: #888;">
+            <p>No data for this metric</p>
+          </div>
+        {:else if chartData.length === 0}
+          <div style="text-align: center; padding: 40px 20px; color: #888;">
+            <p>No data in this window</p>
+          </div>
+        {:else}
+          {@const values = chartData.map(d => d.value)}
+          {@const minVal = Math.min(...values)}
+          {@const maxVal = Math.max(...values)}
+          {@const range = maxVal - minVal || 1}
+          {@const padding = range * 0.1}
+          {@const yMin = Math.max(0, minVal - padding)}
+          {@const yMax = maxVal + padding}
+          {@const yRange = yMax - yMin}
+          <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px;">
+            <div style="font-weight: 600; margin-bottom: 10px; color: #333;">
+              {analysisMetric === 'weight' ? 'Max Weight' : analysisMetric === 'volume' ? 'Total Volume' : analysisMetric === 'e1rm' ? 'Estimated 1RM' : analysisMetric === 'pct_e1rm' ? '% of e1RM' : (getCustomReqOptions().find(r => r.idx === analysisCustomReqIdx)?.name || 'Custom Requirement')} Over Time
+            </div>
+            <svg viewBox="0 0 400 200" style="width: 100%; height: auto;">
+              <!-- Grid lines -->
+              {#each [0, 0.25, 0.5, 0.75, 1] as t}
+                <line x1="40" y1={180 - t * 160} x2="390" y2={180 - t * 160} stroke="#eee" stroke-width="1"/>
+                <text x="35" y={184 - t * 160} font-size="10" fill="#888" text-anchor="end">{Math.round(yMin + t * yRange)}</text>
+              {/each}
+              <!-- Line -->
+              {#if chartData.length > 1}
+                <polyline
+                  fill="none"
+                  stroke="#9c27b0"
+                  stroke-width="2"
+                  points={chartData.map((d, i) => {
+                    const x = 40 + (i / (chartData.length - 1)) * 350;
+                    const y = 180 - ((d.value - yMin) / yRange) * 160;
+                    return `${x},${y}`;
+                  }).join(' ')}
+                />
+              {/if}
+              <!-- Points -->
+              {#each chartData as d, i}
+                {@const x = chartData.length === 1 ? 215 : 40 + (i / (chartData.length - 1)) * 350}
+                {@const y = 180 - ((d.value - yMin) / yRange) * 160}
+                <circle cx={x} cy={y} r="5" fill="#9c27b0"/>
+                {#if chartData.length <= 10}
+                  <text x={x} y="195" font-size="8" fill="#888" text-anchor="middle">{formatChartDate(d.date)}</text>
+                {/if}
+              {/each}
+              {#if chartData.length > 10}
+                <text x="40" y="195" font-size="8" fill="#888" text-anchor="start">{formatChartDate(chartData[0].date)}</text>
+                <text x="390" y="195" font-size="8" fill="#888" text-anchor="end">{formatChartDate(chartData[chartData.length - 1].date)}</text>
+              {/if}
+            </svg>
+            <div style="text-align: center; color: #888; font-size: 0.85em; margin-top: 5px;">
+              {chartData.length} session{chartData.length !== 1 ? 's' : ''}
+            </div>
+          </div>
+        {/if}
+      {/if}
+    </div>
   {/if}
 {/if}
 
