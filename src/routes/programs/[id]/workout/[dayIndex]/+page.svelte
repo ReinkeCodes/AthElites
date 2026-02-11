@@ -1556,7 +1556,7 @@
                 <span>{set.reps || '-'} × {set.weight || '-'}</span>
                 {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
               </div>
-              {#if set.customInputs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const req = historyExercise?.customReqs?.filter(r => r.clientInput)?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.8em; margin: 0 0 4px 50px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value} {req.value}{/if}</div>{/if}{/each}{/if}
+              {#if set.customInputs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const req = historyExercise?.customReqs?.filter(r => r.clientInput)?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.8em; margin: 0 0 4px 50px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value}&nbsp;(Target: {req.value}){/if}</div>{/if}{/each}{/if}
               {#if set.notes}<div style="color: #888; font-style: italic; font-size: 0.8em; margin: 0 0 6px 50px;">"{set.notes}"</div>{/if}
             {/each}
           </div>
