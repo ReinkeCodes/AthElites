@@ -339,6 +339,7 @@
 
   onMount(() => {
     workoutStartTime = new Date();
+    startSessionTimer();
 
     // Background/pagehide flush handlers (iOS Safari needs pagehide)
     function handlePageHide() {
@@ -431,10 +432,26 @@
       }
     });
 
-    // Cleanup listeners on unmount
+    // Cleanup listeners and timers on unmount
     return () => {
       window.removeEventListener('pagehide', handlePageHide);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      // Clear all rest timer intervals
+      Object.values(restTimerIntervals).forEach(interval => {
+        if (interval) clearInterval(interval);
+      });
+      // Clear all long-press timers
+      Object.values(longPressTimers).forEach(timer => {
+        if (timer) clearTimeout(timer);
+      });
+      // Clear all stopwatch intervals
+      Object.values(stopwatchIntervals).forEach(interval => {
+        if (interval) clearInterval(interval);
+      });
+      // Clear session timer
+      if (sessionTimerInterval) {
+        clearInterval(sessionTimerInterval);
+      }
     };
   });
 
@@ -745,6 +762,329 @@
   // Structure: { sectionIndex: workoutExerciseId }
   let expandedExercise = $state({});
 
+  // Session timer (overall workout duration)
+  let sessionElapsed = $state(0); // seconds
+  let sessionTimerInterval = null;
+  let sessionTimerRunning = $state(true);
+
+  // Format session time as MM:SS (or M:SS for < 10 min)
+  function formatSessionTime(seconds) {
+    if (seconds == null || seconds < 0) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  // Start the session timer
+  function startSessionTimer() {
+    if (sessionTimerInterval) return; // Already running
+    sessionTimerInterval = setInterval(() => {
+      if (sessionTimerRunning && workoutStartTime) {
+        sessionElapsed = Math.floor((Date.now() - workoutStartTime.getTime()) / 1000);
+      }
+    }, 1000);
+  }
+
+  // Stop the session timer
+  function stopSessionTimer() {
+    sessionTimerRunning = false;
+    if (sessionTimerInterval) {
+      clearInterval(sessionTimerInterval);
+      sessionTimerInterval = null;
+    }
+  }
+
+  // Rest timer state per exercise (local UI state only, not persisted)
+  // Structure: { workoutExerciseId: { remaining: number, running: boolean, finished: boolean } }
+  let restTimerState = $state({});
+  let restTimerIntervals = {}; // Interval references, not reactive
+  let longPressTimers = {}; // Long-press detection timers
+
+  // Format seconds as M:SS
+  function formatRestTime(seconds) {
+    if (seconds == null || seconds < 0) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  // Initialize rest timer state for an exercise
+  function initRestTimer(workoutExerciseId, restSeconds) {
+    if (!restTimerState[workoutExerciseId]) {
+      restTimerState[workoutExerciseId] = {
+        remaining: restSeconds,
+        running: false,
+        finished: false
+      };
+      restTimerState = { ...restTimerState };
+    }
+  }
+
+  // Start or resume the rest timer
+  function startRestTimer(workoutExerciseId, restSeconds) {
+    // Initialize if needed
+    if (!restTimerState[workoutExerciseId]) {
+      restTimerState[workoutExerciseId] = {
+        remaining: restSeconds,
+        running: false,
+        finished: false
+      };
+    }
+
+    const state = restTimerState[workoutExerciseId];
+
+    // If finished, restart from full duration
+    if (state.finished) {
+      state.remaining = restSeconds;
+      state.finished = false;
+    }
+
+    state.running = true;
+    restTimerState = { ...restTimerState };
+
+    // Clear any existing interval
+    if (restTimerIntervals[workoutExerciseId]) {
+      clearInterval(restTimerIntervals[workoutExerciseId]);
+    }
+
+    // Start countdown interval
+    restTimerIntervals[workoutExerciseId] = setInterval(() => {
+      const timerState = restTimerState[workoutExerciseId];
+      if (!timerState || !timerState.running) {
+        clearInterval(restTimerIntervals[workoutExerciseId]);
+        return;
+      }
+
+      if (timerState.remaining > 0) {
+        timerState.remaining--;
+        restTimerState = { ...restTimerState };
+      } else {
+        // Timer finished
+        timerState.running = false;
+        timerState.finished = true;
+        restTimerState = { ...restTimerState };
+        clearInterval(restTimerIntervals[workoutExerciseId]);
+      }
+    }, 1000);
+  }
+
+  // Pause the rest timer
+  function pauseRestTimer(workoutExerciseId) {
+    const state = restTimerState[workoutExerciseId];
+    if (state) {
+      state.running = false;
+      restTimerState = { ...restTimerState };
+    }
+    if (restTimerIntervals[workoutExerciseId]) {
+      clearInterval(restTimerIntervals[workoutExerciseId]);
+    }
+  }
+
+  // Reset the rest timer to full duration
+  function resetRestTimer(workoutExerciseId, restSeconds) {
+    if (restTimerIntervals[workoutExerciseId]) {
+      clearInterval(restTimerIntervals[workoutExerciseId]);
+    }
+    restTimerState[workoutExerciseId] = {
+      remaining: restSeconds,
+      running: false,
+      finished: false
+    };
+    restTimerState = { ...restTimerState };
+  }
+
+  // Handle tap on rest timer pill
+  function handleRestTimerTap(workoutExerciseId, restSeconds) {
+    const state = restTimerState[workoutExerciseId];
+
+    if (!state || (!state.running && !state.finished && state.remaining === restSeconds)) {
+      // Idle state - start
+      startRestTimer(workoutExerciseId, restSeconds);
+    } else if (state.running) {
+      // Running - pause
+      pauseRestTimer(workoutExerciseId);
+    } else if (state.finished) {
+      // Finished - restart
+      startRestTimer(workoutExerciseId, restSeconds);
+    } else {
+      // Paused - resume
+      startRestTimer(workoutExerciseId, restSeconds);
+    }
+  }
+
+  // Long-press handlers for reset
+  function handleRestTimerPointerDown(workoutExerciseId, restSeconds) {
+    longPressTimers[workoutExerciseId] = setTimeout(() => {
+      resetRestTimer(workoutExerciseId, restSeconds);
+      longPressTimers[workoutExerciseId] = null;
+    }, 600); // 600ms for long-press
+  }
+
+  function handleRestTimerPointerUp(workoutExerciseId) {
+    if (longPressTimers[workoutExerciseId]) {
+      clearTimeout(longPressTimers[workoutExerciseId]);
+      longPressTimers[workoutExerciseId] = null;
+    }
+  }
+
+  function handleRestTimerPointerLeave(workoutExerciseId) {
+    if (longPressTimers[workoutExerciseId]) {
+      clearTimeout(longPressTimers[workoutExerciseId]);
+      longPressTimers[workoutExerciseId] = null;
+    }
+  }
+
+  // Get the rest timer display state
+  function getRestTimerDisplay(workoutExerciseId, restSeconds) {
+    const state = restTimerState[workoutExerciseId];
+
+    if (!state || (!state.running && !state.finished && (state.remaining === restSeconds || state.remaining === undefined))) {
+      // Idle state
+      return { mode: 'idle', text: `Rest ${formatRestTime(restSeconds)}` };
+    } else if (state.finished) {
+      // Finished state
+      return { mode: 'finished', text: 'Done ✓' };
+    } else if (state.running) {
+      // Running state
+      return { mode: 'running', text: formatRestTime(state.remaining) };
+    } else {
+      // Paused state
+      return { mode: 'paused', text: `⏸ ${formatRestTime(state.remaining)}` };
+    }
+  }
+
+  // ============================================
+  // STOPWATCH (for time-metric exercises)
+  // ============================================
+  // State: 'idle' | 'running' | 'stopped'
+  // Structure: { key: { elapsed: number (seconds), state: string, startedAt: number (timestamp) } }
+  // key = workoutExerciseId-setIndex
+  let stopwatchState = $state({});
+  let stopwatchIntervals = {}; // Interval references, not reactive
+
+  // Focus mode state: { workoutExerciseId, setIndex, exerciseName, targetTime, targetRir, customReqs } or null
+  let focusMode = $state(null);
+
+  // Format elapsed seconds as M:SS
+  function formatStopwatchTime(seconds) {
+    if (seconds == null || seconds < 0) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  // Get stopwatch key for exercise + set
+  function getStopwatchKey(workoutExerciseId, setIndex) {
+    return `${workoutExerciseId}-${setIndex}`;
+  }
+
+  // Get stopwatch state for exercise + set
+  function getStopwatch(workoutExerciseId, setIndex) {
+    const key = getStopwatchKey(workoutExerciseId, setIndex);
+    return stopwatchState[key] || { elapsed: 0, state: 'idle' };
+  }
+
+  // Start the stopwatch
+  function startStopwatch(workoutExerciseId, setIndex) {
+    const key = getStopwatchKey(workoutExerciseId, setIndex);
+    const current = stopwatchState[key] || { elapsed: 0, state: 'idle' };
+
+    // Clear any existing interval
+    if (stopwatchIntervals[key]) {
+      clearInterval(stopwatchIntervals[key]);
+    }
+
+    // Update state
+    stopwatchState[key] = {
+      elapsed: current.elapsed,
+      state: 'running',
+      startedAt: Date.now() - (current.elapsed * 1000)
+    };
+    stopwatchState = { ...stopwatchState };
+
+    // Start counting up
+    stopwatchIntervals[key] = setInterval(() => {
+      const sw = stopwatchState[key];
+      if (!sw || sw.state !== 'running') {
+        clearInterval(stopwatchIntervals[key]);
+        return;
+      }
+      sw.elapsed = Math.floor((Date.now() - sw.startedAt) / 1000);
+      stopwatchState = { ...stopwatchState };
+    }, 100); // Update frequently for smooth display
+  }
+
+  // Stop/pause the stopwatch
+  function stopStopwatch(workoutExerciseId, setIndex) {
+    const key = getStopwatchKey(workoutExerciseId, setIndex);
+    const current = stopwatchState[key];
+
+    if (stopwatchIntervals[key]) {
+      clearInterval(stopwatchIntervals[key]);
+    }
+
+    if (current) {
+      current.state = 'stopped';
+      stopwatchState = { ...stopwatchState };
+    }
+  }
+
+  // Resume the stopwatch
+  function resumeStopwatch(workoutExerciseId, setIndex) {
+    startStopwatch(workoutExerciseId, setIndex);
+  }
+
+  // Reset the stopwatch
+  function resetStopwatch(workoutExerciseId, setIndex) {
+    const key = getStopwatchKey(workoutExerciseId, setIndex);
+
+    if (stopwatchIntervals[key]) {
+      clearInterval(stopwatchIntervals[key]);
+    }
+
+    stopwatchState[key] = { elapsed: 0, state: 'idle' };
+    stopwatchState = { ...stopwatchState };
+  }
+
+  // Finish: populate time field and exit focus mode
+  function finishStopwatch(workoutExerciseId, setIndex) {
+    const key = getStopwatchKey(workoutExerciseId, setIndex);
+    const sw = stopwatchState[key];
+
+    if (sw && sw.elapsed > 0) {
+      // Populate the time field (weight field for time-metric exercises)
+      const log = exerciseLogs[workoutExerciseId];
+      if (log && log.sets && log.sets[setIndex]) {
+        // Format as seconds or M:SS based on what's typical
+        log.sets[setIndex].weight = formatStopwatchTime(sw.elapsed);
+        exerciseLogs = { ...exerciseLogs };
+      }
+    }
+
+    // Reset stopwatch
+    resetStopwatch(workoutExerciseId, setIndex);
+
+    // Exit focus mode
+    focusMode = null;
+  }
+
+  // Open focus mode for stopwatch
+  function openFocusMode(workoutExerciseId, setIndex, exercise) {
+    focusMode = {
+      workoutExerciseId,
+      setIndex,
+      exerciseName: exercise.name,
+      targetTime: exercise.weight || null,
+      targetRir: exercise.rir || null,
+      customReqs: exercise.customReqs || []
+    };
+  }
+
+  // Close focus mode without finishing
+  function closeFocusMode() {
+    focusMode = null;
+  }
+
   function isExerciseExpanded(sectionIndex, workoutExerciseId) {
     return expandedExercise[sectionIndex] === workoutExerciseId;
   }
@@ -902,6 +1242,7 @@
     if (!currentUserId || !day) return;
     if (isSavingFinish) return; // Prevent double-tap / duplicate executions
     isSavingFinish = true;
+    stopSessionTimer(); // Stop the session timer
 
     // Check if user has 0 eligible sets
     const expectedSetWrites = computeExpectedSetWrites();
@@ -1070,9 +1411,14 @@
 </script>
 
 {#if program && day}
-  <div style="margin-bottom: 20px;">
-    <h1 style="margin-bottom: 5px;">{day.name}</h1>
-    <p style="color: #666; margin: 0;">{program.name}</p>
+  <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px;">
+    <div>
+      <h1 style="margin-bottom: 5px;">{day.name}</h1>
+      <p style="color: #666; margin: 0;">{program.name}</p>
+    </div>
+    <div class="session-timer">
+      {formatSessionTime(sessionElapsed)}
+    </div>
   </div>
 
   <!-- Progress indicator: red = not started, yellow = in progress, green = complete -->
@@ -1321,19 +1667,39 @@
                           </div>
                         </div>
 
-                        <!-- Weight row -->
+                        <!-- Weight/Time row -->
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
                           <span style="font-weight: 500; color: #333;">{weightHeader}</span>
                           <div style="display: flex; align-items: center; gap: 12px;">
-                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
-                            <input
-                              type="text"
-                              value={set.weight}
-                              oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].weight = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
-                              placeholder={log.targetWeight || '0'}
-                              style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
-                            />
-                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
+                            {#if exercise.weightMetric === 'time'}
+                              <!-- Time metric: show input + stopwatch button -->
+                              <input
+                                type="text"
+                                value={set.weight}
+                                oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].weight = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                                placeholder={log.targetWeight || '0:00'}
+                                style="width: 70px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
+                              />
+                              <button
+                                class="stopwatch-trigger"
+                                onclick={() => openFocusMode(exercise.workoutExerciseId, setIndex, exercise)}
+                                aria-label="Open stopwatch"
+                                title="Open stopwatch"
+                              >
+                                ⏱
+                              </button>
+                            {:else}
+                              <!-- Weight metric: show +/- steppers -->
+                              <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
+                              <input
+                                type="text"
+                                value={set.weight}
+                                oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].weight = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                                placeholder={log.targetWeight || '0'}
+                                style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
+                              />
+                              <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
+                            {/if}
                           </div>
                         </div>
 
@@ -1352,6 +1718,41 @@
                             <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', 1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
                           </div>
                         </div>
+
+                        <!-- Rest Timer (only if restSeconds > 0) -->
+                        {#if exercise.restSeconds && exercise.restSeconds > 0}
+                          {@const timerDisplay = getRestTimerDisplay(exercise.workoutExerciseId, exercise.restSeconds)}
+                          <div class="rest-timer-container">
+                            <div
+                              class="rest-timer-pill rest-timer-{timerDisplay.mode}"
+                              role="group"
+                              aria-label="Rest timer"
+                            >
+                              <!-- Main timer area (start/pause/resume/restart) -->
+                              <button
+                                class="rest-timer-main"
+                                onclick={() => handleRestTimerTap(exercise.workoutExerciseId, exercise.restSeconds)}
+                                onpointerdown={() => handleRestTimerPointerDown(exercise.workoutExerciseId, exercise.restSeconds)}
+                                onpointerup={() => handleRestTimerPointerUp(exercise.workoutExerciseId)}
+                                onpointerleave={() => handleRestTimerPointerLeave(exercise.workoutExerciseId)}
+                                oncontextmenu={(e) => e.preventDefault()}
+                              >
+                                {timerDisplay.text}
+                              </button>
+                              <!-- Reset icon (only visible when not idle) -->
+                              {#if timerDisplay.mode !== 'idle'}
+                                <button
+                                  class="rest-timer-reset"
+                                  onclick={() => resetRestTimer(exercise.workoutExerciseId, exercise.restSeconds)}
+                                  aria-label="Reset timer"
+                                  title="Reset timer"
+                                >
+                                  ↺
+                                </button>
+                              {/if}
+                            </div>
+                          </div>
+                        {/if}
 
                         <!-- Notes row (collapsed by default) -->
                         <div style="padding: 8px 0;">
@@ -1662,6 +2063,103 @@
   </div>
 {/if}
 
+<!-- Stopwatch Focus Mode -->
+{#if focusMode}
+  {@const sw = getStopwatch(focusMode.workoutExerciseId, focusMode.setIndex)}
+  {@const nonInputReqs = (focusMode.customReqs || []).filter(r => r.name && r.value && !r.clientInput)}
+  <div
+    class="focus-mode-overlay"
+    role="dialog"
+    aria-modal="true"
+    aria-label="Stopwatch focus mode"
+  >
+    <div class="focus-mode-content">
+      <!-- Header with close button -->
+      <div class="focus-mode-header">
+        <h2 class="focus-mode-title">{focusMode.exerciseName}</h2>
+        <button
+          class="focus-mode-close"
+          onclick={closeFocusMode}
+          aria-label="Close focus mode"
+        >✕</button>
+      </div>
+
+      <!-- Set indicator -->
+      <div class="focus-mode-set-indicator">Set {focusMode.setIndex + 1}</div>
+
+      <!-- Large timer display -->
+      <div class="focus-mode-timer {sw.state}">
+        {formatStopwatchTime(sw.elapsed)}
+      </div>
+
+      <!-- Target info (if assigned) -->
+      {#if focusMode.targetTime || focusMode.targetRir}
+        <div class="focus-mode-targets">
+          {#if focusMode.targetTime}
+            <span class="focus-mode-target">Target: {focusMode.targetTime}</span>
+          {/if}
+          {#if focusMode.targetRir}
+            <span class="focus-mode-target">RIR: {focusMode.targetRir}</span>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- Custom requirements (read-only) -->
+      {#if nonInputReqs.length > 0}
+        <div class="focus-mode-reqs">
+          {#each nonInputReqs as req}
+            <span class="focus-mode-req">{req.name}: {req.value}</span>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Controls -->
+      <div class="focus-mode-controls">
+        {#if sw.state === 'idle'}
+          <button
+            class="focus-mode-btn focus-mode-btn-primary"
+            onclick={() => startStopwatch(focusMode.workoutExerciseId, focusMode.setIndex)}
+          >
+            Start
+          </button>
+        {:else if sw.state === 'running'}
+          <button
+            class="focus-mode-btn focus-mode-btn-primary"
+            onclick={() => stopStopwatch(focusMode.workoutExerciseId, focusMode.setIndex)}
+          >
+            Stop
+          </button>
+        {:else if sw.state === 'stopped'}
+          <div class="focus-mode-btn-row">
+            <button
+              class="focus-mode-btn focus-mode-btn-secondary"
+              onclick={() => resumeStopwatch(focusMode.workoutExerciseId, focusMode.setIndex)}
+            >
+              Resume
+            </button>
+            <button
+              class="focus-mode-btn focus-mode-btn-primary"
+              onclick={() => finishStopwatch(focusMode.workoutExerciseId, focusMode.setIndex)}
+            >
+              Finish
+            </button>
+          </div>
+        {/if}
+
+        <!-- Reset button (when not idle) -->
+        {#if sw.state !== 'idle'}
+          <button
+            class="focus-mode-btn focus-mode-btn-reset"
+            onclick={() => resetStopwatch(focusMode.workoutExerciseId, focusMode.setIndex)}
+          >
+            ↺ Reset
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- Video Modal -->
 {#if videoModalExercise}
   {@const ytId = getYouTubeId(videoModalExercise.videoUrl)}
@@ -1716,5 +2214,372 @@
   }
   :global(.exercise-banner:active) {
     filter: brightness(0.95);
+  }
+
+  /* Rest Timer Styles */
+  .rest-timer-container {
+    display: flex;
+    justify-content: center;
+    padding: 8px 0;
+  }
+
+  .rest-timer-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 8px;
+    background: #f5f5f5;
+    border: 1px solid #e0e0e0;
+    overflow: hidden;
+    transition: all 0.2s ease;
+  }
+
+  .rest-timer-main {
+    padding: 8px 16px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 500;
+    color: #333;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: background 0.15s ease;
+    white-space: nowrap;
+  }
+
+  .rest-timer-main:hover {
+    background: rgba(0, 0, 0, 0.04);
+  }
+
+  .rest-timer-main:active {
+    background: rgba(0, 0, 0, 0.08);
+  }
+
+  .rest-timer-reset {
+    padding: 8px 12px;
+    border: none;
+    border-left: 1px solid #e0e0e0;
+    background: transparent;
+    cursor: pointer;
+    font-size: 1em;
+    color: #666;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: all 0.15s ease;
+    min-width: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .rest-timer-reset:hover {
+    background: rgba(0, 0, 0, 0.04);
+    color: #333;
+  }
+
+  .rest-timer-reset:active {
+    background: rgba(0, 0, 0, 0.08);
+  }
+
+  /* State-specific styling */
+  .rest-timer-idle {
+    background: #fafafa;
+    border-color: #e0e0e0;
+  }
+
+  .rest-timer-idle .rest-timer-main {
+    color: #555;
+  }
+
+  .rest-timer-running {
+    background: #fff8e1;
+    border-color: #ffb300;
+  }
+
+  .rest-timer-running .rest-timer-main {
+    color: #e65100;
+    font-weight: 600;
+  }
+
+  .rest-timer-running .rest-timer-reset {
+    border-left-color: #ffcc80;
+  }
+
+  .rest-timer-paused {
+    background: #f5f5f5;
+    border-color: #bdbdbd;
+  }
+
+  .rest-timer-paused .rest-timer-main {
+    color: #616161;
+  }
+
+  .rest-timer-paused .rest-timer-reset {
+    border-left-color: #e0e0e0;
+  }
+
+  .rest-timer-finished {
+    background: #e8f5e9;
+    border-color: #66bb6a;
+  }
+
+  .rest-timer-finished .rest-timer-main {
+    color: #2e7d32;
+    font-weight: 600;
+  }
+
+  .rest-timer-finished .rest-timer-reset {
+    border-left-color: #a5d6a7;
+  }
+
+  /* Desktop responsive sizing */
+  @media (min-width: 768px) {
+    .rest-timer-pill {
+      border-radius: 10px;
+    }
+
+    .rest-timer-main {
+      padding: 12px 28px;
+      font-size: 1.1em;
+    }
+
+    .rest-timer-reset {
+      padding: 12px 16px;
+      font-size: 1.2em;
+      min-width: 44px;
+    }
+  }
+
+  /* Stopwatch Trigger Button */
+  .stopwatch-trigger {
+    width: 44px;
+    height: 44px;
+    border: 1px solid #e0e0e0;
+    background: #fafafa;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1.3em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+  }
+
+  .stopwatch-trigger:hover {
+    background: #f0f0f0;
+    border-color: #667eea;
+  }
+
+  .stopwatch-trigger:active {
+    background: #e8e8e8;
+  }
+
+  /* Focus Mode Overlay */
+  .focus-mode-overlay {
+    position: fixed;
+    inset: 0;
+    background: #1a1a2e;
+    z-index: 2500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .focus-mode-content {
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+    color: white;
+  }
+
+  .focus-mode-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+
+  .focus-mode-title {
+    margin: 0;
+    font-size: 1.3em;
+    font-weight: 600;
+    color: white;
+  }
+
+  .focus-mode-close {
+    background: rgba(255, 255, 255, 0.1);
+    border: none;
+    color: white;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 1.2em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease;
+  }
+
+  .focus-mode-close:hover {
+    background: rgba(255, 255, 255, 0.2);
+  }
+
+  .focus-mode-set-indicator {
+    font-size: 0.9em;
+    color: rgba(255, 255, 255, 0.6);
+    margin-bottom: 24px;
+  }
+
+  .focus-mode-timer {
+    font-size: 5em;
+    font-weight: 300;
+    font-variant-numeric: tabular-nums;
+    margin: 32px 0;
+    letter-spacing: 2px;
+    transition: color 0.2s ease;
+  }
+
+  .focus-mode-timer.idle {
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  .focus-mode-timer.running {
+    color: #ffb300;
+  }
+
+  .focus-mode-timer.stopped {
+    color: white;
+  }
+
+  .focus-mode-targets {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .focus-mode-target {
+    background: rgba(255, 255, 255, 0.1);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.9em;
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .focus-mode-reqs {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+
+  .focus-mode-req {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  .focus-mode-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    margin-top: 32px;
+  }
+
+  .focus-mode-btn-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .focus-mode-btn {
+    padding: 14px 32px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 1.1em;
+    font-weight: 500;
+    transition: all 0.15s ease;
+    min-width: 120px;
+  }
+
+  .focus-mode-btn-primary {
+    background: #667eea;
+    color: white;
+  }
+
+  .focus-mode-btn-primary:hover {
+    background: #5a6fd6;
+  }
+
+  .focus-mode-btn-primary:active {
+    background: #4e5fc2;
+  }
+
+  .focus-mode-btn-secondary {
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+  }
+
+  .focus-mode-btn-secondary:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+
+  .focus-mode-btn-reset {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 0.9em;
+    padding: 8px 16px;
+    min-width: auto;
+  }
+
+  .focus-mode-btn-reset:hover {
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  /* Desktop responsive sizing for Focus Mode */
+  @media (min-width: 768px) {
+    .focus-mode-content {
+      max-width: 500px;
+    }
+
+    .focus-mode-title {
+      font-size: 1.5em;
+    }
+
+    .focus-mode-timer {
+      font-size: 7em;
+      margin: 48px 0;
+    }
+
+    .focus-mode-btn {
+      padding: 16px 40px;
+      font-size: 1.2em;
+      min-width: 140px;
+    }
+  }
+
+  /* Session Timer */
+  .session-timer {
+    font-size: 1.1em;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: #555;
+    background: #f5f5f5;
+    padding: 6px 12px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+
+  @media (min-width: 768px) {
+    .session-timer {
+      font-size: 1.3em;
+      padding: 8px 16px;
+    }
   }
 </style>

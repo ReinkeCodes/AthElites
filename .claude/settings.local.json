@@ -7,7 +7,8 @@
       "Bash(cat:*)",
       "Bash(tree:*)",
       "Bash(npx svelte-check:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(git diff:*)"
     ]
   }
 }
