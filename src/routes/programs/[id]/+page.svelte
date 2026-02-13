@@ -53,7 +53,7 @@
   let selectedExerciseId = $state('');
   let isPickerOpen = $state(false);
   let pickerContainerRef = $state(null);
-  let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' });
+  let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' });
 
   // Video modal
   let videoModalExercise = $state(null);
@@ -61,7 +61,7 @@
 
   // Editing exercise in section
   let editingExercise = $state(null); // format: "dayIndex-sectionIndex-exerciseIndex"
-  let editExerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' });
+  let editExerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' });
 
   // Drag and drop (exercises)
   let draggedExercise = $state(null); // { dayIndex, sectionIndex, exerciseIndex, exercise }
@@ -341,6 +341,7 @@
     if (!exercise) return;
 
     const updatedDays = [...program.days];
+    const restVal = exerciseDetails.restSeconds?.toString().trim();
     const exerciseEntry = {
       workoutExerciseId: generateId(),
       exerciseId: selectedExerciseId,
@@ -353,13 +354,14 @@
       notes: exerciseDetails.notes,
       customReqs: exerciseDetails.customReqs || [],
       repsMetric: exerciseDetails.repsMetric || 'reps',
-      weightMetric: exerciseDetails.weightMetric || 'weight'
+      weightMetric: exerciseDetails.weightMetric || 'weight',
+      restSeconds: restVal ? parseInt(restVal, 10) : null
     };
     updatedDays[dayIndex].sections[sectionIndex].exercises.push(exerciseEntry);
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
 
     selectedExerciseId = '';
-    exerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' };
+    exerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' };
     exerciseSearchQuery = '';
     exerciseTypeFilter = '';
     isPickerOpen = false;
@@ -384,13 +386,14 @@
       notes: ex.notes || '',
       customReqs: ex.customReqs ? [...ex.customReqs] : [],
       repsMetric: ex.repsMetric || 'reps',
-      weightMetric: ex.weightMetric || 'weight'
+      weightMetric: ex.weightMetric || 'weight',
+      restSeconds: ex.restSeconds != null ? ex.restSeconds.toString() : ''
     };
   }
 
   function cancelEditExercise() {
     editingExercise = null;
-    editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' };
+    editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' };
   }
 
   async function saveEditExercise(dayIndex, sectionIndex, exerciseIndex) {
@@ -404,9 +407,11 @@
     ex.customReqs = editExerciseDetails.customReqs;
     ex.repsMetric = editExerciseDetails.repsMetric;
     ex.weightMetric = editExerciseDetails.weightMetric;
+    const restVal = editExerciseDetails.restSeconds?.toString().trim();
+    ex.restSeconds = restVal ? parseInt(restVal, 10) : null;
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
     editingExercise = null;
-    editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight' };
+    editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' };
   }
 
   // Custom requirements for adding new exercise
@@ -1134,6 +1139,12 @@
                         <div style="margin-bottom: 8px;">
                           <input type="text" bind:value={editExerciseDetails.rir} placeholder="RIR" style="padding: 5px; width: 100%;" />
                         </div>
+                        {#if section.mode !== 'checkbox'}
+                          <div style="margin-bottom: 8px;">
+                            <label style="font-size: 0.8em; color: #666;">Rest (seconds)</label>
+                            <input type="number" bind:value={editExerciseDetails.restSeconds} placeholder="e.g. 90" min="0" style="padding: 5px; width: 100%; margin-top: 3px;" />
+                          </div>
+                        {/if}
                         <div style="margin-bottom: 8px;">
                           <input type="text" bind:value={editExerciseDetails.notes} placeholder="Notes" style="padding: 5px; width: 100%;" />
                         </div>
@@ -1188,6 +1199,11 @@
                               {#if ex.reps} × {ex.reps} {ex.repsMetric === 'distance' ? '' : 'reps'}{/if}
                               {#if ex.weight} @ {ex.weight}{ex.weightMetric === 'time' ? '' : ''}{/if}
                               {#if ex.rir} (RIR: {ex.rir}){/if}
+                              {#if section.mode !== 'checkbox' && ex.restSeconds}
+                                <span style="background: #f3e5f5; color: #7b1fa2; padding: 2px 6px; border-radius: 3px; font-size: 0.75em; margin-left: 5px;">
+                                  Rest: {ex.restSeconds}s
+                                </span>
+                              {/if}
                               {#if ex.notes}<br /><em style="color: #666;">{ex.notes}</em>{/if}
                               {#if ex.customReqs && ex.customReqs.length > 0}
                                 <div style="margin-top: 5px;">
@@ -1299,6 +1315,12 @@
                     <div style="margin-bottom: 8px;">
                       <input type="text" bind:value={exerciseDetails.rir} placeholder="RIR (Reps in Reserve)" style="padding: 5px; width: 100%;" />
                     </div>
+                    {#if section.mode !== 'checkbox'}
+                      <div style="margin-bottom: 8px;">
+                        <label style="font-size: 0.8em; color: #666;">Rest (seconds)</label>
+                        <input type="number" bind:value={exerciseDetails.restSeconds} placeholder="e.g. 90" min="0" style="padding: 5px; width: 100%; margin-top: 3px;" />
+                      </div>
+                    {/if}
                     <div style="margin-bottom: 8px;">
                       <input type="text" bind:value={exerciseDetails.notes} placeholder="Notes" style="padding: 5px; width: 100%;" />
                     </div>
