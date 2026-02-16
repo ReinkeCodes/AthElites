@@ -642,6 +642,67 @@
     }
   }
 
+  // Helper: check if a standard field is empty (no value, not N/A, not DNC)
+  function isFieldEmpty(set, field) {
+    if (!set) return true;
+    const val = set[field];
+    const isNaField = set.na?.[field] === true;
+    const isDNC = val === 'DNC';
+    const hasValue = val !== null && val !== undefined && String(val).trim() !== '';
+    return !hasValue && !isNaField && !isDNC;
+  }
+
+  // Helper: check if a set has any empty standard fields
+  function setHasEmptyFields(set) {
+    if (!set) return true;
+    return isFieldEmpty(set, 'reps') || isFieldEmpty(set, 'weight') || isFieldEmpty(set, 'rir');
+  }
+
+  // Skip a single set: fill empty standard fields with DNC
+  function skipSet(workoutExerciseId, setIndex) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets || !log.sets[setIndex]) return;
+    const set = log.sets[setIndex];
+
+    // Fill empty standard fields with DNC
+    if (isFieldEmpty(set, 'reps')) set.reps = 'DNC';
+    if (isFieldEmpty(set, 'weight')) set.weight = 'DNC';
+    if (isFieldEmpty(set, 'rir')) set.rir = 'DNC';
+
+    exerciseLogs = { ...exerciseLogs };
+  }
+
+  // Skip remaining sets: fill empty standard fields with DNC for current and all subsequent sets
+  function skipRemainingSets(workoutExerciseId) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets) return;
+
+    const activeIdx = activeSetIndices[workoutExerciseId] ?? 0;
+
+    // Fill DNC for all sets from active index onwards
+    for (let i = activeIdx; i < log.sets.length; i++) {
+      const set = log.sets[i];
+      if (isFieldEmpty(set, 'reps')) set.reps = 'DNC';
+      if (isFieldEmpty(set, 'weight')) set.weight = 'DNC';
+      if (isFieldEmpty(set, 'rir')) set.rir = 'DNC';
+    }
+
+    exerciseLogs = { ...exerciseLogs };
+  }
+
+  // Check if there are remaining sets with empty fields (for Skip Remaining visibility)
+  function hasRemainingSetsWithEmptyFields(workoutExerciseId) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets) return false;
+
+    const activeIdx = activeSetIndices[workoutExerciseId] ?? 0;
+
+    for (let i = activeIdx; i < log.sets.length; i++) {
+      if (setHasEmptyFields(log.sets[i])) return true;
+    }
+    return false;
+  }
+
   // Mark all incomplete exercises as DNC
   function markIncompleteAsDNC() {
     const section = getCurrentSection();
@@ -1699,6 +1760,17 @@
                         >&gt;</button>
                       </div>
 
+                      <!-- Skip set button (below tracker dots) - only show if set has empty fields -->
+                      {#if setHasEmptyFields(set)}
+                        <div style="display: flex; justify-content: center; margin-bottom: 6px;">
+                          <button
+                            class="skip-set-btn"
+                            onclick={() => skipSet(exercise.workoutExerciseId, setIndex)}
+                            aria-label="Skip this set"
+                          >Skip</button>
+                        </div>
+                      {/if}
+
                       <!-- Vertical stacked inputs -->
                       <div style="display: flex; flex-direction: column; gap: 12px;">
                         <!-- Reps row -->
@@ -1712,17 +1784,17 @@
                               aria-label="Mark reps as N/A"
                             >N/A</button>
                           </div>
-                          <div style="display: flex; align-items: center; gap: 12px;">
-                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
+                          <div class="stepper-row">
+                            <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)}>-</button>
                             <input
                               type="text"
+                              class="stepper-input"
                               value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
                               oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
                               onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
                               placeholder={log.targetReps || '0'}
-                              style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
                             />
-                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', 1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
+                            <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', 1)}>+</button>
                           </div>
                         </div>
 
@@ -1736,16 +1808,16 @@
                               aria-label="Mark {weightHeader.toLowerCase()} as N/A"
                             >N/A</button>
                           </div>
-                          <div style="display: flex; align-items: center; gap: 12px;">
+                          <div class="stepper-row">
                             {#if exercise.weightMetric === 'time'}
                               <!-- Time metric: show input + stopwatch button -->
                               <input
                                 type="text"
+                                class="stepper-input stepper-input-time"
                                 value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
                                 oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
                                 onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
                                 placeholder={log.targetWeight || '0:00'}
-                                style="width: 70px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
                               />
                               <button
                                 class="stopwatch-trigger"
@@ -1757,16 +1829,16 @@
                               </button>
                             {:else}
                               <!-- Weight metric: show +/- steppers -->
-                              <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
+                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)}>-</button>
                               <input
                                 type="text"
+                                class="stepper-input"
                                 value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
                                 oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
                                 onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
                                 placeholder={log.targetWeight || '0'}
-                                style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
                               />
-                              <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
+                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)}>+</button>
                             {/if}
                           </div>
                         </div>
@@ -1781,17 +1853,17 @@
                               aria-label="Mark RIR as N/A"
                             >N/A</button>
                           </div>
-                          <div style="display: flex; align-items: center; gap: 12px;">
-                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', -1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
+                          <div class="stepper-row">
+                            <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', -1)}>-</button>
                             <input
                               type="text"
+                              class="stepper-input"
                               value={isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'N/A' : set.rir}
                               oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'rir', e.target.value)}
                               onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'rir')}
                               placeholder={log.targetRir || '0'}
-                              style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
                             />
-                            <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', 1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">+</button>
+                            <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', 1)}>+</button>
                           </div>
                         </div>
 
@@ -1870,6 +1942,17 @@
                               />
                             </div>
                           {/each}
+                        {/if}
+
+                        <!-- Skip Remaining Sets button - only show if there are remaining sets with empty fields -->
+                        {#if hasRemainingSetsWithEmptyFields(exercise.workoutExerciseId) && log.sets.length > 1}
+                          <div style="display: flex; justify-content: center; padding-top: 12px; border-top: 1px solid #eee; margin-top: 8px;">
+                            <button
+                              class="skip-remaining-btn"
+                              onclick={() => skipRemainingSets(exercise.workoutExerciseId)}
+                              aria-label="Skip remaining sets"
+                            >Skip Remaining Sets</button>
+                          </div>
                         {/if}
                       </div>
                     </div>
@@ -2687,5 +2770,111 @@
   .na-btn-active:hover {
     background: #bbdefb;
     border-color: #64b5f6;
+  }
+
+  /* Skip Set Button */
+  .skip-set-btn {
+    padding: 2px 8px;
+    font-size: 0.7em;
+    font-weight: 500;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fafafa;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+
+  .skip-set-btn:hover {
+    border-color: #bbb;
+    background: #f0f0f0;
+    color: #333;
+  }
+
+  .skip-set-btn:active {
+    background: #e8e8e8;
+  }
+
+  /* Skip Remaining Sets Button */
+  .skip-remaining-btn {
+    padding: 6px 14px;
+    font-size: 0.85em;
+    font-weight: 500;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: #fafafa;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+
+  .skip-remaining-btn:hover {
+    border-color: #bbb;
+    background: #f0f0f0;
+    color: #333;
+  }
+
+  .skip-remaining-btn:active {
+    background: #e8e8e8;
+  }
+
+  /* Stepper Row (- value +) */
+  .stepper-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .stepper-btn {
+    width: 44px;
+    height: 44px;
+    border: none;
+    background: transparent;
+    font-size: 1.5em;
+    color: #667eea;
+    cursor: pointer;
+  }
+
+  .stepper-input {
+    width: 60px;
+    padding: 8px 0;
+    border: none;
+    background: transparent;
+    font-size: 1.2em;
+    text-align: center;
+    outline: none;
+    box-shadow: none !important;
+    -webkit-appearance: none;
+    appearance: none;
+    border-radius: 0;
+    text-decoration: none;
+  }
+
+  .stepper-input-time {
+    width: 70px;
+  }
+
+  /* Mobile: tighter stepper spacing */
+  @media (max-width: 600px) {
+    .stepper-row {
+      gap: 4px;
+    }
+
+    .stepper-btn {
+      width: 40px;
+      height: 40px;
+      font-size: 1.4em;
+    }
+
+    .stepper-input {
+      width: 55px;
+      font-size: 1.1em;
+    }
+
+    .stepper-input-time {
+      width: 65px;
+    }
   }
 </style>
