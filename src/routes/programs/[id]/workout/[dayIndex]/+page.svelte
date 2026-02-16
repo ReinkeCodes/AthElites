@@ -17,6 +17,10 @@
   // Structure: { exerciseId: { targetSets, targetReps, targetWeight, targetRir, sets: [{reps, weight, rir, notes}, ...] } }
   let exerciseLogs = $state({});
 
+  // Track last entered numeric values per exercise for placeholders/stepper base (session-only)
+  // Structure: { workoutExerciseId: { weight: value, reps: value, rir: value } }
+  let lastEntered = $state({});
+
   // Checkbox completions for checkbox-mode sections
   let exerciseCompleted = $state({});
 
@@ -1119,8 +1123,11 @@
       const log = exerciseLogs[workoutExerciseId];
       if (log && log.sets && log.sets[setIndex]) {
         // Format as seconds or M:SS based on what's typical
-        log.sets[setIndex].weight = formatStopwatchTime(sw.elapsed);
+        const timeValue = formatStopwatchTime(sw.elapsed);
+        log.sets[setIndex].weight = timeValue;
         exerciseLogs = { ...exerciseLogs };
+        // Track lastEntered for time (stored in weight field)
+        updateLastEntered(workoutExerciseId, 'weight', timeValue);
       }
     }
 
@@ -1212,12 +1219,17 @@
     if (!log || !log.sets || !log.sets[setIndex]) return;
     // Clear N/A if stepping
     clearNa(workoutExerciseId, setIndex, field);
-    const current = parseFloat(log.sets[setIndex][field]) || 0;
-    let newVal = current + delta;
+    const currentVal = log.sets[setIndex][field];
+    const hasValue = currentVal !== null && currentVal !== undefined && String(currentVal).trim() !== '' && currentVal !== 'DNC';
+    // Use current value if present, otherwise use lastEntered/target as base
+    const base = hasValue ? parseFloat(currentVal) || 0 : getStepperBase(workoutExerciseId, field);
+    let newVal = base + delta;
     if (field === 'rir') newVal = Math.max(0, Math.min(10, newVal));
     else newVal = Math.max(0, newVal);
     log.sets[setIndex][field] = String(newVal);
     exerciseLogs = { ...exerciseLogs };
+    // Track lastEntered for the new value
+    updateLastEntered(workoutExerciseId, field, String(newVal));
   }
 
   // N/A field handling
@@ -1255,6 +1267,56 @@
     }
   }
 
+  // Update lastEntered when user enters a numeric value (not N/A, not DNC)
+  function updateLastEntered(workoutExerciseId, field, value) {
+    if (!value || value === 'N/A' || value === 'DNC') return;
+    const trimmed = String(value).trim();
+    if (trimmed === '') return;
+    // Check if it's a valid numeric value (allow decimals and time formats like 1:30)
+    const isNumeric = /^[\d:.]+$/.test(trimmed);
+    if (!isNumeric) return;
+
+    if (!lastEntered[workoutExerciseId]) {
+      lastEntered[workoutExerciseId] = {};
+    }
+    lastEntered[workoutExerciseId][field] = trimmed;
+    lastEntered = { ...lastEntered };
+  }
+
+  // Get placeholder value: lastEntered > program target > fallback
+  function getPlaceholder(workoutExerciseId, field, fallback) {
+    const log = exerciseLogs[workoutExerciseId];
+    // Priority 1: lastEntered
+    if (lastEntered[workoutExerciseId]?.[field]) {
+      return lastEntered[workoutExerciseId][field];
+    }
+    // Priority 2: program target
+    if (log) {
+      if (field === 'reps' && log.targetReps) return log.targetReps;
+      if (field === 'weight' && log.targetWeight) return log.targetWeight;
+      if (field === 'rir' && log.targetRir) return log.targetRir;
+    }
+    // Priority 3: fallback
+    return fallback;
+  }
+
+  // Get stepper base value when field is empty
+  function getStepperBase(workoutExerciseId, field) {
+    // Priority 1: lastEntered
+    if (lastEntered[workoutExerciseId]?.[field]) {
+      return parseFloat(lastEntered[workoutExerciseId][field]) || 0;
+    }
+    // Priority 2: program target
+    const log = exerciseLogs[workoutExerciseId];
+    if (log) {
+      if (field === 'reps' && log.targetReps) return parseFloat(log.targetReps) || 0;
+      if (field === 'weight' && log.targetWeight) return parseFloat(log.targetWeight) || 0;
+      if (field === 'rir' && log.targetRir) return parseFloat(log.targetRir) || 0;
+    }
+    // Priority 3: fallback to 0
+    return 0;
+  }
+
   function handleFieldInput(workoutExerciseId, setIndex, field, value) {
     const log = exerciseLogs[workoutExerciseId];
     if (!log || !log.sets || !log.sets[setIndex]) return;
@@ -1264,6 +1326,8 @@
     }
     log.sets[setIndex][field] = value;
     exerciseLogs = { ...exerciseLogs };
+    // Track lastEntered for numeric values
+    updateLastEntered(workoutExerciseId, field, value);
   }
 
   // Swipe handler state tracking (per exercise)
@@ -1792,7 +1856,7 @@
                               value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
                               oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
                               onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
-                              placeholder={log.targetReps || '0'}
+                              placeholder={getPlaceholder(exercise.workoutExerciseId, 'reps', '0')}
                             />
                             <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', 1)}>+</button>
                           </div>
@@ -1817,7 +1881,7 @@
                                 value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
                                 oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
                                 onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
-                                placeholder={log.targetWeight || '0:00'}
+                                placeholder={getPlaceholder(exercise.workoutExerciseId, 'weight', '0:00')}
                               />
                               <button
                                 class="stopwatch-trigger"
@@ -1836,7 +1900,7 @@
                                 value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
                                 oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
                                 onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
-                                placeholder={log.targetWeight || '0'}
+                                placeholder={getPlaceholder(exercise.workoutExerciseId, 'weight', '0')}
                               />
                               <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)}>+</button>
                             {/if}
@@ -1861,7 +1925,7 @@
                               value={isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'N/A' : set.rir}
                               oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'rir', e.target.value)}
                               onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'rir')}
-                              placeholder={log.targetRir || '0'}
+                              placeholder={getPlaceholder(exercise.workoutExerciseId, 'rir', '0')}
                             />
                             <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', 1)}>+</button>
                           </div>
