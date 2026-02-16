@@ -596,7 +596,8 @@
       return section.exercises.some(ex => {
         const log = exerciseLogs[ex.workoutExerciseId];
         if (!log || !log.sets) return false;
-        return log.sets.some(set => set.weight || set.reps);
+        // A set is "started" if it has any value OR any N/A marker
+        return log.sets.some(set => set.weight || set.reps || set.na?.weight || set.na?.reps);
       });
     }
   }
@@ -608,11 +609,11 @@
     return '#ef5350'; // red
   }
 
-  // Check if an exercise in full tracking mode has data (at least one set filled)
+  // Check if an exercise in full tracking mode has data (at least one set filled or N/A)
   function hasExerciseData(workoutExerciseId) {
     const log = exerciseLogs[workoutExerciseId];
     if (!log || !log.sets) return false;
-    return log.sets.some(set => set.weight || set.reps);
+    return log.sets.some(set => set.weight || set.reps || set.na?.weight || set.na?.reps);
   }
 
   // Check if an exercise is fully completed (ALL sets have all required fields filled)
@@ -739,9 +740,10 @@
   function getSetCompletionState(set) {
     if (!set) return 'untouched';
     const hasValue = (v) => v !== null && v !== undefined && String(v).trim() !== '';
-    const repsHas = hasValue(set.reps);
-    const weightHas = hasValue(set.weight);
-    const rirHas = hasValue(set.rir);
+    // A field is "filled" if it has a value OR is marked N/A
+    const repsHas = hasValue(set.reps) || set.na?.reps === true;
+    const weightHas = hasValue(set.weight) || set.na?.weight === true;
+    const rirHas = hasValue(set.rir) || set.na?.rir === true;
     const filledCount = [repsHas, weightHas, rirHas].filter(Boolean).length;
     if (filledCount === 0) return 'untouched';
     if (filledCount === 3) return 'completed';
@@ -1147,11 +1149,59 @@
   function stepValue(workoutExerciseId, setIndex, field, delta) {
     const log = exerciseLogs[workoutExerciseId];
     if (!log || !log.sets || !log.sets[setIndex]) return;
+    // Clear N/A if stepping
+    clearNa(workoutExerciseId, setIndex, field);
     const current = parseFloat(log.sets[setIndex][field]) || 0;
     let newVal = current + delta;
     if (field === 'rir') newVal = Math.max(0, Math.min(10, newVal));
     else newVal = Math.max(0, newVal);
     log.sets[setIndex][field] = String(newVal);
+    exerciseLogs = { ...exerciseLogs };
+  }
+
+  // N/A field handling
+  function isNa(workoutExerciseId, setIndex, field) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets || !log.sets[setIndex]) return false;
+    return log.sets[setIndex].na?.[field] === true;
+  }
+
+  function toggleNa(workoutExerciseId, setIndex, field) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets || !log.sets[setIndex]) return;
+    const set = log.sets[setIndex];
+    if (!set.na) set.na = {};
+    if (set.na[field]) {
+      // Clear N/A
+      delete set.na[field];
+      // Clean up empty na object
+      if (Object.keys(set.na).length === 0) delete set.na;
+    } else {
+      // Set N/A and clear value
+      set.na[field] = true;
+      set[field] = '';
+    }
+    exerciseLogs = { ...exerciseLogs };
+  }
+
+  function clearNa(workoutExerciseId, setIndex, field) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets || !log.sets[setIndex]) return;
+    const set = log.sets[setIndex];
+    if (set.na?.[field]) {
+      delete set.na[field];
+      if (Object.keys(set.na).length === 0) delete set.na;
+    }
+  }
+
+  function handleFieldInput(workoutExerciseId, setIndex, field, value) {
+    const log = exerciseLogs[workoutExerciseId];
+    if (!log || !log.sets || !log.sets[setIndex]) return;
+    // Clear N/A when user types a value
+    if (value && value.trim() !== '') {
+      clearNa(workoutExerciseId, setIndex, field);
+    }
+    log.sets[setIndex][field] = value;
     exerciseLogs = { ...exerciseLogs };
   }
 
@@ -1652,14 +1702,23 @@
                       <!-- Vertical stacked inputs -->
                       <div style="display: flex; flex-direction: column; gap: 12px;">
                         <!-- Reps row -->
+                        <!-- Reps row -->
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
-                          <span style="font-weight: 500; color: #333;">{repsHeader}</span>
+                          <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-weight: 500; color: #333;">{repsHeader}</span>
+                            <button
+                              class="na-btn {isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'na-btn-active' : ''}"
+                              onclick={() => toggleNa(exercise.workoutExerciseId, setIndex, 'reps')}
+                              aria-label="Mark reps as N/A"
+                            >N/A</button>
+                          </div>
                           <div style="display: flex; align-items: center; gap: 12px;">
                             <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
                             <input
                               type="text"
-                              value={set.reps}
-                              oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].reps = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                              value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
+                              oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
+                              onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
                               placeholder={log.targetReps || '0'}
                               style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
                             />
@@ -1669,14 +1728,22 @@
 
                         <!-- Weight/Time row -->
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
-                          <span style="font-weight: 500; color: #333;">{weightHeader}</span>
+                          <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-weight: 500; color: #333;">{weightHeader}</span>
+                            <button
+                              class="na-btn {isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'na-btn-active' : ''}"
+                              onclick={() => toggleNa(exercise.workoutExerciseId, setIndex, 'weight')}
+                              aria-label="Mark {weightHeader.toLowerCase()} as N/A"
+                            >N/A</button>
+                          </div>
                           <div style="display: flex; align-items: center; gap: 12px;">
                             {#if exercise.weightMetric === 'time'}
                               <!-- Time metric: show input + stopwatch button -->
                               <input
                                 type="text"
-                                value={set.weight}
-                                oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].weight = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                                value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
+                                oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
+                                onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
                                 placeholder={log.targetWeight || '0:00'}
                                 style="width: 70px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
                               />
@@ -1693,8 +1760,9 @@
                               <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
                               <input
                                 type="text"
-                                value={set.weight}
-                                oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].weight = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                                value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
+                                oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
+                                onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
                                 placeholder={log.targetWeight || '0'}
                                 style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
                               />
@@ -1705,13 +1773,21 @@
 
                         <!-- RIR row -->
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
-                          <span style="font-weight: 500; color: #333;">RIR</span>
+                          <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-weight: 500; color: #333;">RIR</span>
+                            <button
+                              class="na-btn {isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'na-btn-active' : ''}"
+                              onclick={() => toggleNa(exercise.workoutExerciseId, setIndex, 'rir')}
+                              aria-label="Mark RIR as N/A"
+                            >N/A</button>
+                          </div>
                           <div style="display: flex; align-items: center; gap: 12px;">
                             <button onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', -1)} style="width: 44px; height: 44px; border: none; background: transparent; font-size: 1.5em; color: #667eea; cursor: pointer;">-</button>
                             <input
                               type="text"
-                              value={set.rir}
-                              oninput={(e) => { if (log.sets[setIndex]) { log.sets[setIndex].rir = e.target.value; exerciseLogs = { ...exerciseLogs }; } }}
+                              value={isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'N/A' : set.rir}
+                              oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'rir', e.target.value)}
+                              onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'rir')}
                               placeholder={log.targetRir || '0'}
                               style="width: 60px; padding: 8px 0; border: none; background: transparent; font-size: 1.2em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
                             />
@@ -2581,5 +2657,35 @@
       font-size: 1.3em;
       padding: 8px 16px;
     }
+  }
+
+  /* N/A Button Styles */
+  .na-btn {
+    padding: 2px 6px;
+    font-size: 0.7em;
+    font-weight: 500;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fafafa;
+    color: #888;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+
+  .na-btn:hover {
+    border-color: #bbb;
+    background: #f0f0f0;
+  }
+
+  .na-btn-active {
+    background: #e3f2fd;
+    border-color: #90caf9;
+    color: #1565c0;
+  }
+
+  .na-btn-active:hover {
+    background: #bbdefb;
+    border-color: #64b5f6;
   }
 </style>
