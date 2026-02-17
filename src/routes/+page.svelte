@@ -6,6 +6,7 @@
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
   import { isDraftStale, getDraftAgeText, isValidDayIndex, isDraftExpired } from '$lib/workoutDraft.js';
+  import { TONNAGE_TRACKING_NOTE } from '$lib/uiCopy.js';
 
   let currentUser = $state(null);
   let userRole = $state(null);
@@ -22,6 +23,54 @@
   let showDiscardConfirm = $state(false);
   let showContinueModal = $state(false);
   let expiredMessage = $state(''); // Brief message when draft auto-discarded
+
+  // Tonnage stats
+  let monthTonnage = $state(null); // null = loading, number = loaded
+  let yearTonnage = $state(null);
+
+  // Tonnage equivalency tiers (month tonnage in lbs)
+  const tonnageTiers = [
+    { min: 0, max: 1000, nameSingular: 'Shaq', namePlural: 'Shaqs', refWeight: 325, tooltip: "Shaquille O'Neal's listed playing weight was 325 lbs." },
+    { min: 1001, max: 5000, nameSingular: 'Formula 1 car', namePlural: 'Formula 1 cars', refWeight: 1600, tooltip: 'A modern Formula 1 car weighs about 1,600 lbs including the driver.' },
+    { min: 5001, max: 15000, special: 'bears', refWeight: 13033.2, tooltip: '53 players × ~246 lb average ≈ 13,033 lbs total team weight.' },
+    { min: 15001, max: 30000, nameSingular: 'compact car', namePlural: 'compact cars', refWeight: 3000, tooltip: 'A compact car weighs roughly 3,000 lbs.' },
+    { min: 30001, max: 75000, nameSingular: 'heavy semi truck', namePlural: 'heavy semi trucks', refWeight: 25000, tooltip: 'An empty heavy-duty semi truck weighs about 25,000 lbs. In 2024, approximately 11.27 billion tons of freight were moved in the U.S.' },
+    { min: 75001, max: 150000, nameSingular: 'tower ladder', namePlural: 'tower ladders', refWeight: 80000, tooltip: 'A fully loaded tower ladder can weigh up to 80,000 lbs. It extends aerial platforms for rescue and can flow up to 2,000 gallons of water per minute — about 1,000× a typical shower head.' },
+    { min: 150001, max: 300000, nameSingular: 'Boeing 737', namePlural: 'Boeing 737s', refWeight: 90000, tooltip: 'A Boeing 737 weighs roughly 90,000 lbs empty.' },
+    { min: 300001, max: 600000, nameSingular: 'blue whale', namePlural: 'blue whales', refWeight: 300000, tooltip: 'A blue whale can weigh up to 300,000 lbs — the largest animal on Earth.' },
+    { min: 600001, max: 1500000, nameSingular: 'International Space Station', namePlural: 'International Space Stations', refWeight: 992080, tooltip: 'The International Space Station weighs about 992,080 lbs and orbits Earth at ~17,500 mph.' },
+    { min: 1500001, max: Infinity, nameSingular: 'Giant Sequoia', namePlural: 'Giant Sequoias', refWeight: 2700000, tooltip: 'The General Sherman Tree is the largest tree on Earth by volume. Learn more: https://www.nps.gov/seki/learn/nature/sherman.htm' }
+  ];
+
+  // Tooltip state for mobile tap
+  let showEquivTooltip = $state(false);
+
+  function getEquivalencyData(tonnageLbs) {
+    if (!tonnageLbs || tonnageLbs <= 0) return null;
+
+    // Find the matching tier
+    const tier = tonnageTiers.find(t => tonnageLbs >= t.min && tonnageLbs <= t.max);
+    if (!tier) return null;
+
+    // Calculate ratio
+    let ratio = tonnageLbs / tier.refWeight;
+    let rounded = Math.round(ratio * 10) / 10;
+    if (rounded < 0.1) rounded = 0.1;
+
+    // Format with 1 decimal
+    const formatted = rounded.toFixed(1);
+
+    // Build display text
+    let text;
+    if (tier.special === 'bears') {
+      text = `You've lifted the entire Chicago Bears roster ~${formatted} times`;
+    } else {
+      const name = rounded === 1.0 ? tier.nameSingular : tier.namePlural;
+      text = `You've lifted ~${formatted} ${name}`;
+    }
+
+    return { text, tooltip: tier.tooltip };
+  }
 
   function loadActiveDraft() {
     if (!browser || !currentUser) return;
@@ -111,6 +160,7 @@
         await loadRecentSessions();
         await loadAssignedPrograms();
         loadActiveDraft();
+        loadTonnageStats();
       }
       loading = false;
     });
@@ -183,6 +233,38 @@
     }
   }
 
+  async function loadTonnageStats() {
+    if (!currentUser) return;
+
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1; // 1-12
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    const yearKey = `${year}`;
+
+    try {
+      const monthRef = doc(db, 'user', currentUser.uid, 'stats', `tonnage_${monthKey}`);
+      const yearRef = doc(db, 'user', currentUser.uid, 'stats', `tonnage_${yearKey}`);
+
+      const [monthSnap, yearSnap] = await Promise.all([
+        getDoc(monthRef),
+        getDoc(yearRef)
+      ]);
+
+      // Extract tonnage values, default to 0 if missing
+      const monthData = monthSnap.exists() ? monthSnap.data() : null;
+      const yearData = yearSnap.exists() ? yearSnap.data() : null;
+
+      monthTonnage = (typeof monthData?.tonnage === 'number') ? monthData.tonnage : 0;
+      yearTonnage = (typeof yearData?.tonnage === 'number') ? yearData.tonnage : 0;
+    } catch (e) {
+      console.error('Could not load tonnage stats:', e);
+      // Set to 0 on error so UI doesn't show loading state forever
+      monthTonnage = 0;
+      yearTonnage = 0;
+    }
+  }
+
   function formatDate(timestamp) {
     if (!timestamp) return '';
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
@@ -229,6 +311,63 @@
       {expiredMessage}
     </div>
   {/if}
+
+  <!-- Tonnage Stats -->
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+    <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; text-align: center;">
+      <p style="margin: 0 0 5px 0; color: #666; font-size: 0.85em;">Month Tonnage</p>
+      <p style="margin: 0; font-size: 1.4em; font-weight: bold; color: #333;">
+        {monthTonnage === null ? '—' : `${monthTonnage.toLocaleString()} lbs`}
+      </p>
+    </div>
+    <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; text-align: center;">
+      <p style="margin: 0 0 5px 0; color: #666; font-size: 0.85em;">Year Tonnage</p>
+      <p style="margin: 0; font-size: 1.4em; font-weight: bold; color: #333;">
+        {yearTonnage === null ? '—' : `${yearTonnage.toLocaleString()} lbs`}
+      </p>
+    </div>
+  </div>
+
+  <!-- Tonnage Equivalency -->
+  {#if monthTonnage && monthTonnage > 0}
+    {@const equivData = getEquivalencyData(monthTonnage)}
+    {#if equivData}
+      <div style="text-align: center; margin-bottom: 10px;">
+        <span style="color: #555; font-size: 0.95em;">{equivData.text}</span>
+        <span
+          class="equiv-tooltip-trigger"
+          role="button"
+          tabindex="0"
+          onclick={() => showEquivTooltip = !showEquivTooltip}
+          onkeydown={(e) => e.key === 'Enter' && (showEquivTooltip = !showEquivTooltip)}
+          onmouseenter={() => showEquivTooltip = true}
+          onmouseleave={() => showEquivTooltip = false}
+        >
+          <span class="equiv-info-icon">i</span>
+          {#if showEquivTooltip}
+            <span class="equiv-tooltip">
+              {#if equivData.tooltip.includes('https://')}
+                {@const parts = equivData.tooltip.split(/(https:\/\/\S+)/)}
+                {#each parts as part}
+                  {#if part.startsWith('https://')}
+                    <a href={part} target="_blank" rel="noopener noreferrer" style="color: #90caf9;">{part}</a>
+                  {:else}
+                    {part}
+                  {/if}
+                {/each}
+              {:else}
+                {equivData.tooltip}
+              {/if}
+            </span>
+          {/if}
+        </span>
+      </div>
+    {/if}
+  {:else if monthTonnage === 0}
+    <p style="text-align: center; margin-bottom: 10px; color: #999; font-size: 0.9em;">Log a workout to see your equivalency!</p>
+  {/if}
+
+  <p style="margin: 0 0 20px 0; color: #999; font-size: 0.75em; text-align: center;">{TONNAGE_TRACKING_NOTE}</p>
 
   <!-- Quick Actions -->
   <div style="display: grid; gap: 10px; margin-bottom: 30px;">
@@ -360,5 +499,60 @@
   }
   .action-btn:active {
     filter: brightness(0.9);
+  }
+
+  /* Tonnage equivalency tooltip */
+  .equiv-tooltip-trigger {
+    position: relative;
+    display: inline-block;
+    cursor: pointer;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+  .equiv-info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #bbb;
+    color: white;
+    font-size: 10px;
+    font-weight: bold;
+    font-style: italic;
+    font-family: Georgia, serif;
+  }
+  .equiv-tooltip-trigger:hover .equiv-info-icon,
+  .equiv-tooltip-trigger:focus .equiv-info-icon {
+    background: #888;
+  }
+  .equiv-tooltip {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: 8px;
+    padding: 10px 12px;
+    background: #333;
+    color: #fff;
+    font-size: 0.8em;
+    line-height: 1.4;
+    border-radius: 6px;
+    white-space: normal;
+    width: 260px;
+    max-width: 90vw;
+    text-align: left;
+    z-index: 1000;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  }
+  .equiv-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: #333;
   }
 </style>
