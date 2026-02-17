@@ -6,6 +6,7 @@
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
   import { isDraftStale, getDraftAgeText, isValidDayIndex, isDraftExpired } from '$lib/workoutDraft.js';
+  import { TONNAGE_TRACKING_NOTE } from '$lib/uiCopy.js';
 
   let currentUser = $state(null);
   let userRole = $state(null);
@@ -22,6 +23,10 @@
   let showDiscardConfirm = $state(false);
   let showContinueModal = $state(false);
   let expiredMessage = $state(''); // Brief message when draft auto-discarded
+
+  // Tonnage stats
+  let monthTonnage = $state(null); // null = loading, number = loaded
+  let yearTonnage = $state(null);
 
   function loadActiveDraft() {
     if (!browser || !currentUser) return;
@@ -111,6 +116,7 @@
         await loadRecentSessions();
         await loadAssignedPrograms();
         loadActiveDraft();
+        loadTonnageStats();
       }
       loading = false;
     });
@@ -183,6 +189,38 @@
     }
   }
 
+  async function loadTonnageStats() {
+    if (!currentUser) return;
+
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1; // 1-12
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    const yearKey = `${year}`;
+
+    try {
+      const monthRef = doc(db, 'user', currentUser.uid, 'stats', `tonnage_${monthKey}`);
+      const yearRef = doc(db, 'user', currentUser.uid, 'stats', `tonnage_${yearKey}`);
+
+      const [monthSnap, yearSnap] = await Promise.all([
+        getDoc(monthRef),
+        getDoc(yearRef)
+      ]);
+
+      // Extract tonnage values, default to 0 if missing
+      const monthData = monthSnap.exists() ? monthSnap.data() : null;
+      const yearData = yearSnap.exists() ? yearSnap.data() : null;
+
+      monthTonnage = (typeof monthData?.tonnage === 'number') ? monthData.tonnage : 0;
+      yearTonnage = (typeof yearData?.tonnage === 'number') ? yearData.tonnage : 0;
+    } catch (e) {
+      console.error('Could not load tonnage stats:', e);
+      // Set to 0 on error so UI doesn't show loading state forever
+      monthTonnage = 0;
+      yearTonnage = 0;
+    }
+  }
+
   function formatDate(timestamp) {
     if (!timestamp) return '';
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
@@ -229,6 +267,23 @@
       {expiredMessage}
     </div>
   {/if}
+
+  <!-- Tonnage Stats -->
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px;">
+    <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; text-align: center;">
+      <p style="margin: 0 0 5px 0; color: #666; font-size: 0.85em;">Month Tonnage</p>
+      <p style="margin: 0; font-size: 1.4em; font-weight: bold; color: #333;">
+        {monthTonnage === null ? '—' : monthTonnage.toLocaleString()}
+      </p>
+    </div>
+    <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; text-align: center;">
+      <p style="margin: 0 0 5px 0; color: #666; font-size: 0.85em;">Year Tonnage</p>
+      <p style="margin: 0; font-size: 1.4em; font-weight: bold; color: #333;">
+        {yearTonnage === null ? '—' : yearTonnage.toLocaleString()}
+      </p>
+    </div>
+  </div>
+  <p style="margin: -10px 0 20px 0; color: #999; font-size: 0.75em; text-align: center;">{TONNAGE_TRACKING_NOTE}</p>
 
   <!-- Quick Actions -->
   <div style="display: grid; gap: 10px; margin-bottom: 30px;">
