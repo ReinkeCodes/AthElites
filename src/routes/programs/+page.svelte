@@ -9,7 +9,7 @@
   let newProgramDescription = $state('');
   let userRole = $state(null);
   let currentUserId = $state(null);
-  let activeView = $state('all'); // 'all' or 'my'
+  let activeView = $state('my'); // 'my' (Perform Workout) or 'all' (Modify Programs)
   let loading = $state(true);
   let roleError = $state(null);
 
@@ -35,27 +35,33 @@
   let unsubscribes = [];
 
   function getFilteredPrograms() {
+    let filtered;
     if (activeView === 'my' || userRole === 'client') {
       // Clients see: programs assigned to them OR programs they created
       // Check both assignedToUids (canonical) and assignedTo (legacy) for display
-      return programs.filter(p =>
+      filtered = programs.filter(p =>
         p.assignedToUids?.includes(currentUserId) ||
         p.assignedTo?.includes?.(currentUserId) ||
         p.assignedTo === currentUserId ||
         (p.createdByRole === 'client' && p.createdByUserId === currentUserId)
       );
+    } else {
+      // Admin/Coach "All Programs": exclude client-created programs
+      filtered = programs.filter(p => p.createdByRole !== 'client');
     }
-    // Admin/Coach "All Programs": exclude client-created programs
-    return programs.filter(p => p.createdByRole !== 'client');
+    // Sort alphabetically for display
+    return sortProgramsAlphabetically(filtered);
   }
 
   function getMyPrograms() {
     // Check both assignedToUids (canonical) and assignedTo (legacy)
-    return programs.filter(p =>
+    const filtered = programs.filter(p =>
       p.assignedToUids?.includes(currentUserId) ||
       p.assignedTo?.includes?.(currentUserId) ||
       p.assignedTo === currentUserId
     );
+    // Sort alphabetically for display
+    return sortProgramsAlphabetically(filtered);
   }
 
   // Check if program is client-owned by current user
@@ -280,6 +286,19 @@
   function countDays(program) {
     return program.days?.length || 0;
   }
+
+  // Sort programs alphabetically by name (case-insensitive, empty names last)
+  function sortProgramsAlphabetically(programList) {
+    return [...programList].sort((a, b) => {
+      const nameA = (a.name || '').trim().toLowerCase();
+      const nameB = (b.name || '').trim().toLowerCase();
+      // Empty names go last
+      if (!nameA && !nameB) return 0;
+      if (!nameA) return 1;
+      if (!nameB) return -1;
+      return nameA.localeCompare(nameB);
+    });
+  }
 </script>
 
 <h1>Programs</h1>
@@ -295,16 +314,16 @@
     <!-- View Tabs -->
     <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #eee;">
       <button
-        onclick={() => activeView = 'all'}
-        style="flex: 1; padding: 12px; border: none; background: {activeView === 'all' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'all' ? 'bold' : 'normal'}; border-bottom: {activeView === 'all' ? '3px solid #2196F3' : 'none'}; margin-bottom: -2px;"
-      >
-        All Programs
-      </button>
-      <button
         onclick={() => activeView = 'my'}
         style="flex: 1; padding: 12px; border: none; background: {activeView === 'my' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'my' ? 'bold' : 'normal'}; border-bottom: {activeView === 'my' ? '3px solid #4CAF50' : 'none'}; margin-bottom: -2px;"
       >
-        My Programs ({getMyPrograms().length})
+        Perform Workout ({getMyPrograms().length})
+      </button>
+      <button
+        onclick={() => activeView = 'all'}
+        style="flex: 1; padding: 12px; border: none; background: {activeView === 'all' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'all' ? 'bold' : 'normal'}; border-bottom: {activeView === 'all' ? '3px solid #2196F3' : 'none'}; margin-bottom: -2px;"
+      >
+        Modify Programs
       </button>
     </div>
   {/if}
