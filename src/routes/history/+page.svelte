@@ -346,6 +346,44 @@
     selectedExerciseHistory = null;
   }
 
+  // Helper: Delete session doc and ledger, adjusting aggregates as needed
+  // Assumes logs are already deleted from Firestore and allLogs is updated
+  async function deleteSessionAndLedger(sessionId) {
+    const targetUserId = getTargetUserId();
+    const ledgerRef = doc(db, 'user', targetUserId, 'stats', `sessionTonnage_${sessionId}`);
+    const ledgerSnap = await getDoc(ledgerRef);
+
+    if (ledgerSnap.exists()) {
+      const ledgerData = ledgerSnap.data();
+      const tonnage = Number(ledgerData?.tonnage || 0);
+      const monthKey = ledgerData?.monthKey;
+      const yearKey = ledgerData?.yearKey;
+
+      const batch = writeBatch(db);
+
+      // Only decrement aggregates if tonnage > 0 and keys are valid
+      if (tonnage > 0 && monthKey && yearKey) {
+        const monthRef = doc(db, 'user', targetUserId, 'stats', `tonnage_${monthKey}`);
+        const yearRef = doc(db, 'user', targetUserId, 'stats', `tonnage_${yearKey}`);
+        batch.update(monthRef, { tonnage: increment(-tonnage) });
+        batch.update(yearRef, { tonnage: increment(-tonnage) });
+      }
+
+      // ALWAYS delete ledger and session
+      batch.delete(ledgerRef);
+      batch.delete(doc(db, 'workoutSessions', sessionId));
+
+      await batch.commit();
+    } else {
+      // No ledger doc - legacy session, delete without aggregate correction
+      console.warn('[AE] Legacy session delete: no sessionTonnage ledger found; aggregates unchanged (expected by design)', { sessionId });
+      await deleteDoc(doc(db, 'workoutSessions', sessionId));
+    }
+
+    // Update UI state
+    workoutSessions = workoutSessions.filter(s => s.id !== sessionId);
+  }
+
   async function deleteSession(session) {
     if (!confirm(`Delete "${session.dayName}" workout from ${formatDate(session.finishedAt)}? This cannot be undone.`)) return;
     const targetUserId = getTargetUserId();
@@ -354,72 +392,21 @@
       const logsQuery = query(collection(db, 'workoutLogs'), where('userId', '==', targetUserId), where('completedWorkoutId', '==', session.id));
       const logsSnap = await getDocs(logsQuery);
 
-      // Collect IDs of logs being deleted (more reliable than filtering by completedWorkoutId)
+      // Collect IDs of logs being deleted
       const deletedLogIds = new Set(logsSnap.docs.map(d => d.id));
 
       await Promise.all(logsSnap.docs.map(d => deleteDoc(d.ref)));
 
-      // Check for session ledger doc to correct tonnage aggregates
-      const ledgerRef = doc(db, 'user', targetUserId, 'stats', `sessionTonnage_${session.id}`);
-      const ledgerSnap = await getDoc(ledgerRef);
-
-      if (ledgerSnap.exists()) {
-        const ledgerData = ledgerSnap.data();
-        const tonnage = ledgerData?.tonnage;
-        const monthKey = ledgerData?.monthKey;
-        const yearKey = ledgerData?.yearKey;
-
-        // Validate ledger data
-        if (typeof tonnage === 'number' && tonnage > 0 && monthKey && yearKey) {
-          // Use batch to decrement aggregates, delete ledger, and delete session atomically
-          const batch = writeBatch(db);
-
-          const monthRef = doc(db, 'user', targetUserId, 'stats', `tonnage_${monthKey}`);
-          const yearRef = doc(db, 'user', targetUserId, 'stats', `tonnage_${yearKey}`);
-
-          batch.update(monthRef, { tonnage: increment(-tonnage) });
-          batch.update(yearRef, { tonnage: increment(-tonnage) });
-          batch.delete(ledgerRef);
-          batch.delete(doc(db, 'workoutSessions', session.id));
-
-          await batch.commit();
-        } else {
-          // Ledger exists but has invalid data - warn and delete session only
-          console.warn('[AE] Legacy session delete: ledger exists but has invalid data; aggregates unchanged (expected by design)', { sessionId: session.id });
-          await deleteDoc(doc(db, 'workoutSessions', session.id));
-        }
-      } else {
-        // No ledger doc - legacy session, delete without aggregate correction
-        console.warn('[AE] Legacy session delete: no sessionTonnage ledger found; aggregates unchanged (expected by design)', { sessionId: session.id });
-        await deleteDoc(doc(db, 'workoutSessions', session.id));
-      }
-
-      // Refresh UI - filter by actual deleted log IDs for reliability
-      workoutSessions = workoutSessions.filter(s => s.id !== session.id);
+      // Update local logs state
       allLogs = allLogs.filter(l => !deletedLogIds.has(l.id));
+
+      // Delete session and ledger (handles aggregates)
+      await deleteSessionAndLedger(session.id);
+
       selectedSession = null;
 
-      // Recalculate PRs from remaining logs (matches loadAllLogs logic exactly)
-      // If no logs remain for an exercise, it won't be in prs and will disappear from PR tab
-      const prs = {};
-      allLogs.forEach(log => {
-        const weight = parseFloat(log.weight) || 0;
-        const exerciseId = log.exerciseId;
-        const exerciseName = log.exerciseName;
-
-        if (!prs[exerciseId] || weight > prs[exerciseId].weight) {
-          prs[exerciseId] = {
-            exerciseName,
-            weight,
-            reps: log.reps,
-            sets: log.sets,
-            date: log.loggedAt,
-            programName: log.programName,
-            dayName: log.dayName
-          };
-        }
-      });
-      exercisePRs = prs;
+      // Recalculate PRs
+      recalculatePRs();
     } catch (e) { console.error('Delete failed:', e); alert('Failed to delete session'); }
   }
 
@@ -428,7 +415,24 @@
     const exerciseKey = exercise.workoutExerciseId || exercise.exerciseId;
     if (!confirm(`Delete all logged sets for "${exercise.exerciseName}"? This cannot be undone.`)) return;
 
+    const targetUserId = getTargetUserId();
+
     try {
+      // Check for tonnage ledger before deletion
+      const ledgerRef = doc(db, 'user', targetUserId, 'stats', `sessionTonnage_${sessionId}`);
+      const ledgerSnap = await getDoc(ledgerRef);
+      const hasLedger = ledgerSnap.exists();
+      let oldTonnage = 0;
+      let monthKey = '';
+      let yearKey = '';
+
+      if (hasLedger) {
+        const ledgerData = ledgerSnap.data();
+        oldTonnage = ledgerData?.tonnage || 0;
+        monthKey = ledgerData?.monthKey || '';
+        yearKey = ledgerData?.yearKey || '';
+      }
+
       // Find all log IDs for this exercise in this session
       const logIds = exercise.sets.map(s => s.id).filter(Boolean);
 
@@ -437,6 +441,29 @@
 
       // Update local state
       allLogs = allLogs.filter(l => !logIds.includes(l.id));
+
+      // Check if session is now empty (no exercises remain)
+      const remainingSessionLogs = allLogs.filter(l => l.completedWorkoutId === sessionId);
+      if (remainingSessionLogs.length === 0) {
+        // Session is empty - delete it entirely (handles ledger + aggregates)
+        await deleteSessionAndLedger(sessionId);
+        selectedSession = null;
+        recalculatePRs();
+        return; // Skip tonnage delta since session is deleted
+      }
+
+      // Session still has exercises - do tonnage delta update
+      if (hasLedger && monthKey && yearKey) {
+        const newTonnage = computeSessionTonnageFromLogs(sessionId);
+        try {
+          await updateTonnageAfterSessionEdit(sessionId, oldTonnage, newTonnage, monthKey, yearKey);
+        } catch (tonnageError) {
+          console.error('Tonnage update failed:', tonnageError);
+          // Don't fail the whole operation, just warn
+        }
+      } else if (!hasLedger) {
+        console.warn('[AE] No tonnage ledger for session', sessionId, '- aggregates unchanged (legacy session)');
+      }
 
       // Recalculate PRs
       recalculatePRs();
@@ -450,12 +477,58 @@
   async function deleteSetLog(setId) {
     if (!confirm('Delete this set? This cannot be undone.')) return;
 
+    const targetUserId = getTargetUserId();
+    const sessionId = selectedExerciseSession?.id;
+
     try {
+      // Check for tonnage ledger before deletion (if we know the session)
+      let hasLedger = false;
+      let oldTonnage = 0;
+      let monthKey = '';
+      let yearKey = '';
+
+      if (sessionId) {
+        const ledgerRef = doc(db, 'user', targetUserId, 'stats', `sessionTonnage_${sessionId}`);
+        const ledgerSnap = await getDoc(ledgerRef);
+        hasLedger = ledgerSnap.exists();
+
+        if (hasLedger) {
+          const ledgerData = ledgerSnap.data();
+          oldTonnage = ledgerData?.tonnage || 0;
+          monthKey = ledgerData?.monthKey || '';
+          yearKey = ledgerData?.yearKey || '';
+        }
+      }
+
       // Delete from Firestore
       await deleteDoc(doc(db, 'workoutLogs', setId));
 
       // Update local state
       allLogs = allLogs.filter(l => l.id !== setId);
+
+      // Check if session is now empty (no sets remain across all exercises)
+      if (sessionId) {
+        const remainingSessionLogs = allLogs.filter(l => l.completedWorkoutId === sessionId);
+        if (remainingSessionLogs.length === 0) {
+          // Session is empty - delete it entirely (handles ledger + aggregates)
+          await deleteSessionAndLedger(sessionId);
+          closeExerciseHistory();
+          recalculatePRs();
+          return; // Skip tonnage delta since session is deleted
+        }
+      }
+
+      // Session still has sets - do tonnage delta update
+      if (sessionId && hasLedger && monthKey && yearKey) {
+        const newTonnage = computeSessionTonnageFromLogs(sessionId);
+        try {
+          await updateTonnageAfterSessionEdit(sessionId, oldTonnage, newTonnage, monthKey, yearKey);
+        } catch (tonnageError) {
+          console.error('Tonnage update failed:', tonnageError);
+        }
+      } else if (sessionId && !hasLedger) {
+        console.warn('[AE] No tonnage ledger for session', sessionId, '- aggregates unchanged (legacy session)');
+      }
 
       // Update exerciseSessionSets to reflect the deletion
       exerciseSessionSets = exerciseSessionSets.filter(s => s.id !== setId);
@@ -527,6 +600,37 @@
       }
     });
     exercisePRs = prs;
+  }
+
+  // Helper: Compute session tonnage from logs for a specific session
+  function computeSessionTonnageFromLogs(sessionId) {
+    const sessionLogs = allLogs.filter(l => l.completedWorkoutId === sessionId);
+    let total = 0;
+    for (const log of sessionLogs) {
+      const weight = parseFloat(log.weight);
+      const reps = parseFloat(log.reps);
+      if (!isNaN(weight) && !isNaN(reps) && weight > 0 && reps > 0) {
+        total += weight * reps;
+      }
+    }
+    return total;
+  }
+
+  // Helper: Update tonnage ledger and aggregates after session edit
+  async function updateTonnageAfterSessionEdit(sessionId, oldTonnage, newTonnage, monthKey, yearKey) {
+    const delta = newTonnage - oldTonnage;
+    if (delta === 0) return; // No change needed
+
+    const targetUserId = getTargetUserId();
+    const ledgerRef = doc(db, 'user', targetUserId, 'stats', `sessionTonnage_${sessionId}`);
+    const monthRef = doc(db, 'user', targetUserId, 'stats', `tonnage_${monthKey}`);
+    const yearRef = doc(db, 'user', targetUserId, 'stats', `tonnage_${yearKey}`);
+
+    const batch = writeBatch(db);
+    batch.update(ledgerRef, { tonnage: newTonnage, updatedAt: new Date() });
+    batch.update(monthRef, { tonnage: increment(delta) });
+    batch.update(yearRef, { tonnage: increment(delta) });
+    await batch.commit();
   }
 
   // Helper: Recalculate e1rm and repRanges for selected exercise
