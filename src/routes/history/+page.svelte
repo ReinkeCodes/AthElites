@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, query, where, getDocs, orderBy, doc, getDoc, deleteDoc } from 'firebase/firestore';
+  import { collection, query, where, getDocs, orderBy, doc, getDoc, deleteDoc, writeBatch, increment } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import SessionDetailModal from '$lib/components/SessionDetailModal.svelte';
@@ -358,8 +358,41 @@
       const deletedLogIds = new Set(logsSnap.docs.map(d => d.id));
 
       await Promise.all(logsSnap.docs.map(d => deleteDoc(d.ref)));
-      // Delete the session
-      await deleteDoc(doc(db, 'workoutSessions', session.id));
+
+      // Check for session ledger doc to correct tonnage aggregates
+      const ledgerRef = doc(db, 'user', targetUserId, 'stats', `sessionTonnage_${session.id}`);
+      const ledgerSnap = await getDoc(ledgerRef);
+
+      if (ledgerSnap.exists()) {
+        const ledgerData = ledgerSnap.data();
+        const tonnage = ledgerData?.tonnage;
+        const monthKey = ledgerData?.monthKey;
+        const yearKey = ledgerData?.yearKey;
+
+        // Validate ledger data
+        if (typeof tonnage === 'number' && tonnage > 0 && monthKey && yearKey) {
+          // Use batch to decrement aggregates, delete ledger, and delete session atomically
+          const batch = writeBatch(db);
+
+          const monthRef = doc(db, 'user', targetUserId, 'stats', `tonnage_${monthKey}`);
+          const yearRef = doc(db, 'user', targetUserId, 'stats', `tonnage_${yearKey}`);
+
+          batch.update(monthRef, { tonnage: increment(-tonnage) });
+          batch.update(yearRef, { tonnage: increment(-tonnage) });
+          batch.delete(ledgerRef);
+          batch.delete(doc(db, 'workoutSessions', session.id));
+
+          await batch.commit();
+        } else {
+          // Ledger exists but has invalid data - warn and delete session only
+          console.warn('[AE] Legacy session delete: ledger exists but has invalid data; aggregates unchanged (expected by design)', { sessionId: session.id });
+          await deleteDoc(doc(db, 'workoutSessions', session.id));
+        }
+      } else {
+        // No ledger doc - legacy session, delete without aggregate correction
+        console.warn('[AE] Legacy session delete: no sessionTonnage ledger found; aggregates unchanged (expected by design)', { sessionId: session.id });
+        await deleteDoc(doc(db, 'workoutSessions', session.id));
+      }
 
       // Refresh UI - filter by actual deleted log IDs for reliability
       workoutSessions = workoutSessions.filter(s => s.id !== session.id);

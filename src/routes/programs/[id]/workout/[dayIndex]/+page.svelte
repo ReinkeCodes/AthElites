@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc, getDocsFromServer } from 'firebase/firestore';
+  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc, getDocsFromServer, setDoc, increment, serverTimestamp } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -1413,6 +1413,77 @@
     return count;
   }
 
+  // Compute session tonnage: sum(weight * reps) for sets where both are numeric
+  function computeSessionTonnage() {
+    let totalTonnage = 0;
+    for (const section of day?.sections || []) {
+      for (const exercise of section.exercises || []) {
+        const log = exerciseLogs[exercise.workoutExerciseId];
+        if (log && log.sets) {
+          for (const set of log.sets) {
+            // Skip N/A, DNC, or non-numeric values
+            const weightVal = parseFloat(set.weight);
+            const repsVal = parseFloat(set.reps);
+            if (!isNaN(weightVal) && !isNaN(repsVal) && weightVal > 0 && repsVal > 0) {
+              totalTonnage += weightVal * repsVal;
+            }
+          }
+        }
+      }
+    }
+    return totalTonnage;
+  }
+
+  // Update tonnage stats (monthly and yearly) using atomic increment
+  // Writes a ledger doc per session for idempotency and future reversal
+  async function updateTonnageStats(userId, sessionId, sessionTonnage) {
+    if (!sessionTonnage || sessionTonnage <= 0) return;
+
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1; // 1-12
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    const yearKey = `${year}`;
+
+    // Ledger doc path: user/{uid}/stats/sessionTonnage_{sessionId}
+    const ledgerRef = doc(db, 'user', userId, 'stats', `sessionTonnage_${sessionId}`);
+
+    // Idempotency check: if ledger already exists, do not re-increment
+    const ledgerSnap = await getDoc(ledgerRef);
+    if (ledgerSnap.exists()) {
+      return;
+    }
+
+    // Create ledger doc
+    await setDoc(ledgerRef, {
+      sessionId,
+      tonnage: sessionTonnage,
+      monthKey,
+      yearKey,
+      finishedAt: serverTimestamp(),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+
+    // Monthly tonnage doc
+    const monthDocRef = doc(db, 'user', userId, 'stats', `tonnage_${monthKey}`);
+    await setDoc(monthDocRef, {
+      monthKey,
+      year,
+      month,
+      tonnage: increment(sessionTonnage),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+
+    // Yearly tonnage doc
+    const yearDocRef = doc(db, 'user', userId, 'stats', `tonnage_${yearKey}`);
+    await setDoc(yearDocRef, {
+      yearKey,
+      year,
+      tonnage: increment(sessionTonnage),
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+  }
+
   async function finishWorkout() {
     if (!currentUserId || !day) return;
     if (isSavingFinish) return; // Prevent double-tap / duplicate executions
@@ -1564,7 +1635,17 @@
         return;
       }
 
-      // Verification passed - clear draft and timers, then navigate to summary
+      // Verification passed - update tonnage stats (must complete before navigation)
+      const sessionTonnage = computeSessionTonnage();
+      if (sessionTonnage > 0) {
+        try {
+          await updateTonnageStats(currentUserId, completedWorkoutId, sessionTonnage);
+        } catch (err) {
+          console.error('Tonnage stats update failed:', err);
+        }
+      }
+
+      // Clear draft and timers, then navigate to summary
       clearDraft();
       clearFinishTimers();
       goto(`/programs/${program.id}/summary?day=${$page.params.dayIndex}&duration=${durationMinutes}&session=${completedWorkoutId}`);
