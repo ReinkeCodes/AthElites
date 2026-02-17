@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, query, where } from 'firebase/firestore';
+  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, query, where, updateDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
 
@@ -9,7 +9,7 @@
   let newProgramDescription = $state('');
   let userRole = $state(null);
   let currentUserId = $state(null);
-  let activeView = $state('all'); // 'all' or 'my'
+  let activeView = $state('my'); // 'my' (Perform Workout) or 'all' (Modify Programs)
   let loading = $state(true);
   let roleError = $state(null);
 
@@ -31,31 +31,42 @@
   // Delete confirmation modal state
   let deleteConfirmProgram = $state(null);
 
+  // Rename program state
+  let editingProgramId = $state(null);
+  let editingProgramName = $state('');
+  let renameError = $state('');
+
   // Unsubscribe functions for listeners
   let unsubscribes = [];
 
   function getFilteredPrograms() {
+    let filtered;
     if (activeView === 'my' || userRole === 'client') {
       // Clients see: programs assigned to them OR programs they created
       // Check both assignedToUids (canonical) and assignedTo (legacy) for display
-      return programs.filter(p =>
+      filtered = programs.filter(p =>
         p.assignedToUids?.includes(currentUserId) ||
         p.assignedTo?.includes?.(currentUserId) ||
         p.assignedTo === currentUserId ||
         (p.createdByRole === 'client' && p.createdByUserId === currentUserId)
       );
+    } else {
+      // Admin/Coach "All Programs": exclude client-created programs
+      filtered = programs.filter(p => p.createdByRole !== 'client');
     }
-    // Admin/Coach "All Programs": exclude client-created programs
-    return programs.filter(p => p.createdByRole !== 'client');
+    // Sort alphabetically for display
+    return sortProgramsAlphabetically(filtered);
   }
 
   function getMyPrograms() {
     // Check both assignedToUids (canonical) and assignedTo (legacy)
-    return programs.filter(p =>
+    const filtered = programs.filter(p =>
       p.assignedToUids?.includes(currentUserId) ||
       p.assignedTo?.includes?.(currentUserId) ||
       p.assignedTo === currentUserId
     );
+    // Sort alphabetically for display
+    return sortProgramsAlphabetically(filtered);
   }
 
   // Check if program is client-owned by current user
@@ -277,8 +288,65 @@
     deleteConfirmProgram = null;
   }
 
+  // Start editing a program name
+  function startRenameProgram(program) {
+    editingProgramId = program.id;
+    editingProgramName = program.name || '';
+    renameError = '';
+  }
+
+  // Cancel renaming
+  function cancelRenameProgram() {
+    editingProgramId = null;
+    editingProgramName = '';
+    renameError = '';
+  }
+
+  // Save renamed program
+  async function saveRenameProgram(program) {
+    const newName = editingProgramName.trim();
+
+    // Validate
+    if (!newName) {
+      renameError = 'Name cannot be empty';
+      return;
+    }
+
+    // No change - just exit edit mode
+    if (newName === (program.name || '').trim()) {
+      cancelRenameProgram();
+      return;
+    }
+
+    try {
+      const programRef = doc(db, 'programs', program.id);
+      await updateDoc(programRef, {
+        name: newName,
+        updatedAt: new Date()
+      });
+      cancelRenameProgram();
+      showToast('Program renamed', 'success');
+    } catch (error) {
+      console.error('Rename program error:', error.code, error.message);
+      showToast(`Failed to rename: ${error.code} - ${error.message}`);
+    }
+  }
+
   function countDays(program) {
     return program.days?.length || 0;
+  }
+
+  // Sort programs alphabetically by name (case-insensitive, empty names last)
+  function sortProgramsAlphabetically(programList) {
+    return [...programList].sort((a, b) => {
+      const nameA = (a.name || '').trim().toLowerCase();
+      const nameB = (b.name || '').trim().toLowerCase();
+      // Empty names go last
+      if (!nameA && !nameB) return 0;
+      if (!nameA) return 1;
+      if (!nameB) return -1;
+      return nameA.localeCompare(nameB);
+    });
   }
 </script>
 
@@ -295,16 +363,16 @@
     <!-- View Tabs -->
     <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #eee;">
       <button
-        onclick={() => activeView = 'all'}
-        style="flex: 1; padding: 12px; border: none; background: {activeView === 'all' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'all' ? 'bold' : 'normal'}; border-bottom: {activeView === 'all' ? '3px solid #2196F3' : 'none'}; margin-bottom: -2px;"
-      >
-        All Programs
-      </button>
-      <button
         onclick={() => activeView = 'my'}
         style="flex: 1; padding: 12px; border: none; background: {activeView === 'my' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'my' ? 'bold' : 'normal'}; border-bottom: {activeView === 'my' ? '3px solid #4CAF50' : 'none'}; margin-bottom: -2px;"
       >
-        My Programs ({getMyPrograms().length})
+        Perform Workout ({getMyPrograms().length})
+      </button>
+      <button
+        onclick={() => activeView = 'all'}
+        style="flex: 1; padding: 12px; border: none; background: {activeView === 'all' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'all' ? 'bold' : 'normal'}; border-bottom: {activeView === 'all' ? '3px solid #2196F3' : 'none'}; margin-bottom: -2px;"
+      >
+        Modify Programs
       </button>
     </div>
   {/if}
@@ -328,31 +396,65 @@
 {:else}
   {#each getFilteredPrograms() as program}
     {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
-      <!-- Admin/Coach edit view: fully clickable card -->
-      <a href="/programs/{program.id}" class="program-card" style="display: block; text-decoration: none; color: inherit; border: 1px solid {program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white; position: relative;">
-        <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1;">
-            <strong style="font-size: 1.2em;">{program.name}</strong>
-            {#if program.isClientCopy}
-              <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
-            {/if}
+      <!-- Admin/Coach edit view -->
+      {#if editingProgramId === program.id}
+        <!-- Inline rename form -->
+        <div class="program-card" style="border: 1px solid #2196F3; padding: 15px; margin: 10px 0; border-radius: 5px; background: #f5faff;">
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <input
+              type="text"
+              bind:value={editingProgramName}
+              style="flex: 1; min-width: 150px; padding: 8px; border: 1px solid {renameError ? '#f44336' : '#ccc'}; border-radius: 4px; font-size: 1em;"
+              placeholder="Program name"
+              onkeydown={(e) => e.key === 'Enter' && saveRenameProgram(program)}
+            />
+            <button
+              onclick={() => saveRenameProgram(program)}
+              style="padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;"
+            >Save</button>
+            <button
+              onclick={cancelRenameProgram}
+              style="padding: 8px 16px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;"
+            >Cancel</button>
           </div>
-          <button
-            onclick={(e) => { e.preventDefault(); e.stopPropagation(); deleteProgram(program.id); }}
-            style="background: none; border: none; color: #999; font-size: 1.2em; cursor: pointer; padding: 4px 8px; line-height: 1;"
-            title="Delete program"
-          >×</button>
-        </div>
-        {#if program.description}
-          <p style="margin: 5px 0; color: #666;">{program.description}</p>
-        {/if}
-        <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
-          {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
-          {#if program.assignedTo?.length > 0}
-            • {program.assignedTo.length} assigned
+          {#if renameError}
+            <p style="margin: 8px 0 0 0; color: #f44336; font-size: 0.85em;">{renameError}</p>
           {/if}
-        </p>
-      </a>
+        </div>
+      {:else}
+        <!-- Normal view: fully clickable card -->
+        <a href="/programs/{program.id}" class="program-card" style="display: block; text-decoration: none; color: inherit; border: 1px solid {program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white; position: relative;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1;">
+              <strong style="font-size: 1.2em;">{program.name}</strong>
+              {#if program.isClientCopy}
+                <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+              {/if}
+            </div>
+            <div style="display: flex; gap: 4px; align-items: center;">
+              <button
+                onclick={(e) => { e.preventDefault(); e.stopPropagation(); startRenameProgram(program); }}
+                style="background: none; border: none; color: #666; font-size: 0.9em; cursor: pointer; padding: 4px 8px; line-height: 1;"
+                title="Rename program"
+              >✎</button>
+              <button
+                onclick={(e) => { e.preventDefault(); e.stopPropagation(); deleteProgram(program.id); }}
+                style="background: none; border: none; color: #999; font-size: 1.2em; cursor: pointer; padding: 4px 8px; line-height: 1;"
+                title="Delete program"
+              >×</button>
+            </div>
+          </div>
+          {#if program.description}
+            <p style="margin: 5px 0; color: #666;">{program.description}</p>
+          {/if}
+          <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
+            {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+            {#if program.assignedTo?.length > 0}
+              • {program.assignedTo.length} assigned
+            {/if}
+          </p>
+        </a>
+      {/if}
     {:else}
       <!-- Client/My view: card with conditional edit/delete for self-made programs -->
       <div class="program-card" style="display: block; border: 1px solid {isOwnClientProgram(program) ? '#4CAF50' : program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {isOwnClientProgram(program) ? 'border-left: 4px solid #4CAF50;' : program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white; position: relative;">

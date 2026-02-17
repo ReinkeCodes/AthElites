@@ -88,6 +88,15 @@
 </svelte:head>
 
 {#if !$hideNav}
+<!-- Click-outside overlay to close menu -->
+{#if menuOpen && user}
+  <div
+    class="menu-overlay"
+    onclick={closeMenu}
+    role="presentation"
+  ></div>
+{/if}
+
 <!-- Mobile-friendly nav -->
 <nav style="background: #333; padding: 10px 15px; position: sticky; top: 0; z-index: 100;">
   <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -174,6 +183,13 @@
 </main>
 
 <style>
+  .menu-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 99;
+    background: transparent;
+    cursor: default;
+  }
   .back-arrow {
     display: inline-flex;
     align-items: center;
