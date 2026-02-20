@@ -20,8 +20,9 @@ service cloud.firestore {
     match /user/{userId} {
       allow read, write: if request.auth != null;
 
-      // stats subcollection (tonnage aggregates) - owner-only access
-      match /stats/{docId} {
+      // stats subcollection (tonnage, PRs, etc.) - owner-only access
+      // Recursive wildcard allows nested paths like stats/exercisePrs/{docId}
+      match /stats/{document=**} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
     }

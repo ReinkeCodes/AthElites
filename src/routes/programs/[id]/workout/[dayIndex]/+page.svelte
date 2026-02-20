@@ -1484,6 +1484,116 @@
     }, { merge: true });
   }
 
+  // Rep-band classification for strength PRs
+  // Bands: 1-5, 6-8, 9-12, 13+
+  function getRepBand(reps) {
+    if (reps >= 1 && reps <= 5) return '1-5';
+    if (reps >= 6 && reps <= 8) return '6-8';
+    if (reps >= 9 && reps <= 12) return '9-12';
+    if (reps >= 13) return '13+';
+    return null;
+  }
+
+  // Collect PR candidates from the current session (strength sets only, full-tracking sections)
+  // Returns: Map<string, { exerciseId, exerciseName, repBand, weight, reps }>
+  // Key format: `${exerciseId}__${repBand}`
+  function collectPrCandidates() {
+    const candidates = new Map();
+
+    for (const section of day?.sections || []) {
+      // Skip checkbox-mode sections (not full tracking)
+      if (section?.mode === 'checkbox') continue;
+
+      for (const exercise of section.exercises || []) {
+        const log = exerciseLogs[exercise.workoutExerciseId];
+        if (!log || !log.sets) continue;
+
+        for (const set of log.sets) {
+          const weight = parseFloat(set.weight);
+          const reps = parseInt(set.reps);
+
+          // Must have valid numeric weight + reps for strength PR
+          if (isNaN(weight) || isNaN(reps) || weight <= 0 || reps <= 0) continue;
+
+          const repBand = getRepBand(reps);
+          if (!repBand) continue;
+
+          const key = `${exercise.exerciseId}__${repBand}`;
+          const existing = candidates.get(key);
+
+          // Keep best: highest weight wins, tie-breaker = more reps
+          if (!existing || weight > existing.weight || (weight === existing.weight && reps > existing.reps)) {
+            candidates.set(key, {
+              exerciseId: exercise.exerciseId,
+              exerciseName: exercise.name,
+              repBand,
+              weight,
+              reps
+            });
+          }
+        }
+      }
+    }
+
+    return candidates;
+  }
+
+  // Update exercise PR docs for this session (write-forward, non-blocking)
+  // Path: user/{userId}/stats/prs/exercisePrs/{exerciseId}__{repBand}
+  async function updateExercisePrs(userId, sessionId) {
+    const candidates = collectPrCandidates();
+    if (candidates.size === 0) return;
+
+    const now = serverTimestamp();
+
+    for (const [key, candidate] of candidates) {
+      try {
+        // Document ID: replace hyphen with underscore, plus with _plus for Firestore safety
+        // Path: user/{uid}/stats/prs/exercisePrs/{docId} (6 segments = valid doc ref)
+        // Examples: "6-8" → "6_8", "13+" → "13_plus"
+        const bandKey = candidate.repBand.replace('-', '_').replace('+', '_plus');
+        const docId = `${candidate.exerciseId}__${bandKey}`;
+        const prRef = doc(db, 'user', userId, 'stats', 'prs', 'exercisePrs', docId);
+
+        const prSnap = await getDoc(prRef);
+
+        let shouldUpdate = false;
+        if (!prSnap.exists()) {
+          // No existing PR - create it
+          shouldUpdate = true;
+        } else {
+          const existing = prSnap.data();
+          const existingWeight = existing.bestWeight || 0;
+          const existingReps = existing.bestReps || 0;
+
+          // Update if candidate beats existing: higher weight, or same weight with more reps
+          if (candidate.weight > existingWeight) {
+            shouldUpdate = true;
+          } else if (candidate.weight === existingWeight && candidate.reps > existingReps) {
+            shouldUpdate = true;
+          }
+        }
+
+        if (shouldUpdate) {
+          await setDoc(prRef, {
+            exerciseId: candidate.exerciseId,
+            exerciseNameSnapshot: candidate.exerciseName,
+            repBand: candidate.repBand,
+            metric: 'topWeight',
+            bestWeight: candidate.weight,
+            bestReps: candidate.reps,
+            achievedAt: now,
+            sessionId: sessionId,
+            updatedAt: now
+          }, { merge: true });
+        }
+      } catch (err) {
+        // Non-fatal: log and continue with other PR candidates
+        console.error(`PR update failed for ${key}:`, err);
+      }
+    }
+  }
+
   async function finishWorkout() {
     if (!currentUserId || !day) return;
     if (isSavingFinish) return; // Prevent double-tap / duplicate executions
@@ -1643,6 +1753,13 @@
         } catch (err) {
           console.error('Tonnage stats update failed:', err);
         }
+      }
+
+      // Update exercise PRs (write-forward, non-blocking)
+      try {
+        await updateExercisePrs(currentUserId, completedWorkoutId);
+      } catch (err) {
+        console.error('Exercise PR update failed:', err);
       }
 
       // Clear draft and timers, then navigate to summary
