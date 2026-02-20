@@ -8,7 +8,9 @@
       "Bash(tree:*)",
       "Bash(npx svelte-check:*)",
       "Bash(findstr:*)",
-      "Bash(git diff:*)"
+      "Bash(git diff:*)",
+      "Bash(where:*)",
+      "Bash(python:*)"
     ]
   }
 }
