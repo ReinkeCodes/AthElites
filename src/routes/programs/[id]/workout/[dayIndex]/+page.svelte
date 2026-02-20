@@ -201,7 +201,7 @@
         where('userId', '==', currentUserId),
         where('exerciseId', '==', exerciseId),
         orderBy('loggedAt', 'desc'),
-        limit(10)
+        limit(20)
       );
 
       const snapshot = await getDocs(logsQuery);
@@ -473,7 +473,7 @@
           where('userId', '==', currentUserId),
           where('exerciseId', '==', exerciseId),
           orderBy('loggedAt', 'desc'),
-          limit(10)
+          limit(20)
         );
 
         try {
