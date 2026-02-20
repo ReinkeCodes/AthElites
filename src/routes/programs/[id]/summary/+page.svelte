@@ -24,13 +24,162 @@
   let hasAutoOpenedPrOverlay = false; // One-time latch to prevent re-opening after close
   let hasPendingPrPayload = false; // Track if sessionStorage keys need clearing on dismiss
 
+  // Celebration audio/streamers state
+  let hasPlayedCelebrationThisView = false;
+  let showTapToPlay = $state(false);
+  let celebrationAudio = null;
+  let streamers = $state([]);
+  let streamerSpawnInterval = null;
+  let streamerCleanupTimeout = null;
+  const STREAMER_COLORS = ['#ffd700', '#c0c0c0', '#1a1a1a']; // gold, silver, black
+  const STREAMER_DURATION = 4000;
+  const STREAMER_SPAWN_RATE = 80; // ms between spawns
+  const MAX_STREAMERS = 50;
+
   // Auto-show overlay when PRs are loaded (once per page view)
   $effect(() => {
     if (summaryNewPrs.length > 0 && !hasAutoOpenedPrOverlay) {
       showPrOverlay = true;
       hasAutoOpenedPrOverlay = true;
+      // Trigger celebration on next tick (after overlay renders)
+      setTimeout(() => triggerCelebration(), 50);
     }
   });
+
+  // Attempt to play celebration (audio + streamers)
+  function triggerCelebration() {
+    if (hasPlayedCelebrationThisView) return;
+
+    // Check if audio is allowed (primed from Finish Workout click)
+    let canAttemptAudio = false;
+    try {
+      const allowFlag = sessionStorage.getItem('ae:allowPrAudio');
+      const allowAt = parseInt(sessionStorage.getItem('ae:allowPrAudioAt') || '0');
+      const elapsed = Date.now() - allowAt;
+      canAttemptAudio = allowFlag === '1' && elapsed <= 15000;
+    } catch (e) {
+      // Ignore storage errors
+    }
+
+    if (canAttemptAudio) {
+      attemptPlayAudio();
+    } else {
+      // Show tap-to-play fallback
+      showTapToPlay = true;
+    }
+  }
+
+  function attemptPlayAudio() {
+    try {
+      celebrationAudio = new Audio('/sfx/winning-sound-effect-button.mp3');
+      celebrationAudio.volume = 0.5;
+      const playPromise = celebrationAudio.play();
+
+      if (playPromise && typeof playPromise.then === 'function') {
+        playPromise.then(() => {
+          // Success - start streamers and mark as played
+          hasPlayedCelebrationThisView = true;
+          showTapToPlay = false;
+          clearAllowAudioFlags();
+          startStreamers();
+        }).catch(() => {
+          // Autoplay blocked - show tap fallback
+          showTapToPlay = true;
+        });
+      } else {
+        // Old browser without promise - assume success
+        hasPlayedCelebrationThisView = true;
+        clearAllowAudioFlags();
+        startStreamers();
+      }
+    } catch (e) {
+      // Audio creation failed - show tap fallback
+      showTapToPlay = true;
+    }
+  }
+
+  function onTapToPlay() {
+    showTapToPlay = false;
+    attemptPlayAudio();
+  }
+
+  function clearAllowAudioFlags() {
+    try {
+      sessionStorage.removeItem('ae:allowPrAudio');
+      sessionStorage.removeItem('ae:allowPrAudioAt');
+    } catch (e) {
+      // Ignore
+    }
+  }
+
+  // Streamer animation
+  function startStreamers() {
+    let spawnCount = 0;
+    const maxSpawns = Math.floor(STREAMER_DURATION / STREAMER_SPAWN_RATE);
+
+    streamerSpawnInterval = setInterval(() => {
+      if (spawnCount >= maxSpawns || streamers.length >= MAX_STREAMERS) {
+        clearInterval(streamerSpawnInterval);
+        streamerSpawnInterval = null;
+        return;
+      }
+
+      // Spawn 1-2 streamers per tick
+      const count = Math.random() > 0.5 ? 2 : 1;
+      for (let i = 0; i < count && streamers.length < MAX_STREAMERS; i++) {
+        const id = Date.now() + Math.random();
+        const color = STREAMER_COLORS[Math.floor(Math.random() * STREAMER_COLORS.length)];
+        const left = Math.random() * 100; // % from left
+        const width = 6 + Math.random() * 10; // px (larger for visibility)
+        const height = 30 + Math.random() * 50; // px (larger for visibility)
+        const duration = 2500 + Math.random() * 1500; // ms
+        const delay = Math.random() * 100; // ms (reduced delay)
+        const rotation = -20 + Math.random() * 40; // deg
+        const drift = -30 + Math.random() * 60; // px horizontal drift
+
+        streamers = [...streamers, { id, color, left, width, height, duration, delay, rotation, drift }];
+
+        // Remove streamer after animation completes
+        setTimeout(() => {
+          streamers = streamers.filter(s => s.id !== id);
+        }, duration + delay + 500);
+      }
+      spawnCount++;
+    }, STREAMER_SPAWN_RATE);
+
+    // Stop spawning after duration
+    streamerCleanupTimeout = setTimeout(() => {
+      if (streamerSpawnInterval) {
+        clearInterval(streamerSpawnInterval);
+        streamerSpawnInterval = null;
+      }
+    }, STREAMER_DURATION);
+  }
+
+  function stopCelebration() {
+    // Stop audio
+    if (celebrationAudio) {
+      try {
+        celebrationAudio.pause();
+        celebrationAudio.currentTime = 0;
+      } catch (e) {
+        // Ignore
+      }
+      celebrationAudio = null;
+    }
+    // Stop streamer spawning
+    if (streamerSpawnInterval) {
+      clearInterval(streamerSpawnInterval);
+      streamerSpawnInterval = null;
+    }
+    if (streamerCleanupTimeout) {
+      clearTimeout(streamerCleanupTimeout);
+      streamerCleanupTimeout = null;
+    }
+    // Clear remaining streamers
+    streamers = [];
+    showTapToPlay = false;
+  }
 
   // Get currently selected PR
   function getSelectedPr() {
@@ -94,6 +243,8 @@
 
   function closePrOverlay() {
     showPrOverlay = false;
+    // Stop celebration audio/streamers
+    stopCelebration();
     // Clear sessionStorage keys on dismiss (prevents re-showing on future refreshes)
     if (hasPendingPrPayload) {
       try {
@@ -269,8 +420,36 @@
 <!-- PR Celebration Overlay -->
 {#if showPrOverlay && summaryNewPrs.length > 0}
   {@const selectedPr = getSelectedPr()}
+
+  <!-- Streamers layer (OUTSIDE overlay to avoid transform stacking context issues) -->
+  <div class="streamers-container" aria-hidden="true">
+    {#each streamers as streamer (streamer.id)}
+      <div
+        class="streamer"
+        style="
+          left: {streamer.left}%;
+          width: {streamer.width}px;
+          height: {streamer.height}px;
+          background: linear-gradient(135deg, {streamer.color} 0%, {streamer.color}cc 50%, {streamer.color} 100%);
+          --dur: {streamer.duration}ms;
+          --delay: {streamer.delay}ms;
+          --drift: {streamer.drift}px;
+          --rot: {streamer.rotation}deg;
+        "
+      ></div>
+    {/each}
+  </div>
+
   <div class="pr-overlay" onclick={closePrOverlay}>
     <div class="pr-overlay-content" onclick={(e) => e.stopPropagation()}>
+      <!-- Tap to play fallback -->
+      {#if showTapToPlay}
+        <button class="tap-to-play-btn" onclick={onTapToPlay}>
+          <span class="tap-to-play-icon">🔊</span>
+          <span>Tap to play sound</span>
+        </button>
+      {/if}
+
       <!-- Hero PR Card -->
       <div class="pr-hero-card">
         <div class="pr-hero-header">
@@ -588,4 +767,70 @@
   .pr-continue-btn:active {
     transform: scale(0.98);
   }
+
+  /* Streamers */
+  .streamers-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    pointer-events: none;
+    overflow: hidden;
+    z-index: 2005; /* Above scrim (2000), below nothing - streamers should be very visible */
+  }
+
+  .streamer {
+    position: absolute;
+    top: -40px;
+    border-radius: 3px;
+    box-shadow:
+      0 0 6px rgba(255, 255, 255, 0.5),
+      inset 0 0 2px rgba(255, 255, 255, 0.3);
+    animation-name: streamerFall;
+    animation-duration: var(--dur, 2500ms);
+    animation-delay: var(--delay, 0ms);
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+    will-change: transform, opacity;
+  }
+
+  @keyframes streamerFall {
+    0% {
+      opacity: 1;
+      transform: translateY(0) translateX(0) rotate(0deg);
+    }
+    90% {
+      opacity: 0.9;
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(110vh) translateX(var(--drift, 0px)) rotate(var(--rot, 0deg));
+    }
+  }
+
+  /* Tap to Play */
+  .tap-to-play-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 20px;
+    padding: 8px 16px;
+    color: white;
+    font-size: 0.85em;
+    cursor: pointer;
+    transition: background 0.2s ease;
+    margin-bottom: 8px;
+  }
+
+  .tap-to-play-btn:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+
+  .tap-to-play-icon {
+    font-size: 1.1em;
+  }
+
 </style>

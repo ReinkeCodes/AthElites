@@ -1670,6 +1670,14 @@
     isSavingFinish = true;
     stopSessionTimer(); // Stop the session timer
 
+    // Prime audio for PR celebration (must be close to user gesture for autoplay)
+    try {
+      sessionStorage.setItem('ae:allowPrAudio', '1');
+      sessionStorage.setItem('ae:allowPrAudioAt', String(Date.now()));
+    } catch (e) {
+      // Ignore storage errors
+    }
+
     // Check if user has 0 eligible sets
     const expectedSetWrites = computeExpectedSetWrites();
     if (expectedSetWrites === 0) {
