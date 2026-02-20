@@ -6,6 +6,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { setDraft, getDraftKey as getDraftKeyHelper } from '$lib/workoutDraft.js';
+  import { primeGoalTimerAudio, playGoalTimerAudio } from '$lib/utils/timerFeedback.js';
 
   let program = $state(null);
   let day = $state(null);
@@ -1028,9 +1029,33 @@
   // key = workoutExerciseId-setIndex
   let stopwatchState = $state({});
   let stopwatchIntervals = {}; // Interval references, not reactive
+  let goalFeedbackFired = {}; // Track if goal feedback already fired per stopwatch key
 
   // Focus mode state: { workoutExerciseId, setIndex, exerciseName, targetTime, targetRir, customReqs } or null
   let focusMode = $state(null);
+
+  // Parse targetTime string to seconds (e.g., "1:30" -> 90, "45" -> 45)
+  function parseTargetTimeToSeconds(targetTime) {
+    if (!targetTime) return null;
+    const str = String(targetTime).trim();
+    if (!str) return null;
+
+    // Try M:SS format
+    const colonMatch = str.match(/^(\d+):(\d{1,2})$/);
+    if (colonMatch) {
+      const mins = parseInt(colonMatch[1], 10);
+      const secs = parseInt(colonMatch[2], 10);
+      return mins * 60 + secs;
+    }
+
+    // Try plain number (seconds)
+    const num = parseFloat(str);
+    if (!isNaN(num) && num > 0) {
+      return Math.floor(num);
+    }
+
+    return null;
+  }
 
   // Format elapsed seconds as M:SS
   function formatStopwatchTime(seconds) {
@@ -1056,6 +1081,12 @@
     const key = getStopwatchKey(workoutExerciseId, setIndex);
     const current = stopwatchState[key] || { elapsed: 0, state: 'idle' };
 
+    // Prime goal timer audio on user gesture (Start click)
+    primeGoalTimerAudio();
+
+    // Reset goal feedback flag for fresh start
+    goalFeedbackFired[key] = false;
+
     // Clear any existing interval
     if (stopwatchIntervals[key]) {
       clearInterval(stopwatchIntervals[key]);
@@ -1078,6 +1109,15 @@
       }
       sw.elapsed = Math.floor((Date.now() - sw.startedAt) / 1000);
       stopwatchState = { ...stopwatchState };
+
+      // Goal feedback: only fire if Focus Mode is open, goal exists, and not already fired
+      if (focusMode && focusMode.workoutExerciseId === workoutExerciseId && focusMode.setIndex === setIndex) {
+        const goalSecs = parseTargetTimeToSeconds(focusMode.targetTime);
+        if (goalSecs && goalSecs > 0 && !goalFeedbackFired[key] && sw.elapsed >= goalSecs) {
+          goalFeedbackFired[key] = true;
+          playGoalTimerAudio(); // Fire and forget
+        }
+      }
     }, 100); // Update frequently for smooth display
   }
 
@@ -1111,6 +1151,9 @@
 
     stopwatchState[key] = { elapsed: 0, state: 'idle' };
     stopwatchState = { ...stopwatchState };
+
+    // Reset goal feedback flag so it can fire again on next run
+    goalFeedbackFired[key] = false;
   }
 
   // Finish: populate time field and exit focus mode
@@ -1152,6 +1195,13 @@
 
   // Close focus mode without finishing
   function closeFocusMode() {
+    if (focusMode) {
+      // Pause the timer (keeps elapsed time, just stops counting)
+      stopStopwatch(focusMode.workoutExerciseId, focusMode.setIndex);
+      // Reset goal feedback flag for this stopwatch
+      const key = getStopwatchKey(focusMode.workoutExerciseId, focusMode.setIndex);
+      goalFeedbackFired[key] = false;
+    }
     focusMode = null;
   }
 
@@ -2582,7 +2632,7 @@
 <!-- Stopwatch Focus Mode -->
 {#if focusMode}
   {@const sw = getStopwatch(focusMode.workoutExerciseId, focusMode.setIndex)}
-  {@const nonInputReqs = (focusMode.customReqs || []).filter(r => r.name && r.value && !r.clientInput)}
+  {@const allReqs = (focusMode.customReqs || []).filter(r => r.name && r.value)}
   <div
     class="focus-mode-overlay"
     role="dialog"
@@ -2620,10 +2670,10 @@
         </div>
       {/if}
 
-      <!-- Custom requirements (read-only) -->
-      {#if nonInputReqs.length > 0}
+      <!-- Custom requirements (read-only, shows all including input-required) -->
+      {#if allReqs.length > 0}
         <div class="focus-mode-reqs">
-          {#each nonInputReqs as req}
+          {#each allReqs as req}
             <span class="focus-mode-req">{req.name}: {req.value}</span>
           {/each}
         </div>
