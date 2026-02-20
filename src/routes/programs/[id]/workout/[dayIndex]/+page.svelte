@@ -1594,6 +1594,76 @@
     }
   }
 
+  // Detect new PRs achieved in this session by comparing candidates against existing PR docs
+  // Must be called BEFORE updateExercisePrs() to get accurate "prev" values
+  // Returns: Array<{ exerciseId, exerciseName, repBand, newWeight, newReps, prevWeight, prevReps }>
+  async function detectNewPrs(userId) {
+    const candidates = collectPrCandidates();
+    if (candidates.size === 0) return [];
+
+    const newPrs = [];
+
+    // Read all existing PR docs in parallel for speed
+    const readPromises = [];
+    const candidateList = Array.from(candidates.entries());
+
+    for (const [key, candidate] of candidateList) {
+      const bandKey = candidate.repBand.replace('-', '_').replace('+', '_plus');
+      const docId = `${candidate.exerciseId}__${bandKey}`;
+      const prRef = doc(db, 'user', userId, 'stats', 'prs', 'exercisePrs', docId);
+
+      readPromises.push(
+        getDoc(prRef)
+          .then(snap => ({ key, candidate, snap, error: null }))
+          .catch(err => ({ key, candidate, snap: null, error: err }))
+      );
+    }
+
+    const results = await Promise.all(readPromises);
+
+    for (const { key, candidate, snap, error } of results) {
+      if (error) {
+        // Non-fatal: skip this candidate if read fails
+        console.error(`PR read failed for ${key}:`, error);
+        continue;
+      }
+
+      let isNewPr = false;
+      let prevWeight = null;
+      let prevReps = null;
+
+      if (!snap || !snap.exists()) {
+        // No existing PR doc - this is a new PR
+        isNewPr = true;
+      } else {
+        const existing = snap.data();
+        prevWeight = existing.bestWeight || 0;
+        prevReps = existing.bestReps || 0;
+
+        // Check if candidate beats existing
+        if (candidate.weight > prevWeight) {
+          isNewPr = true;
+        } else if (candidate.weight === prevWeight && candidate.reps > prevReps) {
+          isNewPr = true;
+        }
+      }
+
+      if (isNewPr) {
+        newPrs.push({
+          exerciseId: candidate.exerciseId,
+          exerciseName: candidate.exerciseName,
+          repBand: candidate.repBand,
+          newWeight: candidate.weight,
+          newReps: candidate.reps,
+          prevWeight,
+          prevReps
+        });
+      }
+    }
+
+    return newPrs;
+  }
+
   async function finishWorkout() {
     if (!currentUserId || !day) return;
     if (isSavingFinish) return; // Prevent double-tap / duplicate executions
@@ -1755,11 +1825,28 @@
         }
       }
 
+      // Detect new PRs BEFORE updating (to get accurate "prev" values)
+      let newPrs = [];
+      try {
+        newPrs = await detectNewPrs(currentUserId);
+      } catch (err) {
+        console.error('PR detection failed:', err);
+      }
+
       // Update exercise PRs (write-forward, non-blocking)
       try {
         await updateExercisePrs(currentUserId, completedWorkoutId);
       } catch (err) {
         console.error('Exercise PR update failed:', err);
+      }
+
+      // Store new PRs in sessionStorage for summary page celebration
+      // Summary page reads and clears these keys after consuming
+      try {
+        sessionStorage.setItem('ae:newPRsForSummary', JSON.stringify(newPrs));
+        sessionStorage.setItem('ae:newPRsForSummarySessionId', completedWorkoutId);
+      } catch (err) {
+        console.error('Failed to store new PRs:', err);
       }
 
       // Clear draft and timers, then navigate to summary

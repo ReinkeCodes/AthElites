@@ -14,7 +14,28 @@
   let dayIndex = $state(0);
   let sessionId = $state(null);
 
+  // New PRs achieved in this session (read from sessionStorage, cleared after read)
+  // Shape: Array<{ exerciseId, exerciseName, repBand, newWeight, newReps, prevWeight, prevReps }>
+  let summaryNewPrs = $state([]);
+
   onMount(() => {
+    // Read and clear new PRs from sessionStorage (set by workout finish)
+    try {
+      const stored = sessionStorage.getItem('ae:newPRsForSummary');
+      if (stored) {
+        summaryNewPrs = JSON.parse(stored);
+      }
+    } catch (err) {
+      console.error('Failed to parse new PRs from sessionStorage:', err);
+      summaryNewPrs = [];
+    }
+    // Clear keys after reading (one-time consumption)
+    try {
+      sessionStorage.removeItem('ae:newPRsForSummary');
+      sessionStorage.removeItem('ae:newPRsForSummarySessionId');
+    } catch (err) {
+      // Ignore cleanup errors
+    }
     const urlParams = new URLSearchParams(window.location.search);
     dayIndex = parseInt(urlParams.get('day') || '0');
     duration = parseInt(urlParams.get('duration') || '0');
