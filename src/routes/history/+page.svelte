@@ -10,7 +10,7 @@
   let allUsers = $state([]);
   let selectedUserId = $state(null);
   let workoutSessions = $state([]);
-  let exercisePRs = $state({});
+  let prStoreData = $state([]); // Rep-band PRs from Firestore PR store
   let allLogs = $state([]);
   let loading = $state(true);
   let activeTab = $state('workouts'); // 'workouts' or 'prs'
@@ -129,7 +129,7 @@
           }
         }
 
-        await Promise.all([loadWorkoutSessions(), loadAllLogs()]);
+        await Promise.all([loadWorkoutSessions(), loadAllLogs(), loadPRStoreData()]);
       }
       loading = false;
     });
@@ -140,6 +140,7 @@
     if (userRole === 'admin' && selectedUserId && !loading) {
       loadWorkoutSessions();
       loadAllLogs();
+      loadPRStoreData();
     }
   });
 
@@ -176,29 +177,59 @@
       );
       const snapshot = await getDocs(logsQuery);
       allLogs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      // Calculate PRs per exercise
-      const prs = {};
-      allLogs.forEach(log => {
-        const weight = parseFloat(log.weight) || 0;
-        const exerciseId = log.exerciseId;
-        const exerciseName = log.exerciseName;
-
-        if (!prs[exerciseId] || weight > prs[exerciseId].weight) {
-          prs[exerciseId] = {
-            exerciseName,
-            weight,
-            reps: log.reps,
-            sets: log.sets,
-            date: log.loggedAt,
-            programName: log.programName,
-            dayName: log.dayName
-          };
-        }
-      });
-      exercisePRs = prs;
+      // Note: PRs are now loaded from Firestore PR store, not computed from logs
     } catch (e) {
       console.log('Could not load logs:', e);
+    }
+  }
+
+  // Load all rep-band PRs from Firestore PR store
+  // Path: user/{uid}/stats/prs/exercisePrs/{exerciseId}__{bandKey}
+  async function loadPRStoreData() {
+    const targetUserId = getTargetUserId();
+    if (!targetUserId) return;
+
+    try {
+      const prsRef = collection(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs');
+      const snapshot = await getDocs(prsRef);
+
+      const prs = [];
+      snapshot.docs.forEach(docSnap => {
+        const data = docSnap.data();
+        const docId = docSnap.id; // Format: {exerciseId}__{bandKey}
+        const parts = docId.split('__');
+        if (parts.length !== 2) return;
+
+        const exerciseId = parts[0];
+        const bandKey = parts[1]; // e.g., "1_5", "6_8", "9_12", "13_plus"
+
+        // Convert bandKey back to display format
+        let repBand = bandKey.replace('_plus', '+').replace('_', '-');
+
+        prs.push({
+          exerciseId,
+          exerciseName: data.exerciseNameSnapshot || data.exerciseName || 'Unknown Exercise',
+          repBand,
+          weight: data.bestWeight,
+          reps: data.bestReps,
+          date: data.achievedAt,
+          dayName: data.dayName || ''
+        });
+      });
+
+      // Sort by exercise name, then by rep band
+      prs.sort((a, b) => {
+        const nameCompare = a.exerciseName.localeCompare(b.exerciseName);
+        if (nameCompare !== 0) return nameCompare;
+        // Sort bands: 1-5, 6-8, 9-12, 13+
+        const bandOrder = { '1-5': 1, '6-8': 2, '9-12': 3, '13+': 4 };
+        return (bandOrder[a.repBand] || 99) - (bandOrder[b.repBand] || 99);
+      });
+
+      prStoreData = prs;
+    } catch (e) {
+      console.log('Could not load PR store data:', e);
+      prStoreData = [];
     }
   }
 
@@ -253,9 +284,101 @@
   }
 
   function getPRsList() {
-    return Object.entries(exercisePRs)
-      .map(([id, pr]) => ({ exerciseId: id, ...pr }))
-      .sort((a, b) => a.exerciseName.localeCompare(b.exerciseName));
+    // Return PRs from Firestore PR store (not computed from logs)
+    return prStoreData;
+  }
+
+  // Get grouped PRs by exercise (for consolidated cards)
+  function getGroupedPRs() {
+    // Group PRs by exerciseId
+    const groups = {};
+    prStoreData.forEach(pr => {
+      if (!groups[pr.exerciseId]) {
+        groups[pr.exerciseId] = {
+          exerciseId: pr.exerciseId,
+          exerciseName: pr.exerciseName,
+          bands: []
+        };
+      }
+      groups[pr.exerciseId].bands.push(pr);
+      // Update exercise name if this one is better (non-Unknown)
+      if (pr.exerciseName && pr.exerciseName !== 'Unknown Exercise') {
+        groups[pr.exerciseId].exerciseName = pr.exerciseName;
+      }
+    });
+
+    // For each group, sort bands and compute hero
+    const bandOrder = { '1-5': 1, '6-8': 2, '9-12': 3, '13+': 4 };
+
+    return Object.values(groups).map(group => {
+      // Sort bands in standard order
+      group.bands.sort((a, b) => (bandOrder[a.repBand] || 99) - (bandOrder[b.repBand] || 99));
+
+      // Compute hero: highest weight, then highest reps, then most recent
+      let hero = group.bands[0];
+      for (const band of group.bands) {
+        if (band.weight > hero.weight) {
+          hero = band;
+        } else if (band.weight === hero.weight) {
+          if (band.reps > hero.reps) {
+            hero = band;
+          } else if (band.reps === hero.reps) {
+            // Tie-breaker: most recent
+            const heroDate = hero.date?.toDate ? hero.date.toDate() : new Date(hero.date || 0);
+            const bandDate = band.date?.toDate ? band.date.toDate() : new Date(band.date || 0);
+            if (bandDate > heroDate) {
+              hero = band;
+            }
+          }
+        }
+      }
+
+      group.hero = hero;
+      return group;
+    }).sort((a, b) => a.exerciseName.localeCompare(b.exerciseName));
+  }
+
+  // Get rep band for a given rep count
+  function getRepBand(reps) {
+    const r = parseInt(reps) || 0;
+    if (r >= 1 && r <= 5) return '1-5';
+    if (r >= 6 && r <= 8) return '6-8';
+    if (r >= 9 && r <= 12) return '9-12';
+    if (r >= 13) return '13+';
+    return null;
+  }
+
+  // Get rep band display label
+  function getRepBandLabel(band) {
+    const labels = {
+      '1-5': '1–5 REP PR',
+      '6-8': '6–8 REP PR',
+      '9-12': '9–12 REP PR',
+      '13+': '13+ REP PR'
+    };
+    return labels[band] || band;
+  }
+
+  // Get rep band color (gold for 13+ instead of orange)
+  function getRepBandColor(band) {
+    const colors = {
+      '1-5': '#1565c0',   // blue
+      '6-8': '#7b1fa2',   // purple
+      '9-12': '#2e7d32',  // green
+      '13+': '#b8860b'    // dark gold
+    };
+    return colors[band] || '#666';
+  }
+
+  // Get rep band background tint
+  function getRepBandBg(band) {
+    const bgs = {
+      '1-5': '#e3f2fd',   // light blue
+      '6-8': '#f3e5f5',   // light purple
+      '9-12': '#e8f5e9',  // light green
+      '13+': '#fef3c7'    // light gold
+    };
+    return bgs[band] || '#f5f5f5';
   }
 
   // Load rep-band PRs from Firestore PR store
@@ -433,7 +556,7 @@
       selectedSession = null;
 
       // Recalculate PRs
-      recalculatePRs();
+      // PRs now loaded from Firestore PR store (write-forward only)
     } catch (e) { console.error('Delete failed:', e); alert('Failed to delete session'); }
   }
 
@@ -475,7 +598,7 @@
         // Session is empty - delete it entirely (handles ledger + aggregates)
         await deleteSessionAndLedger(sessionId);
         selectedSession = null;
-        recalculatePRs();
+        // PRs now loaded from Firestore PR store (write-forward only)
         return; // Skip tonnage delta since session is deleted
       }
 
@@ -493,7 +616,7 @@
       }
 
       // Recalculate PRs
-      recalculatePRs();
+      // PRs now loaded from Firestore PR store (write-forward only)
     } catch (e) {
       console.error('Delete exercise logs failed:', e);
       alert('Failed to delete exercise logs');
@@ -540,7 +663,7 @@
           // Session is empty - delete it entirely (handles ledger + aggregates)
           await deleteSessionAndLedger(sessionId);
           closeExerciseHistory();
-          recalculatePRs();
+          // PRs now loaded from Firestore PR store (write-forward only)
           return; // Skip tonnage delta since session is deleted
         }
       }
@@ -561,7 +684,7 @@
       exerciseSessionSets = exerciseSessionSets.filter(s => s.id !== setId);
 
       // Recalculate PRs first
-      recalculatePRs();
+      // PRs now loaded from Firestore PR store (write-forward only)
 
       // Check if any logs remain for this exercise at all
       const remainingExerciseLogs = allLogs.filter(l => l.exerciseId === selectedExercise?.exerciseId);
@@ -604,29 +727,6 @@
       console.error('Delete set failed:', e);
       alert('Failed to delete set');
     }
-  }
-
-  // Helper: Recalculate PRs from allLogs
-  function recalculatePRs() {
-    const prs = {};
-    allLogs.forEach(log => {
-      const weight = parseFloat(log.weight) || 0;
-      const exerciseId = log.exerciseId;
-      const exerciseName = log.exerciseName;
-
-      if (!prs[exerciseId] || weight > prs[exerciseId].weight) {
-        prs[exerciseId] = {
-          exerciseName,
-          weight,
-          reps: log.reps,
-          sets: log.sets,
-          date: log.loggedAt,
-          programName: log.programName,
-          dayName: log.dayName
-        };
-      }
-    });
-    exercisePRs = prs;
   }
 
   // Helper: Compute session tonnage from logs for a specific session
@@ -1051,22 +1151,73 @@
     {#if getPRsList().length === 0}
       <p style="color: #888; text-align: center; padding: 40px 0;">No personal records yet. Complete some workouts to set your first PRs!</p>
     {:else}
-      <p style="color: #888; margin-bottom: 15px;">{getPRsList().length} exercise{getPRsList().length !== 1 ? 's' : ''} with PRs</p>
+      <!-- Explainer text -->
+      <p class="pr-explainer">Highest weight achieved within each rep range.</p>
 
-      {#each getPRsList() as pr}
-        <div onclick={() => openExerciseHistory(pr.exerciseId, pr.exerciseName)} style="background: white; border: 1px solid #e0e0e0; border-radius: 10px; padding: 15px; margin-bottom: 12px; border-left: 4px solid #ff9800; cursor: pointer;" onmouseenter={(e) => e.currentTarget.style.borderColor = '#ff9800'} onmouseleave={(e) => e.currentTarget.style.borderColor = '#e0e0e0'}>
-          <div style="display: flex; justify-content: space-between; align-items: start;">
-            <div>
-              <strong style="font-size: 1.1em;">{pr.exerciseName}</strong>
-              <div style="margin-top: 8px; background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 8px 12px; border-radius: 6px; display: inline-block;">
-                <span style="font-size: 1.2em; font-weight: bold;">{pr.weight} lbs</span>
-                <span style="opacity: 0.9;"> × {pr.reps} reps</span>
+      <!-- Legend row -->
+      <div class="pr-legend">
+        <div class="pr-legend-item">
+          <span class="pr-legend-dot" style="background: #1565c0;"></span>
+          <span>Strength (1–5)</span>
+        </div>
+        <div class="pr-legend-item">
+          <span class="pr-legend-dot" style="background: #7b1fa2;"></span>
+          <span>Power (6–8)</span>
+        </div>
+        <div class="pr-legend-item">
+          <span class="pr-legend-dot" style="background: #2e7d32;"></span>
+          <span>Hypertrophy (9–12)</span>
+        </div>
+        <div class="pr-legend-item">
+          <span class="pr-legend-dot" style="background: #b8860b;"></span>
+          <span>Endurance (13+)</span>
+        </div>
+      </div>
+
+      {@const groupedPRs = getGroupedPRs()}
+      <p style="color: #888; margin-bottom: 15px;">{groupedPRs.length} exercise{groupedPRs.length !== 1 ? 's' : ''} with PRs</p>
+
+      {#each groupedPRs as group}
+        {@const heroColor = getRepBandColor(group.hero.repBand)}
+        <div
+          onclick={() => openExerciseHistory(group.exerciseId, group.exerciseName)}
+          class="pr-card-consolidated"
+        >
+          <div class="pr-card-main">
+            <!-- Left: Hero -->
+            <div class="pr-card-hero">
+              <div class="pr-card-name">{group.exerciseName}</div>
+              <div class="pr-card-hero-stats">
+                <div class="pr-card-weight">{group.hero.weight} <span class="pr-card-unit">lbs</span></div>
+                <div class="pr-card-reps">{group.hero.reps} reps</div>
+              </div>
+              <div class="pr-card-session">
+                {formatDate(group.hero.date)}{#if group.hero.dayName} • {group.hero.dayName}{/if}
               </div>
             </div>
-            <div style="text-align: right; font-size: 0.85em; color: #888;">
-              <div>{formatDate(pr.date)}</div>
-              <div style="margin-top: 3px;">{pr.dayName}</div>
+
+            <!-- Right: Band Rail -->
+            <div class="pr-band-rail">
+              {#each group.bands as band}
+                {@const bandColor = getRepBandColor(band.repBand)}
+                <div class="pr-band-rail-item" style="border-left-color: {bandColor};">
+                  <span class="pr-band-rail-label" style="color: {bandColor};">{band.repBand}</span>
+                  <span class="pr-band-rail-value">{band.reps} × {band.weight} lbs</span>
+                </div>
+              {/each}
             </div>
+          </div>
+
+          <!-- Mobile: Band chips (shown at narrow widths) -->
+          <div class="pr-band-chips-mobile">
+            {#each group.bands as band}
+              {@const bandColor = getRepBandColor(band.repBand)}
+              {@const bandBg = getRepBandBg(band.repBand)}
+              <div class="pr-band-chip-mobile" style="background: {bandBg}; color: {bandColor};">
+                <span class="pr-band-chip-label">{band.repBand}</span>
+                <span class="pr-band-chip-value">{band.reps}×{band.weight}</span>
+              </div>
+            {/each}
           </div>
         </div>
       {/each}
@@ -1286,7 +1437,7 @@
         <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center;">
           <div style="font-size: 0.8em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px;">Estimated 1RM</div>
           <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">{selectedExerciseHistory.e1rm.e1rm} lbs</div>
-          <div style="font-size: 0.8em; opacity: 0.85;">Based on {selectedExerciseHistory.e1rm.weight}×{selectedExerciseHistory.e1rm.reps} ({formatDate(selectedExerciseHistory.e1rm.date)})</div>
+          <div style="font-size: 0.8em; opacity: 0.85;">Based on {selectedExerciseHistory.e1rm.reps} × {selectedExerciseHistory.e1rm.weight} lbs ({formatDate(selectedExerciseHistory.e1rm.date)})</div>
         </div>
       {/if}
 
@@ -1299,7 +1450,7 @@
               <div style="background: #e3f2fd; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #1565c0;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                   <span style="font-weight: 600; color: #1565c0;">1-5 Reps (Strength)</span>
-                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['1-5'].weight} × {selectedExerciseHistory.repRanges['1-5'].reps}</span>
+                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['1-5'].reps} × {selectedExerciseHistory.repRanges['1-5'].weight} lbs</span>
                 </div>
                 <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['1-5'].date)}</div>
                 {#if selectedExerciseHistory.repRanges['1-5'].notes}
@@ -1311,7 +1462,7 @@
               <div style="background: #f3e5f5; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #7b1fa2;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                   <span style="font-weight: 600; color: #7b1fa2;">6-8 Reps (Power)</span>
-                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['6-8'].weight} × {selectedExerciseHistory.repRanges['6-8'].reps}</span>
+                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['6-8'].reps} × {selectedExerciseHistory.repRanges['6-8'].weight} lbs</span>
                 </div>
                 <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['6-8'].date)}</div>
                 {#if selectedExerciseHistory.repRanges['6-8'].notes}
@@ -1323,7 +1474,7 @@
               <div style="background: #e8f5e9; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #2e7d32;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                   <span style="font-weight: 600; color: #2e7d32;">9-12 Reps (Hypertrophy)</span>
-                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['9-12'].weight} × {selectedExerciseHistory.repRanges['9-12'].reps}</span>
+                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['9-12'].reps} × {selectedExerciseHistory.repRanges['9-12'].weight} lbs</span>
                 </div>
                 <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['9-12'].date)}</div>
                 {#if selectedExerciseHistory.repRanges['9-12'].notes}
@@ -1332,10 +1483,10 @@
               </div>
             {/if}
             {#if selectedExerciseHistory.repRanges['13+']}
-              <div style="background: #fff3e0; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #e65100;">
+              <div style="background: #fef3c7; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #b8860b;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                  <span style="font-weight: 600; color: #e65100;">13+ Reps (Endurance)</span>
-                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['13+'].weight} × {selectedExerciseHistory.repRanges['13+'].reps}</span>
+                  <span style="font-weight: 600; color: #b8860b;">13+ Reps (Endurance)</span>
+                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['13+'].reps} × {selectedExerciseHistory.repRanges['13+'].weight} lbs</span>
                 </div>
                 <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['13+'].date)}</div>
                 {#if selectedExerciseHistory.repRanges['13+'].notes}
@@ -1362,7 +1513,7 @@
       {#each exerciseSessionSets as set}
         <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 6px; background: #f8f9fa; border-radius: 6px;">
           <span style="font-weight: bold; color: #667eea; min-width: 45px;">Set {set.setNumber || 1}</span>
-          <span style="flex: 1;">{set.reps || '-'} × {set.weight || '-'}</span>
+          <span style="flex: 1;">{set.reps || '-'} × {set.weight || '-'} lbs</span>
           {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
           <button
             onclick={(e) => { e.stopPropagation(); deleteSetLog(set.id); }}
@@ -1422,5 +1573,169 @@
 
   .tooltip-trigger:focus {
     outline: none;
+  }
+
+  /* PR Page Styles */
+  .pr-explainer {
+    color: #666;
+    font-size: 0.9em;
+    margin: 0 0 12px 0;
+  }
+
+  .pr-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    margin-bottom: 20px;
+    padding: 10px 0;
+    border-bottom: 1px solid #eee;
+  }
+
+  .pr-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8em;
+    color: #555;
+  }
+
+  .pr-legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* Consolidated PR Card */
+  .pr-card-consolidated {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .pr-card-consolidated:hover {
+    border-color: #ccc;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+
+  .pr-card-main {
+    display: flex;
+    gap: 16px;
+  }
+
+  .pr-card-hero {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pr-card-name {
+    font-weight: 600;
+    font-size: 1.05em;
+    color: #333;
+    margin-bottom: 8px;
+  }
+
+  .pr-card-hero-stats {
+    margin-bottom: 6px;
+  }
+
+  .pr-card-weight {
+    font-size: 1.8em;
+    font-weight: 700;
+    color: #1a1a1a;
+    line-height: 1.1;
+  }
+
+  .pr-card-unit {
+    font-size: 0.5em;
+    font-weight: 500;
+    color: #666;
+  }
+
+  .pr-card-reps {
+    font-size: 0.95em;
+    color: #555;
+    margin-top: 2px;
+  }
+
+  .pr-card-session {
+    font-size: 0.8em;
+    color: #888;
+  }
+
+  /* Band Rail (right side) */
+  .pr-band-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-left: 12px;
+    border-left: 1px solid #eee;
+    min-width: 130px;
+  }
+
+  .pr-band-rail-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 8px;
+    border-left: 3px solid;
+    font-size: 0.85em;
+  }
+
+  .pr-band-rail-label {
+    font-weight: 600;
+    min-width: 36px;
+  }
+
+  .pr-band-rail-value {
+    color: #555;
+    white-space: nowrap;
+  }
+
+  /* Mobile Band Chips (hidden by default, shown at narrow widths) */
+  .pr-band-chips-mobile {
+    display: none;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #eee;
+  }
+
+  .pr-band-chip-mobile {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 16px;
+    font-size: 0.75em;
+    font-weight: 500;
+  }
+
+  .pr-band-chip-label {
+    font-weight: 600;
+  }
+
+  .pr-band-chip-value {
+    opacity: 0.85;
+  }
+
+  /* Mobile: collapse rail to chips */
+  @media (max-width: 480px) {
+    .pr-card-main {
+      flex-direction: column;
+    }
+
+    .pr-band-rail {
+      display: none;
+    }
+
+    .pr-band-chips-mobile {
+      display: flex;
+    }
   }
 </style>
