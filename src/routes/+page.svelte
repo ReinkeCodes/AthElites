@@ -134,16 +134,6 @@
 
   // Burst sound using HTMLAudioElement (must be triggered by user gesture)
   let burstAudio = null;
-  let soundStatus = $state(null); // null | "played" | "blocked" (TEMP debug)
-  let soundStatusTimeout = null;
-
-  function setSoundStatus(status) {
-    if (soundStatusTimeout) clearTimeout(soundStatusTimeout);
-    soundStatus = status;
-    soundStatusTimeout = setTimeout(() => {
-      soundStatus = null;
-    }, status === 'blocked' ? 2000 : 1500);
-  }
 
   function playBurstSound() {
     try {
@@ -155,18 +145,12 @@
       burstAudio.pause();
       burstAudio.currentTime = 0;
       const p = burstAudio.play();
-      if (p && typeof p.then === 'function') {
-        p.then(() => {
-          setSoundStatus('played');
-        }).catch(() => {
-          setSoundStatus('blocked');
-        });
-      } else {
-        // No promise (older browsers) - assume played
-        setSoundStatus('played');
+      // Silently swallow any autoplay rejection
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => {});
       }
     } catch (e) {
-      setSoundStatus('blocked');
+      // Ignore playback errors
     }
   }
 
@@ -607,9 +591,6 @@
             onkeydown={(e) => e.key === 'Enter' && handleTierClick(e)}
           >{equivData.tierNumber}</span>
           <span class="tier-label">out of 10 tiers</span>
-          {#if soundStatus}
-            <span class="sound-debug-status">sound: {soundStatus}</span>
-          {/if}
           {#if animateTierParticles}
             <span class="burst-particle p1"></span>
             <span class="burst-particle p2"></span>
@@ -1185,21 +1166,6 @@
   .tier-label {
     font-size: 0.75rem;
     color: #888;
-    white-space: nowrap;
-  }
-
-  /* TEMP debug status for sound playback */
-  .sound-debug-status {
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    margin-top: 4px;
-    font-size: 0.65rem;
-    color: #888;
-    background: #f0f0f0;
-    padding: 2px 6px;
-    border-radius: 3px;
     white-space: nowrap;
   }
 
