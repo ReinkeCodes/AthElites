@@ -258,34 +258,66 @@
       .sort((a, b) => a.exerciseName.localeCompare(b.exerciseName));
   }
 
-  function openExerciseHistory(exerciseId, exerciseName) {
+  // Load rep-band PRs from Firestore PR store
+  // Path: user/{uid}/stats/prs/exercisePrs/{exerciseId}__{repBandKey}
+  // Returns: { '1-5': PR|null, '6-8': PR|null, '9-12': PR|null, '13+': PR|null }
+  async function loadExerciseRepBandPrs(userId, exerciseId) {
+    const bands = ['1-5', '6-8', '9-12', '13+'];
+    const result = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
+
+    const readPromises = bands.map(band => {
+      const bandKey = band.replace('-', '_').replace('+', '_plus');
+      const docId = `${exerciseId}__${bandKey}`;
+      const prRef = doc(db, 'user', userId, 'stats', 'prs', 'exercisePrs', docId);
+
+      return getDoc(prRef)
+        .then(snap => ({ band, snap, error: null }))
+        .catch(err => ({ band, snap: null, error: err }));
+    });
+
+    const results = await Promise.all(readPromises);
+
+    for (const { band, snap, error } of results) {
+      if (error) {
+        console.error(`Failed to read PR for band ${band}:`, error);
+        continue;
+      }
+      if (snap && snap.exists()) {
+        const data = snap.data();
+        result[band] = {
+          weight: data.bestWeight,
+          reps: data.bestReps,
+          date: data.achievedAt,
+          notes: null // PR store doesn't include notes
+        };
+      }
+    }
+
+    return result;
+  }
+
+  async function openExerciseHistory(exerciseId, exerciseName) {
     selectedExercise = { exerciseId, exerciseName };
 
     // Clear stale data immediately to prevent orphan PR display
-    selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } };
+    selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null } };
     exerciseSessions = [];
     selectedExerciseSession = null;
     exerciseSessionSets = [];
 
+    const targetUserId = getTargetUserId();
+
+    // Load rep-band PRs from Firestore PR store (parallel with log processing)
+    const repRangesPromise = loadExerciseRepBandPrs(targetUserId, exerciseId);
+
     // Get unique sessions for this exercise (last 10)
     const exerciseLogs = allLogs.filter(l => l.exerciseId === exerciseId && l.completedWorkoutId);
-
-    // If no logs exist, ensure clean state (no orphan PRs)
-    if (exerciseLogs.length === 0) {
-      selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } };
-      return;
-    }
 
     const sessionMap = {};
     const programIds = new Set();
 
-    // Calculate e1rm and rep range PRs (same logic as workout page)
+    // Calculate e1rm from logs (still needed, not stored in PR store)
     let best1RM = null;
-    const repRanges = {
-      '1-5': null,
-      '6-8': null,
-      '9-12': null
-    };
 
     exerciseLogs.forEach(log => {
       if (log.programId) programIds.add(log.programId);
@@ -293,7 +325,6 @@
         sessionMap[log.completedWorkoutId] = { id: log.completedWorkoutId, date: log.loggedAt, dayName: log.dayName };
       }
 
-      // Calculate PRs
       const weight = parseFloat(log.weight) || 0;
       const reps = parseInt(log.reps) || 0;
       if (weight <= 0 || reps <= 0) return;
@@ -303,19 +334,15 @@
       if (!best1RM || e1rm > best1RM.e1rm) {
         best1RM = { e1rm: Math.round(e1rm), weight, reps, date: log.loggedAt, notes: log.notes };
       }
-
-      // Categorize by rep range
-      let range = null;
-      if (reps >= 1 && reps <= 5) range = '1-5';
-      else if (reps >= 6 && reps <= 8) range = '6-8';
-      else if (reps >= 9 && reps <= 12) range = '9-12';
-
-      if (range) {
-        if (!repRanges[range] || weight > repRanges[range].weight) {
-          repRanges[range] = { weight, reps, date: log.loggedAt, notes: log.notes };
-        }
-      }
     });
+
+    // Wait for rep-band PRs from Firestore
+    let repRanges = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
+    try {
+      repRanges = await repRangesPromise;
+    } catch (err) {
+      console.error('Failed to load rep-band PRs:', err);
+    }
 
     selectedExerciseHistory = { e1rm: best1RM, repRanges };
 
@@ -634,19 +661,22 @@
   }
 
   // Helper: Recalculate e1rm and repRanges for selected exercise
-  function recalculateSelectedExerciseHistory() {
+  async function recalculateSelectedExerciseHistory() {
     if (!selectedExercise) return;
 
+    const targetUserId = getTargetUserId();
     const exerciseLogs = allLogs.filter(l => l.exerciseId === selectedExercise.exerciseId && l.completedWorkoutId);
 
-    if (exerciseLogs.length === 0) {
-      selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } };
-      return;
+    // Load rep-band PRs from Firestore PR store
+    let repRanges = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
+    try {
+      repRanges = await loadExerciseRepBandPrs(targetUserId, selectedExercise.exerciseId);
+    } catch (err) {
+      console.error('Failed to load rep-band PRs:', err);
     }
 
+    // Calculate e1rm from logs (still needed, not stored in PR store)
     let best1RM = null;
-    const repRanges = { '1-5': null, '6-8': null, '9-12': null };
-
     exerciseLogs.forEach(log => {
       const weight = parseFloat(log.weight) || 0;
       const reps = parseInt(log.reps) || 0;
@@ -655,15 +685,6 @@
       const e1rm = weight * (1 + reps / 30);
       if (!best1RM || e1rm > best1RM.e1rm) {
         best1RM = { e1rm: Math.round(e1rm), weight, reps, date: log.loggedAt, notes: log.notes };
-      }
-
-      let range = null;
-      if (reps >= 1 && reps <= 5) range = '1-5';
-      else if (reps >= 6 && reps <= 8) range = '6-8';
-      else if (reps >= 9 && reps <= 12) range = '9-12';
-
-      if (range && (!repRanges[range] || weight > repRanges[range].weight)) {
-        repRanges[range] = { weight, reps, date: log.loggedAt, notes: log.notes };
       }
     });
 
@@ -1270,7 +1291,7 @@
       {/if}
 
       <!-- Rep Range PRs -->
-      {#if selectedExerciseHistory?.repRanges && (selectedExerciseHistory.repRanges['1-5'] || selectedExerciseHistory.repRanges['6-8'] || selectedExerciseHistory.repRanges['9-12'])}
+      {#if selectedExerciseHistory?.repRanges && (selectedExerciseHistory.repRanges['1-5'] || selectedExerciseHistory.repRanges['6-8'] || selectedExerciseHistory.repRanges['9-12'] || selectedExerciseHistory.repRanges['13+'])}
         <div style="margin-bottom: 15px;">
           <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Rep Range PRs</div>
           <div style="display: grid; gap: 8px;">
@@ -1307,6 +1328,18 @@
                 <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['9-12'].date)}</div>
                 {#if selectedExerciseHistory.repRanges['9-12'].notes}
                   <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{selectedExerciseHistory.repRanges['9-12'].notes}"</div>
+                {/if}
+              </div>
+            {/if}
+            {#if selectedExerciseHistory.repRanges['13+']}
+              <div style="background: #fff3e0; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #e65100;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="font-weight: 600; color: #e65100;">13+ Reps (Endurance)</span>
+                  <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['13+'].weight} × {selectedExerciseHistory.repRanges['13+'].reps}</span>
+                </div>
+                <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['13+'].date)}</div>
+                {#if selectedExerciseHistory.repRanges['13+'].notes}
+                  <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{selectedExerciseHistory.repRanges['13+'].notes}"</div>
                 {/if}
               </div>
             {/if}
