@@ -186,17 +186,58 @@
     // Clear stale data immediately before opening modal
     exerciseHistory = {
       ...exerciseHistory,
-      [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } }
+      [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null } }
     };
     historyModal = { open: true, exerciseId, exerciseName };
     // Refresh history for this exercise from Firestore to ensure no stale/orphan PRs
     await refreshExerciseHistory(exerciseId);
   }
 
+  // Load rep-band PRs from Firestore PR store for an exercise
+  // Path: user/{uid}/stats/prs/exercisePrs/{exerciseId}__{repBandKey}
+  async function loadExerciseRepBandPrs(userId, exerciseId) {
+    const bands = ['1-5', '6-8', '9-12', '13+'];
+    const result = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
+
+    const readPromises = bands.map(band => {
+      const bandKey = band.replace('-', '_').replace('+', '_plus');
+      const docId = `${exerciseId}__${bandKey}`;
+      const prRef = doc(db, 'user', userId, 'stats', 'prs', 'exercisePrs', docId);
+
+      return getDoc(prRef)
+        .then(snap => ({ band, snap, error: null }))
+        .catch(err => ({ band, snap: null, error: err }));
+    });
+
+    const results = await Promise.all(readPromises);
+
+    for (const { band, snap, error } of results) {
+      if (error) {
+        console.error(`Failed to read PR for band ${band}:`, error);
+        continue;
+      }
+      if (snap && snap.exists()) {
+        const data = snap.data();
+        result[band] = {
+          weight: data.bestWeight,
+          reps: data.bestReps,
+          date: data.achievedAt,
+          notes: null // PR store doesn't include notes
+        };
+      }
+    }
+
+    return result;
+  }
+
   async function refreshExerciseHistory(exerciseId) {
     if (!currentUserId) return;
 
     try {
+      // Load rep-band PRs from Firestore PR store (parallel with log fetch)
+      const repRangesPromise = loadExerciseRepBandPrs(currentUserId, exerciseId);
+
+      // Still query workoutLogs for "Most Recent Session" display only
       const logsQuery = query(
         collection(db, 'workoutLogs'),
         where('userId', '==', currentUserId),
@@ -208,40 +249,7 @@
       const snapshot = await getDocs(logsQuery);
       const entries = snapshot.docs.map(d => d.data());
 
-      // If no entries exist, ensure clean state
-      if (entries.length === 0) {
-        exerciseHistory = {
-          ...exerciseHistory,
-          [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } }
-        };
-        return;
-      }
-
-      // Calculate estimated 1RM using Epley formula
-      let best1RM = null;
-      const repRanges = { '1-5': null, '6-8': null, '9-12': null };
-
-      entries.forEach(entry => {
-        const weight = parseFloat(entry.weight) || 0;
-        const reps = parseInt(entry.reps) || 0;
-        if (weight <= 0 || reps <= 0) return;
-
-        const e1rm = weight * (1 + reps / 30);
-        if (!best1RM || e1rm > best1RM.e1rm) {
-          best1RM = { e1rm: Math.round(e1rm), weight, reps, date: entry.loggedAt, notes: entry.notes };
-        }
-
-        let range = null;
-        if (reps >= 1 && reps <= 5) range = '1-5';
-        else if (reps >= 6 && reps <= 8) range = '6-8';
-        else if (reps >= 9 && reps <= 12) range = '9-12';
-
-        if (range && (!repRanges[range] || weight > repRanges[range].weight)) {
-          repRanges[range] = { weight, reps, date: entry.loggedAt, notes: entry.notes };
-        }
-      });
-
-      // Find most recent session
+      // Find most recent session from logs (for display only)
       let lastSession = null;
       if (entries.length > 0 && entries[0].completedWorkoutId) {
         const sessionId = entries[0].completedWorkoutId;
@@ -260,6 +268,26 @@
         };
       }
 
+      // Wait for rep-band PRs from Firestore PR store
+      let repRanges = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
+      try {
+        repRanges = await repRangesPromise;
+      } catch (err) {
+        console.error('Failed to load rep-band PRs:', err);
+      }
+
+      // Calculate e1RM from PR-store data only (highest e1rm from available bands)
+      let best1RM = null;
+      for (const band of ['1-5', '6-8', '9-12', '13+']) {
+        const pr = repRanges[band];
+        if (pr && pr.weight > 0 && pr.reps > 0) {
+          const e1rm = pr.weight * (1 + pr.reps / 30);
+          if (!best1RM || e1rm > best1RM.e1rm) {
+            best1RM = { e1rm: Math.round(e1rm), weight: pr.weight, reps: pr.reps, date: pr.date, notes: null };
+          }
+        }
+      }
+
       // Update exerciseHistory for this specific exercise
       exerciseHistory = {
         ...exerciseHistory,
@@ -275,7 +303,7 @@
       // On error, ensure clean state
       exerciseHistory = {
         ...exerciseHistory,
-        [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null } }
+        [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null } }
       };
     }
   }
@@ -2628,6 +2656,7 @@
 {#if historyModal.open}
   {@const history = exerciseHistory[historyModal.exerciseId]}
   {@const historyExercise = day?.sections?.flatMap(s => s.exercises || []).find(e => e.exerciseId === historyModal.exerciseId)}
+  {@const allBandsMissing = history?.repRanges && !history.repRanges['1-5'] && !history.repRanges['6-8'] && !history.repRanges['9-12'] && !history.repRanges['13+']}
   <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;" onclick={closeHistoryModal}>
     <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto;" onclick={(e) => e.stopPropagation()}>
       <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white; z-index: 1;">
@@ -2635,58 +2664,83 @@
       </div>
       <div style="padding: 15px 20px;">
         <!-- Estimated 1RM -->
-        {#if history?.e1rm}
-          <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center;">
-            <div style="font-size: 0.8em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px;">Estimated 1RM</div>
+        <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center;">
+          <div style="font-size: 0.8em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px;">Estimated 1RM</div>
+          {#if history?.e1rm}
             <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">{history.e1rm.e1rm} lbs</div>
-            <div style="font-size: 0.8em; opacity: 0.85;">Based on {history.e1rm.weight}×{history.e1rm.reps} ({formatDate(history.e1rm.date)})</div>
-          </div>
-        {/if}
+            <div style="font-size: 0.8em; opacity: 0.85;">Based on {history.e1rm.reps} × {history.e1rm.weight} lbs ({formatDate(history.e1rm.date)})</div>
+          {:else}
+            <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">—</div>
+          {/if}
+        </div>
 
         <!-- Rep Range PRs -->
-        {#if history?.repRanges && (history.repRanges['1-5'] || history.repRanges['6-8'] || history.repRanges['9-12'])}
-          <div style="margin-bottom: 15px;">
-            <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Rep Range PRs</div>
-            <div style="display: grid; gap: 8px;">
-              {#if history.repRanges['1-5']}
-                <div style="background: #e3f2fd; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #1565c0;">
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 600; color: #1565c0;">1-5 Reps (Strength)</span>
-                    <span style="font-weight: bold; color: #333;">{history.repRanges['1-5'].weight} × {history.repRanges['1-5'].reps}</span>
-                  </div>
-                  <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['1-5'].date)}</div>
-                  {#if history.repRanges['1-5'].notes}
-                    <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{history.repRanges['1-5'].notes}"</div>
-                  {/if}
-                </div>
+        <div style="margin-bottom: 15px;">
+          <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Rep Range PRs</div>
+          <div style="display: grid; gap: 8px;">
+            <!-- 1-5 Reps (Strength) -->
+            <div style="background: #e3f2fd; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #1565c0;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-weight: 600; color: #1565c0;">1-5 Reps (Strength)</span>
+                {#if history?.repRanges?.['1-5']}
+                  <span style="font-weight: bold; color: #333;">{history.repRanges['1-5'].reps} × {history.repRanges['1-5'].weight} lbs</span>
+                {:else}
+                  <span style="font-weight: bold; color: #999;">—</span>
+                {/if}
+              </div>
+              {#if history?.repRanges?.['1-5']?.date}
+                <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['1-5'].date)}</div>
               {/if}
-              {#if history.repRanges['6-8']}
-                <div style="background: #f3e5f5; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #7b1fa2;">
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 600; color: #7b1fa2;">6-8 Reps (Power)</span>
-                    <span style="font-weight: bold; color: #333;">{history.repRanges['6-8'].weight} × {history.repRanges['6-8'].reps}</span>
-                  </div>
-                  <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['6-8'].date)}</div>
-                  {#if history.repRanges['6-8'].notes}
-                    <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{history.repRanges['6-8'].notes}"</div>
-                  {/if}
-                </div>
+            </div>
+            <!-- 6-8 Reps (Power) -->
+            <div style="background: #f3e5f5; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #7b1fa2;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-weight: 600; color: #7b1fa2;">6-8 Reps (Power)</span>
+                {#if history?.repRanges?.['6-8']}
+                  <span style="font-weight: bold; color: #333;">{history.repRanges['6-8'].reps} × {history.repRanges['6-8'].weight} lbs</span>
+                {:else}
+                  <span style="font-weight: bold; color: #999;">—</span>
+                {/if}
+              </div>
+              {#if history?.repRanges?.['6-8']?.date}
+                <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['6-8'].date)}</div>
               {/if}
-              {#if history.repRanges['9-12']}
-                <div style="background: #e8f5e9; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #2e7d32;">
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 600; color: #2e7d32;">9-12 Reps (Hypertrophy)</span>
-                    <span style="font-weight: bold; color: #333;">{history.repRanges['9-12'].weight} × {history.repRanges['9-12'].reps}</span>
-                  </div>
-                  <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['9-12'].date)}</div>
-                  {#if history.repRanges['9-12'].notes}
-                    <div style="font-size: 0.8em; color: #888; font-style: italic; margin-top: 4px;">"{history.repRanges['9-12'].notes}"</div>
-                  {/if}
-                </div>
+            </div>
+            <!-- 9-12 Reps (Hypertrophy) -->
+            <div style="background: #e8f5e9; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #2e7d32;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-weight: 600; color: #2e7d32;">9-12 Reps (Hypertrophy)</span>
+                {#if history?.repRanges?.['9-12']}
+                  <span style="font-weight: bold; color: #333;">{history.repRanges['9-12'].reps} × {history.repRanges['9-12'].weight} lbs</span>
+                {:else}
+                  <span style="font-weight: bold; color: #999;">—</span>
+                {/if}
+              </div>
+              {#if history?.repRanges?.['9-12']?.date}
+                <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['9-12'].date)}</div>
+              {/if}
+            </div>
+            <!-- 13+ Reps (Endurance) -->
+            <div style="background: #fef3c7; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #b8860b;">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-weight: 600; color: #b8860b;">13+ Reps (Endurance)</span>
+                {#if history?.repRanges?.['13+']}
+                  <span style="font-weight: bold; color: #333;">{history.repRanges['13+'].reps} × {history.repRanges['13+'].weight} lbs</span>
+                {:else}
+                  <span style="font-weight: bold; color: #999;">—</span>
+                {/if}
+              </div>
+              {#if history?.repRanges?.['13+']?.date}
+                <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(history.repRanges['13+'].date)}</div>
               {/if}
             </div>
           </div>
-        {/if}
+          {#if allBandsMissing}
+            <div style="font-size: 0.75em; color: #888; margin-top: 10px; text-align: center;">
+              PR tracking unavailable for workouts completed before Feb 20, 2026.
+            </div>
+          {/if}
+        </div>
 
         <!-- Most Recent Session -->
         {#if history?.lastSession}
@@ -2696,7 +2750,7 @@
             {#each history.lastSession.sets as set}
               <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: white; border-radius: 5px; font-size: 0.9em;">
                 <span style="font-weight: bold; color: #667eea; min-width: 40px;">Set {set.setNumber}</span>
-                <span>{set.reps || '-'} × {set.weight || '-'}</span>
+                <span>{set.reps || '-'} × {set.weight || '-'} lbs</span>
                 {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
               </div>
               {#if set.customInputs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const req = historyExercise?.customReqs?.filter(r => r.clientInput)?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.8em; margin: 0 0 4px 50px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value}&nbsp;(Target: {req.value}){/if}</div>{/if}{/each}{/if}
