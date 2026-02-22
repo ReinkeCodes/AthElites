@@ -20,7 +20,7 @@
     '/exercises',
     '/log',
     '/history',
-    '/profile',
+    '/settings',
     '/admin/users',
     '/clients',
     '/compare'
@@ -164,8 +164,8 @@
           Compare
         </a>
       {/if}
-      <a href="/profile" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
-        Profile
+      <a href="/settings" onclick={closeMenu} style="display: block; color: white; text-decoration: none; padding: 10px 0; border-bottom: 1px solid #444;">
+        Settings
       </a>
       <button
         onclick={logout}

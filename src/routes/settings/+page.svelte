@@ -70,7 +70,7 @@
   }
 </script>
 
-<h1>Profile</h1>
+<h1>Settings</h1>
 
 {#if userData}
   <form onsubmit={saveProfile}>
@@ -174,4 +174,3 @@
     </div>
   </div>
 </div>
-
