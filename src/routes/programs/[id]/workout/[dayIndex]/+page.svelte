@@ -6,7 +6,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { setDraft, getDraftKey as getDraftKeyHelper } from '$lib/workoutDraft.js';
-  import { primeGoalTimerAudio, playGoalTimerAudio } from '$lib/utils/timerFeedback.js';
+  import { primeGoalTimerAudio, playGoalTimerAudio, primeRestTimerAudio, playRestTimerAudio, pauseRestTimerAudio, resumeRestTimerAudio, stopRestTimerAudio, isRestSfxEnabled } from '$lib/utils/timerFeedback.js';
 
   let program = $state(null);
   let day = $state(null);
@@ -345,6 +345,7 @@
   onMount(() => {
     workoutStartTime = new Date();
     startSessionTimer();
+    initRestSfxPreference();
 
     // Background/pagehide flush handlers (iOS Safari needs pagehide)
     function handlePageHide() {
@@ -867,6 +868,90 @@
   let restTimerState = $state({});
   let restTimerIntervals = {}; // Interval references, not reactive
   let longPressTimers = {}; // Long-press detection timers
+  let restBeepFired = {}; // Latch to track if T-3s beep has fired per exercise
+  let restBeepSuppressed = {}; // Track if beep was suppressed (muted at threshold) - no late start
+  let restBeepPausedByTimer = {}; // Track if beep audio was paused due to timer pause
+
+  // Global rest-done toast state (single-expiry gate)
+  // Only one rest-done toast can be active at a time
+  let activeRestDone = $state(null); // null | { workoutExerciseId, exerciseName, restSeconds }
+
+  // Rest timer SFX mute toggle (persisted in localStorage)
+  let restSfxEnabled = $state(true); // Default: enabled
+
+  function initRestSfxPreference() {
+    if (typeof localStorage !== 'undefined') {
+      const stored = localStorage.getItem('ae:restSfxEnabled');
+      // Default to "1" (enabled) if not set
+      restSfxEnabled = stored !== '0';
+    }
+  }
+
+  function toggleRestSfx() {
+    restSfxEnabled = !restSfxEnabled;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('ae:restSfxEnabled', restSfxEnabled ? '1' : '0');
+    }
+    // If muting, stop any currently playing rest SFX immediately
+    // (but don't reset restBeepFired - prevents restart if unmuted later this cycle)
+    if (!restSfxEnabled) {
+      stopRestTimerAudio();
+    }
+  }
+
+  // Helper to find exercise by workoutExerciseId
+  function findExerciseById(workoutExerciseId) {
+    if (!day?.sections) return null;
+    for (const section of day.sections) {
+      for (const exercise of section.exercises || []) {
+        if (exercise.workoutExerciseId === workoutExerciseId) {
+          return exercise;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Find which section index contains an exercise
+  function findSectionIndexByExerciseId(workoutExerciseId) {
+    if (!day?.sections) return -1;
+    for (let i = 0; i < day.sections.length; i++) {
+      const section = day.sections[i];
+      for (const exercise of section.exercises || []) {
+        if (exercise.workoutExerciseId === workoutExerciseId) {
+          return i;
+        }
+      }
+    }
+    return -1;
+  }
+
+  // Navigate to and highlight the rest-done exercise (called from toast View button)
+  function viewRestDoneExercise() {
+    if (!activeRestDone) return;
+    const { workoutExerciseId } = activeRestDone;
+
+    // Find which section contains this exercise
+    const sectionIdx = findSectionIndexByExerciseId(workoutExerciseId);
+    if (sectionIdx < 0) return;
+
+    // Switch to that section if not already there
+    if (currentSectionIndex !== sectionIdx) {
+      currentSectionIndex = sectionIdx;
+    }
+
+    // Expand the exercise accordion (for full tracking mode)
+    expandedExercise[sectionIdx] = workoutExerciseId;
+    expandedExercise = { ...expandedExercise };
+
+    // Scroll to the exercise after DOM updates
+    setTimeout(() => {
+      const el = document.querySelector(`[data-exercise-id="${workoutExerciseId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 100);
+  }
 
   // Format seconds as M:SS
   function formatRestTime(seconds) {
@@ -890,6 +975,9 @@
 
   // Start or resume the rest timer
   function startRestTimer(workoutExerciseId, restSeconds) {
+    // Prime audio on user gesture
+    primeRestTimerAudio();
+
     // Initialize if needed
     if (!restTimerState[workoutExerciseId]) {
       restTimerState[workoutExerciseId] = {
@@ -897,6 +985,10 @@
         running: false,
         finished: false
       };
+      // Reset all beep state flags for fresh start
+      restBeepFired[workoutExerciseId] = false;
+      restBeepSuppressed[workoutExerciseId] = false;
+      restBeepPausedByTimer[workoutExerciseId] = false;
     }
 
     const state = restTimerState[workoutExerciseId];
@@ -905,6 +997,14 @@
     if (state.finished) {
       state.remaining = restSeconds;
       state.finished = false;
+      // Reset all beep state flags for new cycle
+      restBeepFired[workoutExerciseId] = false;
+      restBeepSuppressed[workoutExerciseId] = false;
+      restBeepPausedByTimer[workoutExerciseId] = false;
+    } else if (restBeepFired[workoutExerciseId] && restBeepPausedByTimer[workoutExerciseId] && isRestSfxEnabled()) {
+      // Resuming from pause - resume audio if beep was paused by timer pause
+      resumeRestTimerAudio();
+      restBeepPausedByTimer[workoutExerciseId] = false;
     }
 
     state.running = true;
@@ -926,12 +1026,36 @@
       if (timerState.remaining > 0) {
         timerState.remaining--;
         restTimerState = { ...restTimerState };
+
+        // One-shot beep at T-3s (plays once per rest cycle)
+        if (timerState.remaining <= 3 && !restBeepFired[workoutExerciseId] && !restBeepSuppressed[workoutExerciseId]) {
+          if (isRestSfxEnabled()) {
+            // Sound enabled - play beeps
+            restBeepFired[workoutExerciseId] = true;
+            playRestTimerAudio();
+          } else {
+            // Muted at threshold - suppress for this cycle (no late retroactive start)
+            restBeepSuppressed[workoutExerciseId] = true;
+          }
+        }
       } else {
         // Timer finished
-        timerState.running = false;
-        timerState.finished = true;
-        restTimerState = { ...restTimerState };
         clearInterval(restTimerIntervals[workoutExerciseId]);
+        timerState.running = false;
+
+        // Single-expiry gate: only show REST DONE if no other rest toast is active
+        if (activeRestDone === null) {
+          timerState.finished = true;
+          const exercise = findExerciseById(workoutExerciseId);
+          activeRestDone = {
+            workoutExerciseId,
+            exerciseName: exercise?.name || 'Exercise',
+            restSeconds: exercise?.restSeconds || 0
+          };
+        }
+        // If activeRestDone is already set, this timer just stops without REST DONE state
+
+        restTimerState = { ...restTimerState };
       }
     }, 1000);
   }
@@ -946,6 +1070,11 @@
     if (restTimerIntervals[workoutExerciseId]) {
       clearInterval(restTimerIntervals[workoutExerciseId]);
     }
+    // Pause any playing rest SFX and track that it was paused by timer
+    if (restBeepFired[workoutExerciseId]) {
+      pauseRestTimerAudio();
+      restBeepPausedByTimer[workoutExerciseId] = true;
+    }
   }
 
   // Reset the rest timer to full duration
@@ -959,6 +1088,24 @@
       finished: false
     };
     restTimerState = { ...restTimerState };
+    // Stop and rewind any playing rest SFX
+    stopRestTimerAudio();
+    // Reset all beep state flags for next cycle
+    restBeepFired[workoutExerciseId] = false;
+    restBeepSuppressed[workoutExerciseId] = false;
+    restBeepPausedByTimer[workoutExerciseId] = false;
+    // Clear global toast if this exercise was the active rest-done
+    if (activeRestDone?.workoutExerciseId === workoutExerciseId) {
+      activeRestDone = null;
+    }
+  }
+
+  // Acknowledge rest-done toast (called from global toast button)
+  function acknowledgeRestDone() {
+    if (!activeRestDone) return;
+    const { workoutExerciseId, restSeconds } = activeRestDone;
+    // Reset the timer to idle (this also clears activeRestDone via resetRestTimer)
+    resetRestTimer(workoutExerciseId, restSeconds);
   }
 
   // Handle tap on rest timer pill
@@ -972,8 +1119,8 @@
       // Running - pause
       pauseRestTimer(workoutExerciseId);
     } else if (state.finished) {
-      // Finished - restart
-      startRestTimer(workoutExerciseId, restSeconds);
+      // Finished (REST DONE) - acknowledge by resetting to idle (no auto-restart)
+      resetRestTimer(workoutExerciseId, restSeconds);
     } else {
       // Paused - resume
       startRestTimer(workoutExerciseId, restSeconds);
@@ -1010,8 +1157,8 @@
       // Idle state
       return { mode: 'idle', text: `Rest ${formatRestTime(restSeconds)}` };
     } else if (state.finished) {
-      // Finished state
-      return { mode: 'finished', text: 'Done ✓' };
+      // Finished state - persistent until acknowledged
+      return { mode: 'finished', text: 'REST DONE' };
     } else if (state.running) {
       // Running state
       return { mode: 'running', text: formatRestTime(state.remaining) };
@@ -1983,6 +2130,7 @@
         {@const singleMetric = getSingleMetricLabel(exercise)}
         {@const libraryEx = exercises.find(e => e.id === exercise.exerciseId)}
         <div
+          data-exercise-id={exercise.workoutExerciseId}
           style="border: 2px solid {isComplete ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; padding: 15px; margin-bottom: 10px; border-radius: 8px; background: {isComplete ? '#f1f8e9' : showIncompleteHint ? '#fffde7' : 'white'}; cursor: pointer; transition: all 0.2s;"
           onclick={() => toggleExerciseComplete(exercise.workoutExerciseId)}
         >
@@ -2047,8 +2195,10 @@
         {@const inputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && r.clientInput)}
         {@const isExpanded = expandedExercise[currentSectionIndex] === exercise.workoutExerciseId}
         {@const libraryEx = exercises.find(e => e.id === exercise.exerciseId)}
-        <div style="border: 2px solid {isCompleted ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; margin-bottom: 10px; border-radius: 8px; background: {isCompleted ? '#e8f5e9' : showIncompleteHint ? '#fffde7' : 'white'}; transition: all 0.3s; overflow: hidden;">
-
+        <div
+          data-exercise-id={exercise.workoutExerciseId}
+          style="border: 2px solid {isCompleted ? '#4CAF50' : showIncompleteHint ? '#FFC107' : '#ddd'}; margin-bottom: 10px; border-radius: 8px; background: {isCompleted ? '#e8f5e9' : showIncompleteHint ? '#fffde7' : 'white'}; transition: all 0.3s; overflow: hidden;"
+        >
           {#if isExpanded}
             <!-- Expanded state: full-width banner replaces collapsed header -->
             <!-- Tapping banner opens history modal; chevron excluded via stopPropagation -->
@@ -2283,7 +2433,7 @@
                               role="group"
                               aria-label="Rest timer"
                             >
-                              <!-- Main timer area (start/pause/resume/restart) -->
+                              <!-- Main timer area (idle:start, running:pause, paused:resume, done:acknowledge) -->
                               <button
                                 class="rest-timer-main"
                                 onclick={() => handleRestTimerTap(exercise.workoutExerciseId, exercise.restSeconds)}
@@ -2292,13 +2442,18 @@
                                 onpointerleave={() => handleRestTimerPointerLeave(exercise.workoutExerciseId)}
                                 oncontextmenu={(e) => e.preventDefault()}
                               >
+                                {#if timerDisplay.mode === 'finished'}
+                                  <svg class="rest-done-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="20 6 9 17 4 12"></polyline>
+                                  </svg>
+                                {/if}
                                 {timerDisplay.text}
                               </button>
                               <!-- Reset icon (only visible when not idle) -->
                               {#if timerDisplay.mode !== 'idle'}
                                 <button
                                   class="rest-timer-reset"
-                                  onclick={() => resetRestTimer(exercise.workoutExerciseId, exercise.restSeconds)}
+                                  onclick={(e) => { e.stopPropagation(); resetRestTimer(exercise.workoutExerciseId, exercise.restSeconds); }}
                                   aria-label="Reset timer"
                                   title="Reset timer"
                                 >
@@ -2306,6 +2461,27 @@
                                 </button>
                               {/if}
                             </div>
+                            <!-- Sound toggle -->
+                            <button
+                              class="rest-timer-sound-toggle"
+                              onclick={toggleRestSfx}
+                              aria-label={restSfxEnabled ? 'Rest timer sound on' : 'Rest timer sound off'}
+                              title={restSfxEnabled ? 'Sound on' : 'Sound off'}
+                            >
+                              {#if restSfxEnabled}
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                                  <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                                </svg>
+                              {:else}
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                  <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                                  <line x1="22" y1="9" x2="16" y2="15"></line>
+                                  <line x1="16" y1="9" x2="22" y2="15"></line>
+                                </svg>
+                              {/if}
+                            </button>
                           </div>
                         {/if}
 
@@ -2726,6 +2902,24 @@
   </div>
 {/if}
 
+<!-- Rest Done Global Toast -->
+{#if activeRestDone}
+  <div class="rest-done-toast" role="alert" aria-live="assertive">
+    <div class="rest-done-toast-content">
+      <svg class="rest-done-toast-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </svg>
+      <span class="rest-done-toast-text">Rest complete — {activeRestDone.exerciseName}</span>
+      <button class="rest-done-toast-btn rest-done-toast-btn-view" onclick={viewRestDoneExercise}>
+        View
+      </button>
+      <button class="rest-done-toast-btn" onclick={acknowledgeRestDone}>
+        Acknowledge
+      </button>
+    </div>
+  </div>
+{/if}
+
 <!-- Video Modal -->
 {#if videoModalExercise}
   {@const ytId = getYouTubeId(videoModalExercise.videoUrl)}
@@ -2885,17 +3079,154 @@
   }
 
   .rest-timer-finished {
-    background: #e8f5e9;
-    border-color: #66bb6a;
+    background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+    border-color: #4caf50;
+    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.25);
   }
 
   .rest-timer-finished .rest-timer-main {
     color: #2e7d32;
-    font-weight: 600;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .rest-timer-finished .rest-done-check {
+    color: #2e7d32;
+    flex-shrink: 0;
   }
 
   .rest-timer-finished .rest-timer-reset {
-    border-left-color: #a5d6a7;
+    border-left-color: #81c784;
+  }
+
+  /* Rest Done Global Toast */
+  .rest-done-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1500;
+    max-width: calc(100vw - 32px);
+  }
+
+  .rest-done-toast-content {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+    border: 1px solid #4caf50;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(76, 175, 80, 0.3);
+  }
+
+  .rest-done-toast-icon {
+    color: #2e7d32;
+    flex-shrink: 0;
+  }
+
+  .rest-done-toast-text {
+    color: #1b5e20;
+    font-weight: 600;
+    font-size: 0.95em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .rest-done-toast-btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    background: #4caf50;
+    color: white;
+    font-weight: 600;
+    font-size: 0.9em;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s ease;
+  }
+
+  .rest-done-toast-btn:hover {
+    background: #43a047;
+  }
+
+  .rest-done-toast-btn:active {
+    background: #388e3c;
+  }
+
+  .rest-done-toast-btn-view {
+    background: transparent;
+    color: #2e7d32;
+    border: 1px solid #4caf50;
+  }
+
+  .rest-done-toast-btn-view:hover {
+    background: rgba(76, 175, 80, 0.1);
+  }
+
+  .rest-done-toast-btn-view:active {
+    background: rgba(76, 175, 80, 0.2);
+  }
+
+  @media (max-width: 480px) {
+    .rest-done-toast {
+      bottom: 16px;
+      left: 16px;
+      right: 16px;
+      transform: none;
+      max-width: none;
+    }
+
+    .rest-done-toast-content {
+      padding: 12px 16px;
+      gap: 10px;
+    }
+
+    .rest-done-toast-text {
+      font-size: 0.9em;
+      flex: 1;
+      min-width: 0;
+    }
+
+    .rest-done-toast-btn {
+      padding: 8px 14px;
+      font-size: 0.85em;
+    }
+  }
+
+  /* Sound toggle button */
+  .rest-timer-sound-toggle {
+    width: 28px;
+    height: 28px;
+    margin-left: 6px;
+    padding: 0;
+    border: 1px solid #e0e0e0;
+    background: #fafafa;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #666;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .rest-timer-sound-toggle:hover {
+    background: #f0f0f0;
+    border-color: #ccc;
+    color: #333;
+  }
+
+  .rest-timer-sound-toggle:active {
+    background: #e8e8e8;
+  }
+
+  .rest-timer-sound-toggle svg {
+    display: block;
   }
 
   /* Desktop responsive sizing */
@@ -2913,6 +3244,17 @@
       padding: 12px 16px;
       font-size: 1.2em;
       min-width: 44px;
+    }
+
+    .rest-timer-sound-toggle {
+      width: 32px;
+      height: 32px;
+      margin-left: 8px;
+    }
+
+    .rest-timer-sound-toggle svg {
+      width: 18px;
+      height: 18px;
     }
   }
 

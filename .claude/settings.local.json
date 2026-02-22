@@ -10,7 +10,8 @@
       "Bash(findstr:*)",
       "Bash(git diff:*)",
       "Bash(where:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(ls:*)"
     ]
   }
 }

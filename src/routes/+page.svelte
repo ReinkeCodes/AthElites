@@ -639,9 +639,9 @@
     <strong>History & PRs</strong>
   </a>
 
-  <!-- Profile -->
-  <a href="/profile" class="action-btn" style="display: block; padding: 15px; background: #f5f5f5; border-radius: 8px; text-align: center; text-decoration: none; color: #333; margin-bottom: 20px;">
-    <strong>Profile</strong>
+  <!-- Settings -->
+  <a href="/settings" class="action-btn" style="display: block; padding: 15px; background: #f5f5f5; border-radius: 8px; text-align: center; text-decoration: none; color: #333; margin-bottom: 20px;">
+    <strong>Settings</strong>
   </a>
 
   <!-- Recent Workouts -->
