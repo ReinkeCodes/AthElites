@@ -38,6 +38,9 @@
   // Notes modal state
   let notesModal = $state({ open: false, workoutExerciseId: null, setIndex: null, exerciseName: '' });
 
+  // RIR tooltip state
+  let rirTooltipOpen = $state(false);
+
   // History modal state
   let historyModal = $state({ open: false, exerciseId: null, exerciseName: '' });
 
@@ -759,6 +762,7 @@
             if (!set.weight && !set.reps) {
               set.reps = 'DNC';
               set.weight = 'DNC';
+              set.rir = 'DNC';
               set.notes = 'Did not complete';
             }
           });
@@ -2359,96 +2363,125 @@
                       <!-- Vertical stacked inputs -->
                       <div style="display: flex; flex-direction: column; gap: 12px;">
                         <!-- Reps row -->
-                        <!-- Reps row -->
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
+                          <span style="font-weight: 500; color: #333;">{repsHeader}</span>
                           <div style="display: flex; align-items: center; gap: 8px;">
-                            <span style="font-weight: 500; color: #333;">{repsHeader}</span>
                             <button
                               class="na-btn {isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'na-btn-active' : ''}"
                               onclick={() => toggleNa(exercise.workoutExerciseId, setIndex, 'reps')}
                               aria-label="Mark reps as N/A"
                             >N/A</button>
-                          </div>
-                          <div class="stepper-row">
-                            <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)}>-</button>
-                            <input
-                              type="text"
-                              class="stepper-input"
-                              value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
-                              oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
-                              onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
-                              placeholder={getPlaceholder(exercise.workoutExerciseId, 'reps', '0')}
-                            />
-                            <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', 1)}>+</button>
+                            <div class="stepper-row">
+                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)}>-</button>
+                              <input
+                                type="text"
+                                class="stepper-input"
+                                value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
+                                oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
+                                onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
+                                placeholder={getPlaceholder(exercise.workoutExerciseId, 'reps', '0')}
+                              />
+                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', 1)}>+</button>
+                            </div>
                           </div>
                         </div>
 
                         <!-- Weight/Time row -->
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
+                          <span style="font-weight: 500; color: #333;">{weightHeader}</span>
                           <div style="display: flex; align-items: center; gap: 8px;">
-                            <span style="font-weight: 500; color: #333;">{weightHeader}</span>
                             <button
                               class="na-btn {isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'na-btn-active' : ''}"
                               onclick={() => toggleNa(exercise.workoutExerciseId, setIndex, 'weight')}
                               aria-label="Mark {weightHeader.toLowerCase()} as N/A"
                             >N/A</button>
-                          </div>
-                          <div class="stepper-row">
-                            {#if exercise.weightMetric === 'time'}
-                              <!-- Time metric: show input + stopwatch button -->
-                              <input
-                                type="text"
-                                class="stepper-input stepper-input-time"
-                                value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
-                                oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
-                                onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
-                                placeholder={getPlaceholder(exercise.workoutExerciseId, 'weight', '0:00')}
-                              />
-                              <button
-                                class="stopwatch-trigger"
-                                onclick={() => openFocusMode(exercise.workoutExerciseId, setIndex, exercise)}
-                                aria-label="Open stopwatch"
-                                title="Open stopwatch"
-                              >
-                                ⏱
-                              </button>
-                            {:else}
-                              <!-- Weight metric: show +/- steppers -->
-                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)}>-</button>
-                              <input
-                                type="text"
-                                class="stepper-input"
-                                value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
-                                oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
-                                onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
-                                placeholder={getPlaceholder(exercise.workoutExerciseId, 'weight', '0')}
-                              />
-                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)}>+</button>
-                            {/if}
+                            <div class="stepper-row">
+                              {#if exercise.weightMetric === 'time'}
+                                <!-- Time metric: show input + stopwatch button -->
+                                <input
+                                  type="text"
+                                  class="stepper-input stepper-input-time"
+                                  value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
+                                  oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
+                                  onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
+                                  placeholder={getPlaceholder(exercise.workoutExerciseId, 'weight', '0:00')}
+                                />
+                                <button
+                                  class="stopwatch-trigger"
+                                  onclick={() => openFocusMode(exercise.workoutExerciseId, setIndex, exercise)}
+                                  aria-label="Open stopwatch"
+                                  title="Open stopwatch"
+                                >
+                                  ⏱
+                                </button>
+                              {:else}
+                                <!-- Weight metric: show +/- steppers -->
+                                <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)}>-</button>
+                                <input
+                                  type="text"
+                                  class="stepper-input"
+                                  value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
+                                  oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
+                                  onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
+                                  placeholder={getPlaceholder(exercise.workoutExerciseId, 'weight', '0')}
+                                />
+                                <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)}>+</button>
+                              {/if}
+                            </div>
                           </div>
                         </div>
 
                         <!-- RIR row -->
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
+                          <div style="display: flex; flex-direction: column;">
+                            <div style="display: flex; align-items: center; gap: 4px; position: relative;">
+                              <span style="font-weight: 500; color: #333;">RIR</span>
+                              <button
+                                class="rir-info-btn"
+                                onclick={(e) => { e.stopPropagation(); rirTooltipOpen = !rirTooltipOpen; }}
+                                aria-label="What is RIR?"
+                                aria-expanded={rirTooltipOpen}
+                              >
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                  <circle cx="12" cy="12" r="10"></circle>
+                                  <line x1="12" y1="16" x2="12" y2="12"></line>
+                                  <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                                </svg>
+                              </button>
+                              {#if rirTooltipOpen}
+                                <div class="rir-tooltip-backdrop" onclick={() => rirTooltipOpen = false}></div>
+                                <div class="rir-tooltip" onclick={(e) => e.stopPropagation()}>
+                                  <div class="rir-tooltip-content">
+                                    <div>RIR measures what is left "in the tank"</div>
+                                    <div style="margin-top: 6px;">
+                                      0 = failure<br/>
+                                      2 = ~2 more reps
+                                    </div>
+                                  </div>
+                                  <button class="rir-tooltip-close" onclick={() => rirTooltipOpen = false} aria-label="Close tooltip">×</button>
+                                </div>
+                              {/if}
+                            </div>
+                            <span style="font-size: 0.6em; color: #888; margin-top: 1px; line-height: 1.1; text-align: center; display: block;">Reps in<br/>Reserve</span>
+                          </div>
                           <div style="display: flex; align-items: center; gap: 8px;">
-                            <span style="font-weight: 500; color: #333;">RIR</span>
                             <button
                               class="na-btn {isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'na-btn-active' : ''}"
                               onclick={() => toggleNa(exercise.workoutExerciseId, setIndex, 'rir')}
                               aria-label="Mark RIR as N/A"
                             >N/A</button>
-                          </div>
-                          <div class="stepper-row">
-                            <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', -1)}>-</button>
-                            <input
-                              type="text"
-                              class="stepper-input"
-                              value={isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'N/A' : set.rir}
-                              oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'rir', e.target.value)}
-                              onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'rir')}
-                              placeholder={getPlaceholder(exercise.workoutExerciseId, 'rir', '0')}
-                            />
-                            <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', 1)}>+</button>
+                            <div class="stepper-row">
+                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', -1)}>-</button>
+                              <input
+                                type="text"
+                                class="stepper-input"
+                                value={isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'N/A' : set.rir}
+                                oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'rir', e.target.value)}
+                                onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'rir')}
+                                placeholder={getPlaceholder(exercise.workoutExerciseId, 'rir', '0')}
+                              />
+                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', 1)}>+</button>
+                            </div>
                           </div>
                         </div>
 
@@ -3028,6 +3061,83 @@
   }
   :global(.exercise-banner:active) {
     filter: brightness(0.95);
+  }
+
+  /* RIR Info Button & Tooltip */
+  .rir-info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: #e0e0e0;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    color: #666;
+    transition: background 0.15s, color 0.15s;
+  }
+  .rir-info-btn:hover {
+    background: #d0d0d0;
+    color: #333;
+  }
+  .rir-info-btn:active {
+    background: #c0c0c0;
+  }
+
+  .rir-tooltip {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 6px;
+    background: #333;
+    color: white;
+    padding: 10px 28px 10px 12px;
+    border-radius: 8px;
+    font-size: 0.8em;
+    line-height: 1.4;
+    max-width: calc(100vw - 40px);
+    overflow-x: auto;
+    z-index: 100;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+  .rir-tooltip::before {
+    content: '';
+    position: absolute;
+    top: -6px;
+    left: 16px;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-bottom: 6px solid #333;
+  }
+  .rir-tooltip-content {
+    font-weight: 400;
+    white-space: nowrap;
+  }
+  .rir-tooltip-close {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    background: none;
+    border: none;
+    color: #aaa;
+    font-size: 1.2em;
+    cursor: pointer;
+    padding: 2px 6px;
+    line-height: 1;
+  }
+  .rir-tooltip-close:hover {
+    color: white;
+  }
+
+  .rir-tooltip-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 99;
   }
 
   /* Rest Timer Styles */
@@ -3628,6 +3738,8 @@
     display: flex;
     align-items: center;
     gap: 12px;
+    padding: 2px 6px;
+    border-radius: 6px;
   }
 
   .stepper-btn {
