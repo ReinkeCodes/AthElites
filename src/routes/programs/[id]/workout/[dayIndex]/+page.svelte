@@ -7,6 +7,7 @@
   import { goto } from '$app/navigation';
   import { setDraft, getDraftKey as getDraftKeyHelper } from '$lib/workoutDraft.js';
   import { primeGoalTimerAudio, playGoalTimerAudio, primeRestTimerAudio, playRestTimerAudio, pauseRestTimerAudio, resumeRestTimerAudio, stopRestTimerAudio, isRestSfxEnabled } from '$lib/utils/timerFeedback.js';
+  import timerIcon from '$lib/assets/timer-icon-7797.png';
 
   let program = $state(null);
   let day = $state(null);
@@ -2375,7 +2376,7 @@
                               <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)}>-</button>
                               <input
                                 type="text"
-                                class="stepper-input"
+                                class="stepper-input {set.reps || isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'stepper-input-filled' : ''}"
                                 value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
                                 oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
                                 onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
@@ -2397,10 +2398,11 @@
                             >N/A</button>
                             <div class="stepper-row">
                               {#if exercise.weightMetric === 'time'}
-                                <!-- Time metric: show input + stopwatch button -->
+                                <!-- Time metric: spacer + input + stopwatch button -->
+                                <span class="stepper-spacer"></span>
                                 <input
                                   type="text"
-                                  class="stepper-input stepper-input-time"
+                                  class="stepper-input stepper-input-time {set.weight || isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'stepper-input-filled' : ''}"
                                   value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
                                   oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
                                   onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
@@ -2412,14 +2414,14 @@
                                   aria-label="Open stopwatch"
                                   title="Open stopwatch"
                                 >
-                                  ⏱
+                                  <img src={timerIcon} alt="" class="stopwatch-icon" />
                                 </button>
                               {:else}
                                 <!-- Weight metric: show +/- steppers -->
                                 <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)}>-</button>
                                 <input
                                   type="text"
-                                  class="stepper-input"
+                                  class="stepper-input {set.weight || isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'stepper-input-filled' : ''}"
                                   value={isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'N/A' : set.weight}
                                   oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'weight', e.target.value)}
                                   onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
@@ -2474,7 +2476,7 @@
                               <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'rir', -1)}>-</button>
                               <input
                                 type="text"
-                                class="stepper-input"
+                                class="stepper-input {set.rir || isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'stepper-input-filled' : ''}"
                                 value={isNa(exercise.workoutExerciseId, setIndex, 'rir') ? 'N/A' : set.rir}
                                 oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'rir', e.target.value)}
                                 onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'rir')}
@@ -3426,24 +3428,29 @@
   .stopwatch-trigger {
     width: 44px;
     height: 44px;
-    border: 1px solid #e0e0e0;
-    background: #fafafa;
-    border-radius: 8px;
+    min-width: 44px;
+    min-height: 44px;
+    border: none;
+    background: transparent;
     cursor: pointer;
-    font-size: 1.3em;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s ease;
+    transition: opacity 0.15s ease;
   }
 
   .stopwatch-trigger:hover {
-    background: #f0f0f0;
-    border-color: #667eea;
+    opacity: 0.7;
   }
 
   .stopwatch-trigger:active {
-    background: #e8e8e8;
+    opacity: 0.5;
+  }
+
+  .stopwatch-icon {
+    width: 24px;
+    height: 24px;
+    object-fit: contain;
   }
 
   /* Focus Mode Overlay */
@@ -3752,6 +3759,12 @@
     cursor: pointer;
   }
 
+  .stepper-spacer {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+  }
+
   .stepper-input {
     width: 60px;
     padding: 8px 0;
@@ -3765,6 +3778,16 @@
     appearance: none;
     border-radius: 0;
     text-decoration: none;
+    /* Empty state typography */
+    font-style: italic;
+    font-weight: 300;
+    color: #999;
+  }
+
+  .stepper-input-filled {
+    font-style: normal;
+    font-weight: 600;
+    color: #222;
   }
 
   .stepper-input-time {
@@ -3781,6 +3804,23 @@
       width: 40px;
       height: 40px;
       font-size: 1.4em;
+    }
+
+    .stepper-spacer {
+      width: 40px;
+      height: 40px;
+    }
+
+    .stopwatch-trigger {
+      width: 40px;
+      height: 40px;
+      min-width: 40px;
+      min-height: 40px;
+    }
+
+    .stopwatch-icon {
+      width: 20px;
+      height: 20px;
     }
 
     .stepper-input {
