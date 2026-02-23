@@ -14,6 +14,7 @@
   let allLogs = $state([]);
   let loading = $state(true);
   let activeTab = $state('workouts'); // 'workouts' or 'prs'
+  let prSortMode = $state('alpha'); // 'alpha' | 'alpha_desc' | 'strongest' | 'recent'
 
   // Derived target user for queries (admin can view other users)
   function getTargetUserId() {
@@ -106,6 +107,12 @@
   }
 
   onMount(() => {
+    // Load PR sort mode from localStorage
+    const storedSortMode = localStorage.getItem('ae:prSortMode');
+    if (storedSortMode && ['alpha', 'alpha_desc', 'strongest', 'recent'].includes(storedSortMode)) {
+      prSortMode = storedSortMode;
+    }
+
     onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUserId = user.uid;
@@ -307,7 +314,7 @@
       }
     });
 
-    // For each group, sort bands and compute hero
+    // For each group, sort bands and compute hero + mostRecentAt
     const bandOrder = { '1-5': 1, '6-8': 2, '9-12': 3, '13+': 4 };
 
     return Object.values(groups).map(group => {
@@ -316,7 +323,15 @@
 
       // Compute hero: highest weight, then highest reps, then most recent
       let hero = group.bands[0];
+      let mostRecentAt = null;
+
       for (const band of group.bands) {
+        // Track most recent timestamp across all bands
+        const bandDate = band.date?.toDate ? band.date.toDate() : (band.date ? new Date(band.date) : null);
+        if (bandDate && (!mostRecentAt || bandDate > mostRecentAt)) {
+          mostRecentAt = bandDate;
+        }
+
         if (band.weight > hero.weight) {
           hero = band;
         } else if (band.weight === hero.weight) {
@@ -325,8 +340,7 @@
           } else if (band.reps === hero.reps) {
             // Tie-breaker: most recent
             const heroDate = hero.date?.toDate ? hero.date.toDate() : new Date(hero.date || 0);
-            const bandDate = band.date?.toDate ? band.date.toDate() : new Date(band.date || 0);
-            if (bandDate > heroDate) {
+            if (bandDate && bandDate > heroDate) {
               hero = band;
             }
           }
@@ -334,8 +348,65 @@
       }
 
       group.hero = hero;
+      group.mostRecentAt = mostRecentAt;
       return group;
-    }).sort((a, b) => a.exerciseName.localeCompare(b.exerciseName));
+    });
+  }
+
+  // Get sorted grouped PRs based on current sort mode
+  function getSortedGroupedPRs() {
+    const groups = getGroupedPRs();
+
+    switch (prSortMode) {
+      case 'strongest':
+        // Sort by hero weight descending, tie-break by hero reps, then alphabetical
+        return groups.slice().sort((a, b) => {
+          const weightA = a.hero?.weight ?? 0;
+          const weightB = b.hero?.weight ?? 0;
+          if (weightB !== weightA) return weightB - weightA;
+
+          const repsA = a.hero?.reps ?? 0;
+          const repsB = b.hero?.reps ?? 0;
+          if (repsB !== repsA) return repsB - repsA;
+
+          return a.exerciseName.localeCompare(b.exerciseName);
+        });
+
+      case 'recent':
+        // Sort by most recent PR timestamp descending, exercises without timestamp go to bottom
+        return groups.slice().sort((a, b) => {
+          const dateA = a.mostRecentAt;
+          const dateB = b.mostRecentAt;
+
+          // Push items without dates to bottom
+          if (!dateA && !dateB) return a.exerciseName.localeCompare(b.exerciseName);
+          if (!dateA) return 1;
+          if (!dateB) return -1;
+
+          if (dateB.getTime() !== dateA.getTime()) return dateB.getTime() - dateA.getTime();
+          return a.exerciseName.localeCompare(b.exerciseName);
+        });
+
+      case 'alpha_desc':
+        // Sort alphabetically descending by exercise name (case-insensitive)
+        return groups.slice().sort((a, b) =>
+          b.exerciseName.toLowerCase().localeCompare(a.exerciseName.toLowerCase())
+        );
+
+      case 'alpha':
+      default:
+        // Sort alphabetically by exercise name (case-insensitive)
+        return groups.slice().sort((a, b) =>
+          a.exerciseName.toLowerCase().localeCompare(b.exerciseName.toLowerCase())
+        );
+    }
+  }
+
+  // Handle PR sort mode change
+  function handlePrSortChange(e) {
+    const mode = e.target.value;
+    prSortMode = mode;
+    localStorage.setItem('ae:prSortMode', mode);
   }
 
   // Get rep band for a given rep count
@@ -1171,7 +1242,23 @@
         </div>
       </div>
 
-      {@const groupedPRs = getGroupedPRs()}
+      <!-- Sort control -->
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+        <label for="pr-sort" style="font-size: 0.85em; color: #666;">Sort:</label>
+        <select
+          id="pr-sort"
+          value={prSortMode}
+          onchange={handlePrSortChange}
+          style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9em; background: white;"
+        >
+          <option value="alpha">Alphabetical (A–Z)</option>
+          <option value="alpha_desc">Alphabetical (Z–A)</option>
+          <option value="strongest">Strongest</option>
+          <option value="recent">Most Recent PR</option>
+        </select>
+      </div>
+
+      {@const groupedPRs = getSortedGroupedPRs()}
       <p style="color: #888; margin-bottom: 15px;">{groupedPRs.length} exercise{groupedPRs.length !== 1 ? 's' : ''} with PRs</p>
 
       {#each groupedPRs as group}
