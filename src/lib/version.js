@@ -4,13 +4,14 @@
  */
 
 // App version (semantic versioning)
-export const APP_VERSION = '0.11.1';
+export const APP_VERSION = '0.12.0';
 
 // Feature versions - track when specific features were last updated
 // Increment when making significant changes to a feature
 export const FEATURE_VERSIONS = {
   appVersioning: 1,
   exerciseHistoryModalFormat: 2,
+  exercisePickerModal: 1,
   focusModeTimer: 1,
   prCelebration: 1,
   prPageConsolidation: 2,

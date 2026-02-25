@@ -52,7 +52,7 @@
   let exerciseTypeFilter = $state('');
   let selectedExerciseId = $state('');
   let isPickerOpen = $state(false);
-  let pickerContainerRef = $state(null);
+  let searchInputRef = $state(null);
   let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' });
 
   // Video modal
@@ -105,46 +105,22 @@
   function checkAccessAndRedirect() {
     const programId = $page.params.id;
 
-    // DEBUG logging (REMOVE AFTER FIX)
-    console.log('[DEBUG] checkAccessAndRedirect called:', {
-      userRole,
-      currentUserId,
-      programId,
-      programExists: !!program,
-      createdByRole: program?.createdByRole,
-      createdByUserId: program?.createdByUserId,
-      assignedTo: program?.assignedTo,
-      assignedToType: typeof program?.assignedTo,
-      accessChecked
-    });
-
     // Wait for both userRole and program to be loaded
-    if (!userRole || !program || !currentUserId) {
-      console.log('[DEBUG] Waiting for data - userRole:', userRole, 'program:', !!program, 'currentUserId:', currentUserId);
-      return;
-    }
+    if (!userRole || !program || !currentUserId) return;
 
     // Only check once
     if (accessChecked) return;
     accessChecked = true;
 
     // Admin/Coach can access any program (except client-created, but UI filters that)
-    if (userRole === 'admin' || userRole === 'coach') {
-      console.log('[DEBUG] Admin/Coach access granted');
-      return;
-    }
+    if (userRole === 'admin' || userRole === 'coach') return;
 
     // Client access check
     const isOwner = program.createdByRole === 'client' && program.createdByUserId === currentUserId;
     const isAssigned = Array.isArray(program.assignedTo) && program.assignedTo.includes(currentUserId);
 
-    console.log('[DEBUG] Client access check:', { isOwner, isAssigned });
-
     if (!isOwner && !isAssigned) {
-      console.log('[DEBUG] Redirecting - client does not own and is not assigned');
       goto(`/programs/${programId}/days`);
-    } else {
-      console.log('[DEBUG] Client access granted - isOwner:', isOwner, 'isAssigned:', isAssigned);
     }
   }
 
@@ -232,16 +208,21 @@
     }
   });
 
-  // Outside click detection for exercise picker
+  // Exercise picker: ESC key handling + autofocus
   $effect(() => {
-    if (!isPickerOpen || !pickerContainerRef) return;
-    function handleOutsideClick(e) {
-      if (pickerContainerRef && !pickerContainerRef.contains(e.target)) {
+    if (!isPickerOpen) return;
+    // Autofocus search input when picker opens
+    if (searchInputRef) {
+      setTimeout(() => searchInputRef?.focus(), 50);
+    }
+    // ESC key to close
+    function handleEsc(e) {
+      if (e.key === 'Escape') {
         isPickerOpen = false;
       }
     }
-    document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('keydown', handleEsc);
+    return () => document.removeEventListener('keydown', handleEsc);
   });
 
   async function toggleAssignment(clientId) {
@@ -1231,47 +1212,18 @@
                 <!-- Add Exercise to Section -->
                 {#if addingExerciseToSection === `${dayIndex}-${sectionIndex}`}
                   <div style="margin-top: 10px; padding: 10px; background: #e8f5e9; border-radius: 5px;">
-                    <div style="margin-bottom: 8px; position: relative;" bind:this={pickerContainerRef}>
-                      <input
-                        type="text"
-                        bind:value={exerciseSearchQuery}
-                        placeholder="Select exercise…"
-                        onfocus={() => isPickerOpen = true}
-                        onkeydown={(e) => e.key === 'Escape' && (isPickerOpen = false)}
-                        style="padding: 6px 8px; width: 100%; box-sizing: border-box; border: 1px solid #ccc; border-radius: {isPickerOpen ? '4px 4px 0 0' : '4px'}; font-size: 0.9em;"
-                      />
-                      {#if isPickerOpen}
-                        <div style="border: 1px solid #ccc; border-top: none; border-radius: 0 0 4px 4px; background: white; position: absolute; left: 0; right: 0; z-index: 10;">
-                          <div style="padding: 4px 6px; border-bottom: 1px solid #e0e0e0; background: #fafafa;">
-                            <select bind:value={exerciseTypeFilter} style="width: 100%; padding: 3px 4px; font-size: 0.8em; border: 1px solid #ccc; border-radius: 3px;">
-                              <option value="">All types</option>
-                              {#each getAllTypesUnfiltered() as t}
-                                <option value={t}>{t}</option>
-                              {/each}
-                            </select>
-                          </div>
-                          <div style="max-height: 180px; overflow-y: auto;">
-                          {#each getAllExerciseTypes() as type}
-                            <div style="padding: 4px 8px; background: #f5f5f5; font-weight: 600; font-size: 0.8em; color: #555; position: sticky; top: 0; border-bottom: 1px solid #e0e0e0;">{type}</div>
-                            {#each getExercisesByType(type) as ex}
-                              <div
-                                role="option"
-                                aria-selected={selectedExerciseId === ex.id}
-                                onclick={() => { selectedExerciseId = ex.id; isPickerOpen = false; }}
-                                onkeydown={(e) => e.key === 'Enter' && (selectedExerciseId = ex.id, isPickerOpen = false)}
-                                tabindex="0"
-                                style="padding: 4px 8px 4px 16px; cursor: pointer; font-size: 0.85em; line-height: 1.3; background: {selectedExerciseId === ex.id ? '#e3f2fd' : 'white'}; border-bottom: 1px solid #f0f0f0;"
-                                onmouseenter={(e) => { if (selectedExerciseId !== ex.id) e.currentTarget.style.background = '#f5f5f5'; }}
-                                onmouseleave={(e) => { e.currentTarget.style.background = selectedExerciseId === ex.id ? '#e3f2fd' : 'white'; }}
-                              >{ex.name}</div>
-                            {/each}
-                          {/each}
-                          {#if getAllExerciseTypes().length === 0}
-                            <div style="padding: 8px; text-align: center; color: #999; font-size: 0.85em;">No matches</div>
-                          {/if}
-                          </div>
-                        </div>
-                      {/if}
+                    <div style="margin-bottom: 8px;">
+                      <button
+                        type="button"
+                        onclick={() => isPickerOpen = true}
+                        style="padding: 8px 12px; width: 100%; text-align: left; border: 1px solid #ccc; border-radius: 4px; background: white; cursor: pointer; font-size: 0.9em; color: {selectedExerciseId ? '#333' : '#666'};"
+                      >
+                        {#if selectedExerciseId}
+                          {exercises.find(e => e.id === selectedExerciseId)?.name || 'Select exercise…'}
+                        {:else}
+                          Select exercise…
+                        {/if}
+                      </button>
                     </div>
                     <!-- Selected exercise info with video chip -->
                     {#if selectedExerciseId}
@@ -1562,3 +1514,142 @@
   </div>
 {/if}
 
+<!-- Exercise Picker Modal -->
+{#if isPickerOpen}
+  <div class="picker-backdrop" onclick={() => isPickerOpen = false}>
+    <div class="picker-modal" onclick={(e) => e.stopPropagation()}>
+      <!-- Header -->
+      <div class="picker-header">
+        <h3 style="margin: 0; font-size: 1.1em;">Select Exercise</h3>
+        <button
+          onclick={() => isPickerOpen = false}
+          aria-label="Close"
+          style="background: none; border: none; font-size: 1.5em; cursor: pointer; padding: 4px 8px; line-height: 1;"
+        >&times;</button>
+      </div>
+      <!-- Filter Row -->
+      <div class="picker-filters">
+        <select bind:value={exerciseTypeFilter} style="flex: 0 0 auto; padding: 8px; font-size: 0.9em; border: 1px solid #ccc; border-radius: 4px;">
+          <option value="">All types</option>
+          {#each getAllTypesUnfiltered() as t}
+            <option value={t}>{t}</option>
+          {/each}
+        </select>
+        <input
+          type="text"
+          bind:this={searchInputRef}
+          bind:value={exerciseSearchQuery}
+          placeholder="Search exercises…"
+          style="flex: 1; padding: 8px; font-size: 0.9em; border: 1px solid #ccc; border-radius: 4px;"
+        />
+      </div>
+      <!-- Exercise List -->
+      <div class="picker-list">
+        {#each getAllExerciseTypes() as type}
+          <div style="padding: 8px 12px; background: #f5f5f5; font-weight: 600; font-size: 0.85em; color: #555; position: sticky; top: 0; border-bottom: 1px solid #e0e0e0;">{type}</div>
+          {#each getExercisesByType(type) as ex}
+            <div
+              role="option"
+              aria-selected={selectedExerciseId === ex.id}
+              onclick={() => { selectedExerciseId = ex.id; isPickerOpen = false; }}
+              onkeydown={(e) => e.key === 'Enter' && (selectedExerciseId = ex.id, isPickerOpen = false)}
+              tabindex="0"
+              class="picker-exercise-item"
+              class:selected={selectedExerciseId === ex.id}
+            >{ex.name}</div>
+          {/each}
+        {/each}
+        {#if getAllExerciseTypes().length === 0}
+          <div style="padding: 24px; text-align: center; color: #999; font-size: 0.9em;">No exercises match your search.</div>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<style>
+  /* Exercise Picker Modal */
+  .picker-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 1500;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .picker-modal {
+    background: white;
+    width: 95%;
+    max-width: 1000px;
+    height: 80vh;
+    max-height: 800px;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  }
+
+  .picker-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid #eee;
+    flex-shrink: 0;
+  }
+
+  .picker-filters {
+    display: flex;
+    gap: 12px;
+    padding: 12px 20px;
+    border-bottom: 1px solid #eee;
+    flex-shrink: 0;
+    background: #fafafa;
+  }
+
+  .picker-list {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .picker-exercise-item {
+    padding: 12px 20px;
+    cursor: pointer;
+    font-size: 0.95em;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background-color 0.1s;
+  }
+
+  .picker-exercise-item:hover {
+    background: #f5f5f5;
+  }
+
+  .picker-exercise-item.selected {
+    background: #e3f2fd;
+  }
+
+  /* Mobile: full-screen sheet */
+  @media (max-width: 768px) {
+    .picker-backdrop {
+      align-items: stretch;
+      justify-content: stretch;
+    }
+
+    .picker-modal {
+      width: 100%;
+      max-width: none;
+      height: 100%;
+      max-height: none;
+      border-radius: 0;
+    }
+
+    .picker-filters {
+      flex-direction: column;
+      gap: 8px;
+    }
+  }
+</style>
