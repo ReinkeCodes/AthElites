@@ -3,7 +3,7 @@
   import { auth, db } from '$lib/firebase.js';
   import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
 
   let program = $state(null);
@@ -59,6 +59,7 @@
   let createExerciseInputRef = $state(null);
   let isCreatingSaving = $state(false);
   let createExerciseError = $state('');
+  let newlyCreatedExerciseId = $state(null);
   let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' });
 
   // Video modal
@@ -451,14 +452,27 @@
 
       // Auto-select the new exercise
       selectedExerciseId = docRef.id;
+      newlyCreatedExerciseId = docRef.id;
 
       // Clear search so new exercise is visible
       exerciseSearchQuery = '';
+      // Adjust type filter if it would hide the new exercise
+      if (exerciseTypeFilter && exerciseTypeFilter !== newExerciseType) {
+        exerciseTypeFilter = newExerciseType;
+      }
 
       // Exit create view
       isCreatingExercise = false;
       newExerciseName = '';
       newExerciseType = '';
+
+      // Scroll into view after DOM updates
+      await tick();
+      const newRow = document.querySelector(`[data-exercise-id="${docRef.id}"]`);
+      if (newRow) newRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+
+      // Clear highlight after animation
+      setTimeout(() => { newlyCreatedExerciseId = null; }, 2000);
     } catch (err) {
       createExerciseError = err.message || 'Failed to create exercise';
     } finally {
@@ -1669,11 +1683,13 @@
               <div
                 role="option"
                 aria-selected={selectedExerciseId === ex.id}
+                data-exercise-id={ex.id}
                 onclick={() => { selectedExerciseId = ex.id; isPickerOpen = false; }}
                 onkeydown={(e) => e.key === 'Enter' && (selectedExerciseId = ex.id, isPickerOpen = false)}
                 tabindex="0"
                 class="picker-exercise-item"
                 class:selected={selectedExerciseId === ex.id}
+                class:newly-created={newlyCreatedExerciseId === ex.id}
               >{ex.name}</div>
             {/each}
           {/each}
@@ -1749,6 +1765,16 @@
 
   .picker-exercise-item.selected {
     background: #e3f2fd;
+  }
+
+  .picker-exercise-item.newly-created {
+    animation: highlight-fade 2s ease-out;
+  }
+
+  @keyframes highlight-fade {
+    0% { background: #c8e6c9; }
+    70% { background: #c8e6c9; }
+    100% { background: transparent; }
   }
 
   /* Mobile: full-screen sheet */
