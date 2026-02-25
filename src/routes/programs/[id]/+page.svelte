@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc, getDocs, query, where } from 'firebase/firestore';
+  import { doc, onSnapshot, updateDoc, getDoc, collection, addDoc, getDocs, query, where, serverTimestamp } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -53,6 +53,12 @@
   let selectedExerciseId = $state('');
   let isPickerOpen = $state(false);
   let searchInputRef = $state(null);
+  let isCreatingExercise = $state(false);
+  let newExerciseName = $state('');
+  let newExerciseType = $state('');
+  let createExerciseInputRef = $state(null);
+  let isCreatingSaving = $state(false);
+  let createExerciseError = $state('');
   let exerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' });
 
   // Video modal
@@ -211,18 +217,29 @@
   // Exercise picker: ESC key handling + autofocus
   $effect(() => {
     if (!isPickerOpen) return;
-    // Autofocus search input when picker opens
-    if (searchInputRef) {
+    // Autofocus search input when picker opens (only if not in create view)
+    if (searchInputRef && !isCreatingExercise) {
       setTimeout(() => searchInputRef?.focus(), 50);
     }
     // ESC key to close
     function handleEsc(e) {
       if (e.key === 'Escape') {
         isPickerOpen = false;
+        isCreatingExercise = false;
+        newExerciseName = '';
+        newExerciseType = '';
+        createExerciseError = '';
       }
     }
     document.addEventListener('keydown', handleEsc);
     return () => document.removeEventListener('keydown', handleEsc);
+  });
+
+  // Create exercise view: autofocus name input
+  $effect(() => {
+    if (isCreatingExercise && createExerciseInputRef) {
+      setTimeout(() => createExerciseInputRef?.focus(), 50);
+    }
   });
 
   async function toggleAssignment(clientId) {
@@ -411,6 +428,42 @@
 
   function removeEditCustomReq(index) {
     editExerciseDetails.customReqs = editExerciseDetails.customReqs.filter((_, i) => i !== index);
+  }
+
+  // Create new exercise in Firestore
+  async function createExercise() {
+    const trimmedName = newExerciseName.trim();
+    if (!trimmedName || !newExerciseType) return;
+
+    isCreatingSaving = true;
+    createExerciseError = '';
+
+    try {
+      const docRef = await addDoc(collection(db, 'exercises'), {
+        name: trimmedName,
+        type: newExerciseType,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      // Append to local exercises array
+      exercises = [...exercises, { id: docRef.id, name: trimmedName, type: newExerciseType }];
+
+      // Auto-select the new exercise
+      selectedExerciseId = docRef.id;
+
+      // Clear search so new exercise is visible
+      exerciseSearchQuery = '';
+
+      // Exit create view
+      isCreatingExercise = false;
+      newExerciseName = '';
+      newExerciseType = '';
+    } catch (err) {
+      createExerciseError = err.message || 'Failed to create exercise';
+    } finally {
+      isCreatingSaving = false;
+    }
   }
 
   // Normalize string for sorting: lowercase, remove common punctuation
@@ -1516,53 +1569,119 @@
 
 <!-- Exercise Picker Modal -->
 {#if isPickerOpen}
-  <div class="picker-backdrop" onclick={() => isPickerOpen = false}>
+  <div class="picker-backdrop" onclick={() => { isPickerOpen = false; isCreatingExercise = false; newExerciseName = ''; newExerciseType = ''; createExerciseError = ''; }}>
     <div class="picker-modal" onclick={(e) => e.stopPropagation()}>
-      <!-- Header -->
-      <div class="picker-header">
-        <h3 style="margin: 0; font-size: 1.1em;">Select Exercise</h3>
-        <button
-          onclick={() => isPickerOpen = false}
-          aria-label="Close"
-          style="background: none; border: none; font-size: 1.5em; cursor: pointer; padding: 4px 8px; line-height: 1;"
-        >&times;</button>
-      </div>
-      <!-- Filter Row -->
-      <div class="picker-filters">
-        <select bind:value={exerciseTypeFilter} style="flex: 0 0 auto; padding: 8px; font-size: 0.9em; border: 1px solid #ccc; border-radius: 4px;">
-          <option value="">All types</option>
-          {#each getAllTypesUnfiltered() as t}
-            <option value={t}>{t}</option>
+      {#if isCreatingExercise}
+        <!-- Create Exercise View -->
+        <div class="picker-header">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <button
+              onclick={() => { isCreatingExercise = false; newExerciseName = ''; newExerciseType = ''; createExerciseError = ''; }}
+              aria-label="Back"
+              style="background: none; border: none; font-size: 1.2em; cursor: pointer; padding: 4px 8px; line-height: 1;"
+            >←</button>
+            <h3 style="margin: 0; font-size: 1.1em;">Create Exercise</h3>
+          </div>
+          <button
+            onclick={() => { isPickerOpen = false; isCreatingExercise = false; newExerciseName = ''; newExerciseType = ''; createExerciseError = ''; }}
+            aria-label="Close"
+            style="background: none; border: none; font-size: 1.5em; cursor: pointer; padding: 4px 8px; line-height: 1;"
+          >&times;</button>
+        </div>
+        <div style="flex: 1; padding: 20px; overflow-y: auto;">
+          <div style="max-width: 400px; margin: 0 auto;">
+            <div style="margin-bottom: 16px;">
+              <label style="display: block; font-size: 0.9em; font-weight: 500; margin-bottom: 6px;">Exercise Name</label>
+              <input
+                type="text"
+                bind:this={createExerciseInputRef}
+                bind:value={newExerciseName}
+                placeholder="e.g. Barbell Back Squat"
+                style="width: 100%; padding: 10px 12px; font-size: 1em; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box;"
+              />
+            </div>
+            <div style="margin-bottom: 24px;">
+              <label style="display: block; font-size: 0.9em; font-weight: 500; margin-bottom: 6px;">Exercise Type</label>
+              <select
+                bind:value={newExerciseType}
+                style="width: 100%; padding: 10px 12px; font-size: 1em; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; background: white;"
+              >
+                <option value="">Select type…</option>
+                {#each getAllTypesUnfiltered().filter(t => t !== 'Other').sort() as t}
+                  <option value={t}>{t}</option>
+                {/each}
+              </select>
+            </div>
+            {#if createExerciseError}
+              <p style="margin-bottom: 12px; padding: 10px; background: #ffebee; color: #c62828; border-radius: 6px; font-size: 0.9em;">{createExerciseError}</p>
+            {/if}
+            <div style="display: flex; gap: 12px;">
+              <button
+                onclick={() => { isCreatingExercise = false; newExerciseName = ''; newExerciseType = ''; createExerciseError = ''; }}
+                disabled={isCreatingSaving}
+                style="flex: 1; padding: 12px; font-size: 1em; border: 1px solid #ccc; border-radius: 6px; background: white; cursor: {isCreatingSaving ? 'not-allowed' : 'pointer'}; opacity: {isCreatingSaving ? '0.6' : '1'};"
+              >Cancel</button>
+              <button
+                onclick={createExercise}
+                disabled={!newExerciseName.trim() || !newExerciseType || isCreatingSaving}
+                style="flex: 1; padding: 12px; font-size: 1em; border: none; border-radius: 6px; background: {newExerciseName.trim() && newExerciseType && !isCreatingSaving ? '#4CAF50' : '#ccc'}; color: {newExerciseName.trim() && newExerciseType && !isCreatingSaving ? 'white' : '#666'}; cursor: {newExerciseName.trim() && newExerciseType && !isCreatingSaving ? 'pointer' : 'not-allowed'};"
+              >{isCreatingSaving ? 'Creating…' : 'Create'}</button>
+            </div>
+          </div>
+        </div>
+      {:else}
+        <!-- Picker List View -->
+        <div class="picker-header">
+          <h3 style="margin: 0; font-size: 1.1em;">Select Exercise</h3>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button
+              onclick={() => { isCreatingExercise = true; createExerciseError = ''; }}
+              style="padding: 6px 12px; font-size: 0.85em; border: 1px solid #4CAF50; border-radius: 4px; background: white; color: #4CAF50; cursor: pointer;"
+            >+ Create</button>
+            <button
+              onclick={() => isPickerOpen = false}
+              aria-label="Close"
+              style="background: none; border: none; font-size: 1.5em; cursor: pointer; padding: 4px 8px; line-height: 1;"
+            >&times;</button>
+          </div>
+        </div>
+        <!-- Filter Row -->
+        <div class="picker-filters">
+          <select bind:value={exerciseTypeFilter} style="flex: 0 0 auto; padding: 8px; font-size: 0.9em; border: 1px solid #ccc; border-radius: 4px;">
+            <option value="">All types</option>
+            {#each getAllTypesUnfiltered() as t}
+              <option value={t}>{t}</option>
+            {/each}
+          </select>
+          <input
+            type="text"
+            bind:this={searchInputRef}
+            bind:value={exerciseSearchQuery}
+            placeholder="Search exercises…"
+            style="flex: 1; padding: 8px; font-size: 0.9em; border: 1px solid #ccc; border-radius: 4px;"
+          />
+        </div>
+        <!-- Exercise List -->
+        <div class="picker-list">
+          {#each getAllExerciseTypes() as type}
+            <div style="padding: 8px 12px; background: #f5f5f5; font-weight: 600; font-size: 0.85em; color: #555; position: sticky; top: 0; border-bottom: 1px solid #e0e0e0;">{type}</div>
+            {#each getExercisesByType(type) as ex}
+              <div
+                role="option"
+                aria-selected={selectedExerciseId === ex.id}
+                onclick={() => { selectedExerciseId = ex.id; isPickerOpen = false; }}
+                onkeydown={(e) => e.key === 'Enter' && (selectedExerciseId = ex.id, isPickerOpen = false)}
+                tabindex="0"
+                class="picker-exercise-item"
+                class:selected={selectedExerciseId === ex.id}
+              >{ex.name}</div>
+            {/each}
           {/each}
-        </select>
-        <input
-          type="text"
-          bind:this={searchInputRef}
-          bind:value={exerciseSearchQuery}
-          placeholder="Search exercises…"
-          style="flex: 1; padding: 8px; font-size: 0.9em; border: 1px solid #ccc; border-radius: 4px;"
-        />
-      </div>
-      <!-- Exercise List -->
-      <div class="picker-list">
-        {#each getAllExerciseTypes() as type}
-          <div style="padding: 8px 12px; background: #f5f5f5; font-weight: 600; font-size: 0.85em; color: #555; position: sticky; top: 0; border-bottom: 1px solid #e0e0e0;">{type}</div>
-          {#each getExercisesByType(type) as ex}
-            <div
-              role="option"
-              aria-selected={selectedExerciseId === ex.id}
-              onclick={() => { selectedExerciseId = ex.id; isPickerOpen = false; }}
-              onkeydown={(e) => e.key === 'Enter' && (selectedExerciseId = ex.id, isPickerOpen = false)}
-              tabindex="0"
-              class="picker-exercise-item"
-              class:selected={selectedExerciseId === ex.id}
-            >{ex.name}</div>
-          {/each}
-        {/each}
-        {#if getAllExerciseTypes().length === 0}
-          <div style="padding: 24px; text-align: center; color: #999; font-size: 0.9em;">No exercises match your search.</div>
-        {/if}
-      </div>
+          {#if getAllExerciseTypes().length === 0}
+            <div style="padding: 24px; text-align: center; color: #999; font-size: 0.9em;">No exercises match your search.</div>
+          {/if}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}

@@ -97,10 +97,20 @@
   const defaultTypes = ['Compound', 'Isolation', 'Warm-up', 'Stretch', 'Cardio', 'Mobility', 'Core'];
   let customTypes = $state([]);
 
-  // Combined list for dropdowns (computed)
+  // Combined list for dropdowns (derived from exercises, alphabetically sorted, "Other" always last)
   function getAllTypes() {
-    return [...defaultTypes, ...customTypes, 'Other'];
+    const typesSet = new Set(exercises.map(e => e.type?.trim()).filter(Boolean));
+    typesSet.delete('Other');
+    const sorted = [...typesSet].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    return [...sorted, 'Other'];
   }
+
+  // Reset filter if selected type no longer exists
+  $effect(() => {
+    if (filterType !== 'all' && !getAllTypes().includes(filterType)) {
+      filterType = 'all';
+    }
+  });
 
   // Check if exercise is owned by current client user
   function isMyExercise(exercise) {
