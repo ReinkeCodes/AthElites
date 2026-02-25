@@ -6,6 +6,9 @@
   import { goto } from '$app/navigation';
   import { APP_VERSION, BUILD_ID, BUILD_TIME, FEATURE_VERSIONS } from '$lib/version.js';
 
+  // Compute latest feature update date
+  const latestFeatureUpdate = Object.values(FEATURE_VERSIONS).map(f => f.date).filter(Boolean).sort().pop() || null;
+
   let currentUser = $state(null);
   let userData = $state(null);
   let displayName = $state('');
@@ -153,6 +156,9 @@
     <div>
       <span style="font-weight: 600; color: #555;">App Version:</span>
       <span style="margin-left: 8px;">{APP_VERSION}</span>
+      {#if latestFeatureUpdate}
+        <span style="margin-left: 12px; font-size: 0.85em; color: #888; font-variant-numeric: tabular-nums;">Latest update: {latestFeatureUpdate}</span>
+      {/if}
     </div>
     <div>
       <span style="font-weight: 600; color: #555;">Build:</span>
@@ -164,10 +170,11 @@
     <div>
       <span style="font-weight: 600; color: #555; display: block; margin-bottom: 8px;">Feature Versions:</span>
       <div style="font-family: monospace; font-size: 0.85em; background: #e8e8e8; padding: 12px; border-radius: 6px; overflow-x: auto;">
-        {#each Object.entries(FEATURE_VERSIONS) as [feature, version]}
-          <div style="display: flex; justify-content: space-between; padding: 2px 0;">
-            <span style="color: #555;">{feature}</span>
-            <span style="color: #333; font-weight: 500;">v{version}</span>
+        {#each Object.entries(FEATURE_VERSIONS) as [feature, { v, date }]}
+          <div style="display: grid; grid-template-columns: 1fr 48px 80px; gap: 8px; padding: 3px 0; align-items: baseline;">
+            <span style="color: #555; text-align: right;">{feature}</span>
+            <span style="color: #333; font-weight: 500; font-variant-numeric: tabular-nums;">v{v}</span>
+            <span style="color: #999; font-size: 0.9em; font-variant-numeric: tabular-nums;">{date || ''}</span>
           </div>
         {/each}
       </div>

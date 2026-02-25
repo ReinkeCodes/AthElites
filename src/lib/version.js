@@ -4,21 +4,23 @@
  */
 
 // App version (semantic versioning)
-export const APP_VERSION = '0.12.0';
+export const APP_VERSION = '0.12.1';
 
 // Feature versions - track when specific features were last updated
 // Increment when making significant changes to a feature
+// Format: { v: version_number, date: 'YYYY-MM-DD' }
 export const FEATURE_VERSIONS = {
-  appVersioning: 1,
-  exerciseHistoryModalFormat: 2,
-  exercisePickerModal: 1,
-  focusModeTimer: 1,
-  prCelebration: 1,
-  prPageConsolidation: 2,
-  restTimerFeedback: 1,
-  restTimerToast: 1,
-  tonnageTracking: 1,
-  workoutSessionQoL: 1
+  appVersioning: { v: 1, date: '2 - 25 - 2026' },
+  exerciseHistoryModalFormat: { v: 2, date: '2 - 25 - 2026' },
+  exerciseLibraryTypeDropdown: { v: 1, date: '2 - 25 - 2026' },
+  exercisePickerModal: { v: 1, date: '2 - 25 - 2026' },
+  focusModeTimer: { v: 1, date: '2 - 25 - 2026' },
+  prCelebration: { v: 1, date: '2 - 25 - 2026' },
+  prPageConsolidation: { v: 2, date: '2 - 25 - 2026' },
+  restTimerFeedback: { v: 1, date: '2 - 25 - 2026' },
+  restTimerToast: { v: 1, date: '2 - 25 - 2026' },
+  tonnageTracking: { v: 1, date: '2 - 25 - 2026' },
+  workoutSessionQoL: { v: 1, date: '2 - 25 - 2026' }
 };
 
 // Build ID from environment (set by CI/CD, e.g., git SHA)
