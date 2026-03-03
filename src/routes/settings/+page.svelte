@@ -1,7 +1,7 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
   import { doc, getDoc, updateDoc, collection, onSnapshot } from 'firebase/firestore';
-  import { onAuthStateChanged } from 'firebase/auth';
+  import { onAuthStateChanged, sendPasswordResetEmail } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { APP_VERSION, BUILD_ID, BUILD_TIME, FEATURE_VERSIONS } from '$lib/version.js';
@@ -16,6 +16,59 @@
   let message = $state('');
   let allUsers = $state([]);
   let roleMessage = $state('');
+
+  // Password reset state
+  const RESET_COOLDOWN_SECONDS = 45;
+  let resetLoading = $state(false);
+  let resetSuccess = $state(false);
+  let resetError = $state('');
+  let resetCooldown = $state(0);
+  let resetCooldownInterval = null;
+
+  function formatResetCooldown(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  function startResetCooldown() {
+    resetCooldown = RESET_COOLDOWN_SECONDS;
+    if (resetCooldownInterval) clearInterval(resetCooldownInterval);
+    resetCooldownInterval = setInterval(() => {
+      resetCooldown--;
+      if (resetCooldown <= 0) {
+        clearInterval(resetCooldownInterval);
+        resetCooldownInterval = null;
+      }
+    }, 1000);
+  }
+
+  async function handlePasswordReset() {
+    if (!currentUser?.email) return;
+    resetError = '';
+    resetLoading = true;
+    try {
+      await sendPasswordResetEmail(auth, currentUser.email);
+      resetSuccess = true;
+      startResetCooldown();
+    } catch (err) {
+      resetError = "Couldn't send reset email. Please try again.";
+    }
+    resetLoading = false;
+  }
+
+  async function handleResendReset() {
+    if (resetCooldown > 0 || !currentUser?.email) return;
+    resetError = '';
+    resetLoading = true;
+    try {
+      await sendPasswordResetEmail(auth, currentUser.email);
+      startResetCooldown();
+    } catch (err) {
+      resetError = "Couldn't send reset email. Please try again.";
+    }
+    resetLoading = false;
+  }
 
   onMount(() => {
     onAuthStateChanged(auth, async (user) => {
@@ -35,6 +88,9 @@
         }
       }
     });
+    return () => {
+      if (resetCooldownInterval) clearInterval(resetCooldownInterval);
+    };
   });
 
   async function saveProfile(e) {
@@ -111,6 +167,52 @@
       {saving ? 'Saving...' : 'Save Profile'}
     </button>
   </form>
+
+  <!-- Security Section -->
+  <hr style="margin: 30px 0; border: none; border-top: 2px solid #eee;" />
+  <h2>Security</h2>
+
+  <div style="margin-bottom: 15px;">
+    <label style="display: block; margin-bottom: 5px; font-weight: bold;">Account email:</label>
+    <p style="margin: 0; padding: 10px; background: #f5f5f5; border-radius: 5px;">
+      {currentUser?.email || 'Account email unavailable'}
+    </p>
+  </div>
+
+  {#if resetError}
+    <p style="color: red; background: #ffebee; padding: 10px; border-radius: 5px; margin-bottom: 15px;">{resetError}</p>
+  {/if}
+
+  {#if resetSuccess}
+    <div style="background: #e8f5e9; padding: 20px; border-radius: 8px; margin-bottom: 15px;">
+      <p style="color: #2e7d32; font-size: 1.1em; margin: 0 0 10px 0;">
+        ✅ Reset link sent to <strong>{currentUser?.email}</strong>
+      </p>
+      <p style="color: #555; margin: 0 0 8px 0;">Check your inbox and spam/junk folder.</p>
+      <p style="color: #555; margin: 0;">Consider saving your new password in a password manager.</p>
+    </div>
+    <button
+      onclick={handleResendReset}
+      disabled={resetLoading || resetCooldown > 0}
+      style="width: 100%; padding: 12px; background: {resetCooldown > 0 ? '#ccc' : '#4CAF50'}; color: white; border: none; cursor: {resetCooldown > 0 ? 'not-allowed' : 'pointer'}; font-size: 1em; border-radius: 4px;"
+    >
+      {#if resetLoading}
+        Sending...
+      {:else if resetCooldown > 0}
+        Resend in {formatResetCooldown(resetCooldown)}
+      {:else}
+        Resend link
+      {/if}
+    </button>
+  {:else}
+    <button
+      onclick={handlePasswordReset}
+      disabled={resetLoading || !currentUser?.email}
+      style="width: 100%; padding: 12px; background: {!currentUser?.email ? '#ccc' : '#4CAF50'}; color: white; border: none; cursor: {!currentUser?.email ? 'not-allowed' : 'pointer'}; font-size: 1em; border-radius: 4px;"
+    >
+      {resetLoading ? 'Sending...' : 'Send password reset link'}
+    </button>
+  {/if}
 {:else}
   <p>Loading...</p>
 {/if}

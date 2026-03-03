@@ -43,8 +43,9 @@
         }
       } else {
         userRole = null;
-        // Redirect to login on logout (from any page)
-        if (browser && window.location.pathname !== '/login') {
+        // Redirect to login on logout (from any page except auth pages)
+        const authPages = ['/login', '/reset-password'];
+        if (browser && !authPages.some(p => window.location.pathname.startsWith(p))) {
           localStorage.removeItem('ael:lastPath');
           goto('/login');
         }

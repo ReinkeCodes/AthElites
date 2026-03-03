@@ -1342,15 +1342,15 @@
     const sw = stopwatchState[key];
 
     if (sw && sw.elapsed > 0) {
-      // Populate the time field (weight field for time-metric exercises)
+      // Populate the time field based on metric configuration
       const log = exerciseLogs[workoutExerciseId];
       if (log && log.sets && log.sets[setIndex]) {
-        // Format as seconds or M:SS based on what's typical
         const timeValue = formatStopwatchTime(sw.elapsed);
-        log.sets[setIndex].weight = timeValue;
+        // Determine target field: reps if repsMetric='time', else weight for legacy weightMetric='time'
+        const targetField = focusMode?.repsMetric === 'time' ? 'reps' : 'weight';
+        log.sets[setIndex][targetField] = timeValue;
         exerciseLogs = { ...exerciseLogs };
-        // Track lastEntered for time (stored in weight field)
-        updateLastEntered(workoutExerciseId, 'weight', timeValue);
+        updateLastEntered(workoutExerciseId, targetField, timeValue);
       }
     }
 
@@ -1367,9 +1367,11 @@
       workoutExerciseId,
       setIndex,
       exerciseName: exercise.name,
-      targetTime: exercise.weight || null,
+      targetTime: exercise.repsMetric === 'time' ? exercise.reps : exercise.weight || null,
       targetRir: exercise.rir || null,
-      customReqs: exercise.customReqs || []
+      customReqs: exercise.customReqs || [],
+      repsMetric: exercise.repsMetric || 'reps',
+      weightMetric: exercise.weightMetric || 'weight'
     };
   }
 
@@ -1405,13 +1407,14 @@
   function getSingleMetricLabel(exercise) {
     const hasReps = exercise.reps && String(exercise.reps).trim() !== '';
     const hasWeight = exercise.weight && String(exercise.weight).trim() !== '';
-    const isTimeMetric = exercise.weightMetric === 'time';
+    const isRepsTime = exercise.repsMetric === 'time';
+    const isWeightTime = exercise.weightMetric === 'time'; // legacy
 
-    // Single metric: only reps OR only time (excluding notes)
+    // Single metric: only reps/time OR only weight/time (excluding notes)
     if (hasReps && !hasWeight) {
-      return `${exercise.reps} Reps`;
+      return isRepsTime ? `${exercise.reps}` : `${exercise.reps} Reps`;
     }
-    if (hasWeight && !hasReps && isTimeMetric) {
+    if (hasWeight && !hasReps && isWeightTime) {
       return `${exercise.weight}`;
     }
 
@@ -2220,10 +2223,10 @@
         {@const hasData = hasExerciseData(exercise.workoutExerciseId)}
         {@const isCompleted = isExerciseFullyCompleted(exercise.workoutExerciseId)}
         {@const showIncompleteHint = isSectionStarted(currentSectionIndex) && !isCompleted}
-        {@const repsLabel = exercise.repsMetric === 'distance' ? '' : 'reps'}
-        {@const weightLabel = exercise.weightMetric === 'time' ? '' : 'lbs'}
-        {@const repsHeader = exercise.repsMetric === 'distance' ? 'Distance' : 'Reps'}
-        {@const weightHeader = exercise.weightMetric === 'time' ? 'Time' : 'Weight'}
+        {@const repsLabel = exercise.repsMetric === 'time' || exercise.repsMetric === 'distance' ? '' : 'reps'}
+        {@const weightLabel = exercise.weightMetric === 'distance' || exercise.weightMetric === 'time' ? '' : 'lbs'}
+        {@const repsHeader = exercise.repsMetric === 'time' ? 'Time' : exercise.repsMetric === 'distance' ? 'Distance' : 'Reps'}
+        {@const weightHeader = exercise.weightMetric === 'distance' ? 'Distance' : exercise.weightMetric === 'time' ? 'Time' : 'Weight'}
         {@const nonInputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && !r.clientInput)}
         {@const inputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && r.clientInput)}
         {@const isExpanded = expandedExercise[currentSectionIndex] === exercise.workoutExerciseId}
@@ -2363,26 +2366,48 @@
 
                       <!-- Vertical stacked inputs -->
                       <div style="display: flex; flex-direction: column; gap: 12px;">
-                        <!-- Reps row -->
+                        <!-- Reps/Time row -->
                         <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
                           <span style="font-weight: 500; color: #333;">{repsHeader}</span>
                           <div style="display: flex; align-items: center; gap: 8px;">
                             <button
                               class="na-btn {isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'na-btn-active' : ''}"
                               onclick={() => toggleNa(exercise.workoutExerciseId, setIndex, 'reps')}
-                              aria-label="Mark reps as N/A"
+                              aria-label="Mark {repsHeader.toLowerCase()} as N/A"
                             >N/A</button>
                             <div class="stepper-row">
-                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)}>-</button>
-                              <input
-                                type="text"
-                                class="stepper-input {set.reps || isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'stepper-input-filled' : ''}"
-                                value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
-                                oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
-                                onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
-                                placeholder={getPlaceholder(exercise.workoutExerciseId, 'reps', '0')}
-                              />
-                              <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', 1)}>+</button>
+                              {#if exercise.repsMetric === 'time'}
+                                <!-- Time metric: spacer + input + stopwatch button -->
+                                <span class="stepper-spacer"></span>
+                                <input
+                                  type="text"
+                                  class="stepper-input stepper-input-time {set.reps || isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'stepper-input-filled' : ''}"
+                                  value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
+                                  oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
+                                  onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
+                                  placeholder={getPlaceholder(exercise.workoutExerciseId, 'reps', '0:00')}
+                                />
+                                <button
+                                  class="stopwatch-trigger"
+                                  onclick={() => openFocusMode(exercise.workoutExerciseId, setIndex, exercise)}
+                                  aria-label="Open stopwatch"
+                                  title="Open stopwatch"
+                                >
+                                  <img src={timerIcon} alt="" class="stopwatch-icon" />
+                                </button>
+                              {:else}
+                                <!-- Reps/Distance metric: show +/- steppers -->
+                                <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', -1)}>-</button>
+                                <input
+                                  type="text"
+                                  class="stepper-input {set.reps || isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'stepper-input-filled' : ''}"
+                                  value={isNa(exercise.workoutExerciseId, setIndex, 'reps') ? 'N/A' : set.reps}
+                                  oninput={(e) => handleFieldInput(exercise.workoutExerciseId, setIndex, 'reps', e.target.value)}
+                                  onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'reps')}
+                                  placeholder={getPlaceholder(exercise.workoutExerciseId, 'reps', '0')}
+                                />
+                                <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'reps', 1)}>+</button>
+                              {/if}
                             </div>
                           </div>
                         </div>
@@ -2398,7 +2423,7 @@
                             >N/A</button>
                             <div class="stepper-row">
                               {#if exercise.weightMetric === 'time'}
-                                <!-- Time metric: spacer + input + stopwatch button -->
+                                <!-- Time metric (legacy): spacer + input + stopwatch button -->
                                 <span class="stepper-spacer"></span>
                                 <input
                                   type="text"
@@ -2417,8 +2442,8 @@
                                   <img src={timerIcon} alt="" class="stopwatch-icon" />
                                 </button>
                               {:else}
-                                <!-- Weight metric: show +/- steppers -->
-                                <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', -5)}>-</button>
+                                <!-- Weight/Distance metric: show +/- steppers -->
+                                <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', exercise.weightMetric === 'distance' ? -0.1 : -5)}>-</button>
                                 <input
                                   type="text"
                                   class="stepper-input {set.weight || isNa(exercise.workoutExerciseId, setIndex, 'weight') ? 'stepper-input-filled' : ''}"
@@ -2427,7 +2452,7 @@
                                   onfocus={() => clearNa(exercise.workoutExerciseId, setIndex, 'weight')}
                                   placeholder={getPlaceholder(exercise.workoutExerciseId, 'weight', '0')}
                                 />
-                                <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', 5)}>+</button>
+                                <button class="stepper-btn" onclick={() => stepValue(exercise.workoutExerciseId, setIndex, 'weight', exercise.weightMetric === 'distance' ? 0.1 : 5)}>+</button>
                               {/if}
                             </div>
                           </div>

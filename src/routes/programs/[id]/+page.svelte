@@ -1168,21 +1168,21 @@
                             <label style="font-size: 0.8em; color: #666;">Reps measured as:</label>
                             <select bind:value={editExerciseDetails.repsMetric} style="width: 100%; padding: 5px; margin-top: 3px;">
                               <option value="reps">Reps (count)</option>
-                              <option value="distance">Distance</option>
+                              <option value="time">Time</option>
                             </select>
                           </div>
                           <div>
                             <label style="font-size: 0.8em; color: #666;">Weight measured as:</label>
                             <select bind:value={editExerciseDetails.weightMetric} style="width: 100%; padding: 5px; margin-top: 3px;">
                               <option value="weight">Weight (lbs)</option>
-                              <option value="time">Time</option>
+                              <option value="distance">Distance</option>
                             </select>
                           </div>
                         </div>
                         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin: 10px 0;">
                           <input type="text" bind:value={editExerciseDetails.sets} placeholder="Sets" style="padding: 5px;" />
-                          <input type="text" bind:value={editExerciseDetails.reps} placeholder={editExerciseDetails.repsMetric === 'distance' ? 'Distance' : 'Reps'} style="padding: 5px;" />
-                          <input type="text" bind:value={editExerciseDetails.weight} placeholder={editExerciseDetails.weightMetric === 'time' ? 'Time' : 'Weight'} style="padding: 5px;" />
+                          <input type="text" bind:value={editExerciseDetails.reps} placeholder={editExerciseDetails.repsMetric === 'time' ? 'Time' : editExerciseDetails.repsMetric === 'distance' ? 'Distance' : 'Reps'} style="padding: 5px;" />
+                          <input type="text" bind:value={editExerciseDetails.weight} placeholder={editExerciseDetails.weightMetric === 'distance' ? 'Distance' : editExerciseDetails.weightMetric === 'time' ? 'Time' : 'Weight'} style="padding: 5px;" />
                         </div>
                         <div style="margin-bottom: 8px;">
                           <input type="text" bind:value={editExerciseDetails.rir} placeholder="RIR" style="padding: 5px; width: 100%;" />
@@ -1220,8 +1220,8 @@
                         </div>
                       {:else}
                         <!-- View Mode -->
-                        {@const repsLabel = ex.repsMetric === 'distance' ? '' : 'reps'}
-                        {@const weightLabel = ex.weightMetric === 'time' ? '' : ''}
+                        {@const repsLabel = ex.repsMetric === 'time' || ex.repsMetric === 'distance' ? '' : 'reps'}
+                        {@const weightLabel = ex.weightMetric === 'distance' || ex.weightMetric === 'time' ? '' : ''}
                         {@const libraryEx = exercises.find(e => e.id === ex.exerciseId)}
                         <div style="display: flex; justify-content: space-between; align-items: start;">
                           <div style="display: flex; align-items: start; gap: 10px;">
@@ -1237,15 +1237,15 @@
                                   style="background: #fff; border: 1px solid #9C27B0; color: #9C27B0; padding: 2px 6px; border-radius: 3px; font-size: 0.7em; margin-left: 5px; cursor: pointer;"
                                 >▶ Video</button>
                               {/if}
-                              {#if ex.repsMetric === 'distance' || ex.weightMetric === 'time'}
+                              {#if ex.repsMetric === 'time' || ex.repsMetric === 'distance' || ex.weightMetric === 'distance' || ex.weightMetric === 'time'}
                                 <span style="background: #e8f5e9; color: #2e7d32; padding: 2px 6px; border-radius: 3px; font-size: 0.7em; margin-left: 5px;">
-                                  {ex.repsMetric === 'distance' ? 'Distance' : ''}{ex.repsMetric === 'distance' && ex.weightMetric === 'time' ? '/' : ''}{ex.weightMetric === 'time' ? 'Time' : ''}
+                                  {ex.repsMetric === 'time' ? 'Time' : ex.repsMetric === 'distance' ? 'Distance' : ''}{(ex.repsMetric === 'time' || ex.repsMetric === 'distance') && (ex.weightMetric === 'distance' || ex.weightMetric === 'time') ? '/' : ''}{ex.weightMetric === 'distance' ? 'Distance' : ex.weightMetric === 'time' ? 'Time' : ''}
                                 </span>
                               {/if}
                               <br />
                               {#if ex.sets}{ex.sets} sets{/if}
-                              {#if ex.reps} × {ex.reps} {ex.repsMetric === 'distance' ? '' : 'reps'}{/if}
-                              {#if ex.weight} @ {ex.weight}{ex.weightMetric === 'time' ? '' : ''}{/if}
+                              {#if ex.reps} × {ex.reps} {ex.repsMetric === 'time' ? '' : ex.repsMetric === 'distance' ? '' : 'reps'}{/if}
+                              {#if ex.weight} @ {ex.weight}{ex.weightMetric === 'distance' ? '' : ex.weightMetric === 'time' ? '' : ''}{/if}
                               {#if ex.rir} (RIR: {ex.rir}){/if}
                               {#if section.mode !== 'checkbox' && ex.restSeconds}
                                 <span style="background: #f3e5f5; color: #7b1fa2; padding: 2px 6px; border-radius: 3px; font-size: 0.75em; margin-left: 5px;">
@@ -1315,21 +1315,21 @@
                         <label style="font-size: 0.8em; color: #666;">Reps measured as:</label>
                         <select bind:value={exerciseDetails.repsMetric} style="width: 100%; padding: 5px; margin-top: 3px;">
                           <option value="reps">Reps (count)</option>
-                          <option value="distance">Distance</option>
+                          <option value="time">Time</option>
                         </select>
                       </div>
                       <div>
                         <label style="font-size: 0.8em; color: #666;">Weight measured as:</label>
                         <select bind:value={exerciseDetails.weightMetric} style="width: 100%; padding: 5px; margin-top: 3px;">
                           <option value="weight">Weight (lbs)</option>
-                          <option value="time">Time</option>
+                          <option value="distance">Distance</option>
                         </select>
                       </div>
                     </div>
                     <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 8px;">
                       <input type="text" bind:value={exerciseDetails.sets} placeholder="Sets" style="padding: 5px;" />
-                      <input type="text" bind:value={exerciseDetails.reps} placeholder={exerciseDetails.repsMetric === 'distance' ? 'Distance' : 'Reps'} style="padding: 5px;" />
-                      <input type="text" bind:value={exerciseDetails.weight} placeholder={exerciseDetails.weightMetric === 'time' ? 'Time' : 'Weight'} style="padding: 5px;" />
+                      <input type="text" bind:value={exerciseDetails.reps} placeholder={exerciseDetails.repsMetric === 'time' ? 'Time' : exerciseDetails.repsMetric === 'distance' ? 'Distance' : 'Reps'} style="padding: 5px;" />
+                      <input type="text" bind:value={exerciseDetails.weight} placeholder={exerciseDetails.weightMetric === 'distance' ? 'Distance' : exerciseDetails.weightMetric === 'time' ? 'Time' : 'Weight'} style="padding: 5px;" />
                     </div>
                     <div style="margin-bottom: 8px;">
                       <input type="text" bind:value={exerciseDetails.rir} placeholder="RIR (Reps in Reserve)" style="padding: 5px; width: 100%;" />
