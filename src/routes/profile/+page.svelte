@@ -28,6 +28,9 @@
         if (userData.role === 'admin') {
           onSnapshot(collection(db, 'user'), (snapshot) => {
             allUsers = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+          }, (err) => {
+            if (err?.code === 'permission-denied') return;
+            console.error(err);
           });
         }
       }
