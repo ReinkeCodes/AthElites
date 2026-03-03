@@ -130,6 +130,10 @@
     <button type="submit" disabled={loading} style="width: 100%; padding: 12px; background: #4CAF50; color: white; border: none; cursor: pointer; font-size: 1em;">
       {loading ? 'Logging in...' : 'Login'}
     </button>
+
+    <p style="text-align: right; margin-top: 10px;">
+      <a href="/reset-password" style="color: #2196F3; text-decoration: underline; font-size: 0.9em;">Forgot password?</a>
+    </p>
   </form>
 
   <p style="text-align: center; margin-top: 20px;">
