@@ -4,24 +4,25 @@
  */
 
 // App version (semantic versioning)
-export const APP_VERSION = '0.12.2';
+export const APP_VERSION = '0.12.3';
 
 // Feature versions - track when specific features were last updated
 // Increment when making significant changes to a feature
 // Format: { v: version_number, date: 'YYYY-MM-DD' }
 export const FEATURE_VERSIONS = {
-  appVersioning: { v: 1, date: '2 - 25 - 2026' },
-  exerciseCreateFlow: { v: 1, date: '2 - 25 - 2026' },
-  exerciseHistoryModalFormat: { v: 2, date: '2 - 25 - 2026' },
-  exerciseLibraryTypeDropdown: { v: 1, date: '2 - 25 - 2026' },
-  exercisePickerModal: { v: 1, date: '2 - 25 - 2026' },
-  focusModeTimer: { v: 1, date: '2 - 25 - 2026' },
-  prCelebration: { v: 1, date: '2 - 25 - 2026' },
-  prPageConsolidation: { v: 2, date: '2 - 25 - 2026' },
-  restTimerFeedback: { v: 1, date: '2 - 25 - 2026' },
-  restTimerToast: { v: 1, date: '2 - 25 - 2026' },
-  tonnageTracking: { v: 1, date: '2 - 25 - 2026' },
-  workoutSessionQoL: { v: 1, date: '2 - 25 - 2026' }
+  appVersioning: { v: 1, date: '02 - 25 - 2026' },
+  exerciseCreateFlow: { v: 1, date: '02 - 25 - 2026' },
+  exerciseHistoryModalFormat: { v: 2, date: '02 - 25 - 2026' },
+  exerciseLibraryTypeDropdown: { v: 1, date: '02 - 25 - 2026' },
+  exercisePickerModal: { v: 1, date: '02 - 25 - 2026' },
+  focusModeTimer: { v: 1, date: '02 - 25 - 2026' },
+  passwordReset: { v: 1, date: '03 - 03 - 2026' },
+  prCelebration: { v: 1, date: '02 - 25 - 2026' },
+  prPageConsolidation: { v: 2, date: '02 - 25 - 2026' },
+  restTimerFeedback: { v: 1, date: '02 - 25 - 2026' },
+  restTimerToast: { v: 1, date: '02 - 25 - 2026' },
+  tonnageTracking: { v: 1, date: '02 - 25 - 2026' },
+  workoutSessionQoL: { v: 1, date: '02 - 25 - 2026' }
 };
 
 // Build ID from environment (set by CI/CD, e.g., git SHA)
