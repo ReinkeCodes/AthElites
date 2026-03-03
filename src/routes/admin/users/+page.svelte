@@ -31,6 +31,9 @@
         onSnapshot(collection(db, 'user'), (snapshot) => {
           allUsers = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
           loading = false;
+        }, (err) => {
+          if (err?.code === 'permission-denied') return;
+          console.error(err);
         });
       } else {
         goto('/');
