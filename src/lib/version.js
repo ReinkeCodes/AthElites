@@ -4,7 +4,7 @@
  */
 
 // App version (semantic versioning)
-export const APP_VERSION = '0.12.4';
+export const APP_VERSION = '0.12.5';
 
 // Feature versions - track when specific features were last updated
 // Increment when making significant changes to a feature
@@ -22,6 +22,7 @@ export const FEATURE_VERSIONS = {
   prPageConsolidation: { v: 2, date: '02 - 25 - 2026' },
   restTimerFeedback: { v: 1, date: '02 - 25 - 2026' },
   restTimerToast: { v: 1, date: '02 - 25 - 2026' },
+  settingsEmailActions: { v: 1, date: '03 - 04 - 2026' },
   tonnageTracking: { v: 1, date: '02 - 25 - 2026' },
   workoutSessionQoL: { v: 1, date: '02 - 25 - 2026' }
 };
