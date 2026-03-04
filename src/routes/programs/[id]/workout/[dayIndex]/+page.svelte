@@ -186,6 +186,34 @@
     return changed;
   }
 
+  // metricsV2 helpers
+  function toNumber(x) {
+    if (x === null || x === undefined || x === '') return null;
+    if (typeof x === 'number') return isNaN(x) ? null : x;
+    const trimmed = String(x).trim();
+    if (trimmed === '') return null;
+    const num = parseFloat(trimmed);
+    return isNaN(num) ? null : num;
+  }
+
+  function toSeconds(x) {
+    if (x === null || x === undefined || x === '') return null;
+    if (typeof x === 'number') return isNaN(x) ? null : x;
+    const trimmed = String(x).trim();
+    if (trimmed === '') return null;
+    // Check for MM:SS or HH:MM:SS format
+    if (trimmed.includes(':')) {
+      const parts = trimmed.split(':').map(p => parseInt(p, 10));
+      if (parts.some(isNaN)) return null;
+      if (parts.length === 2) return parts[0] * 60 + parts[1]; // MM:SS
+      if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2]; // HH:MM:SS
+      return null;
+    }
+    // Plain number string
+    const num = parseFloat(trimmed);
+    return isNaN(num) ? null : num;
+  }
+
   async function openHistoryModal(exerciseId, exerciseName) {
     // Clear stale data immediately before opening modal
     exerciseHistory = {
@@ -1996,6 +2024,29 @@
               // Only save sets that have data (weight, reps, notes, or custom inputs)
               const hasCustomInput = set.customInputs && Object.values(set.customInputs).some(v => v);
               if (set.weight || set.reps || set.notes || hasCustomInput) {
+                // Build metricsV2 array
+                const metricsV2 = [];
+                const repsMetric = exercise.repsMetric || 'reps';
+                const weightMetric = exercise.weightMetric || 'weight';
+
+                // Primary metric from set.reps
+                if (repsMetric === 'reps') {
+                  const val = toNumber(set.reps);
+                  if (val !== null) metricsV2.push({ key: 'reps', value: val, unit: 'reps', role: 'primary' });
+                } else if (repsMetric === 'time') {
+                  const val = toSeconds(set.reps);
+                  if (val !== null) metricsV2.push({ key: 'time', value: val, unit: 'time', role: 'primary' });
+                }
+
+                // Secondary metric from set.weight
+                if (weightMetric === 'weight') {
+                  const val = toNumber(set.weight);
+                  if (val !== null) metricsV2.push({ key: 'load', value: val, unit: 'weight', role: 'secondary' });
+                } else if (weightMetric === 'distance') {
+                  const val = toNumber(set.weight);
+                  if (val !== null) metricsV2.push({ key: 'distance', value: val, unit: 'distance', role: 'secondary' });
+                }
+
                 logPromises.push(addDoc(collection(db, 'workoutLogs'), {
                   userId: currentUserId,
                   programId: program.id,
@@ -2014,9 +2065,10 @@
                   targetReps: log.targetReps,
                   targetWeight: log.targetWeight,
                   targetRir: log.targetRir,
-                  repsMetric: exercise.repsMetric || 'reps',
-                  weightMetric: exercise.weightMetric || 'weight',
+                  repsMetric: repsMetric,
+                  weightMetric: weightMetric,
                   customInputs: set.customInputs || null,
+                  metricsV2: metricsV2,
                   loggedAt: loggedAt
                 }));
               }
