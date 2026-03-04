@@ -249,7 +249,7 @@
 
   function formatTimeValue(seconds) {
     if (seconds == null || isNaN(seconds)) return '-';
-    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 60) return `${Math.round(seconds)} s`;
     const mins = Math.floor(seconds / 60);
     const secs = Math.round(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -276,13 +276,13 @@
       const load = getMetric(set.metricsV2, 'load');
       if (load) return { value: load.value, label: 'lbs' };
       const distance = getMetric(set.metricsV2, 'distance');
-      if (distance) return { value: distance.value, label: '' };
+      if (distance) return { value: distance.value, label: 'dist' };
       return null;
     }
     // Legacy fallback
     if (!set.weight) return null;
     if (set.weightMetric === 'distance') {
-      return { value: set.weight, label: '' };
+      return { value: set.weight, label: 'dist' };
     }
     return { value: set.weight, label: 'lbs' };
   }
@@ -436,7 +436,7 @@
                 <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: #f8f9fa; border-radius: 5px; font-size: 0.95em;">
                   <span style="font-weight: bold; color: #667eea; min-width: 35px;">Set {set.setNumber}</span>
                   <span style="color: #333;">
-                    <strong>{primary.value}</strong>{#if primary.label} {primary.label}{/if}{#if secondary} @ <strong>{secondary.value}</strong>{#if secondary.label} {secondary.label}{/if}{/if}
+                    <strong>{primary.value}</strong>{#if primary.label}&nbsp;{primary.label}{/if}{#if secondary}&nbsp;@&nbsp;<strong>{secondary.value}</strong>{#if secondary.label}&nbsp;{secondary.label}{/if}{/if}
                     {#if set.rir} <span style="color: #888;">(RIR: {set.rir})</span>{/if}
                   </span>
                 </div>
