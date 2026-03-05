@@ -16,6 +16,50 @@
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     return date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   }
+
+  // metricsV2 helpers
+  function getMetric(metricsV2, key) {
+    if (!metricsV2 || !Array.isArray(metricsV2)) return null;
+    return metricsV2.find(m => m.key === key) || null;
+  }
+
+  function formatTimeValue(seconds) {
+    if (seconds == null || isNaN(seconds)) return '-';
+    if (seconds < 60) return `${Math.round(seconds)} s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  function formatPrimaryMetric(set) {
+    if (set.metricsV2 && Array.isArray(set.metricsV2)) {
+      const time = getMetric(set.metricsV2, 'time');
+      if (time) return { value: formatTimeValue(time.value), label: '' };
+      const reps = getMetric(set.metricsV2, 'reps');
+      if (reps) return { value: reps.value ?? '-', label: 'reps' };
+    }
+    // Legacy fallback
+    if (set.repsMetric === 'time') {
+      return { value: set.reps || '-', label: '' };
+    }
+    return { value: set.reps || '-', label: 'reps' };
+  }
+
+  function formatSecondaryMetric(set) {
+    if (set.metricsV2 && Array.isArray(set.metricsV2)) {
+      const load = getMetric(set.metricsV2, 'load');
+      if (load) return { value: load.value, label: 'lbs' };
+      const distance = getMetric(set.metricsV2, 'distance');
+      if (distance) return { value: distance.value, label: 'dist' };
+      return null;
+    }
+    // Legacy fallback
+    if (!set.weight) return null;
+    if (set.weightMetric === 'distance') {
+      return { value: set.weight, label: 'dist' };
+    }
+    return { value: set.weight, label: 'lbs' };
+  }
 </script>
 
 <!-- Session Detail Modal -->
@@ -67,12 +111,11 @@
     </div>
     <div style="margin-top: 8px;">
       {#each exercise.sets as set}
+        {@const primary = formatPrimaryMetric(set)}
+        {@const secondary = formatSecondaryMetric(set)}
         <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: #f8f9fa; border-radius: 5px; font-size: 0.9em;">
           <span style="font-weight: bold; color: #667eea; min-width: 35px;">Set {set.setNumber}</span>
-          <span style="color: #333;">
-            <strong>{set.reps || '-'}</strong> {set.repsMetric === 'distance' ? '' : 'reps'} @ <strong>{set.weight || '-'}</strong> {set.weightMetric === 'time' ? '' : 'lbs'}
-            {#if set.rir} <span style="color: #888;">(RIR: {set.rir})</span>{/if}
-          </span>
+          <span style="color: #333;"><strong>{primary.value}</strong>{#if primary.label}&nbsp;{primary.label}{/if}{#if secondary}&nbsp;@&nbsp;<strong>{secondary.value}</strong>{#if secondary.label}&nbsp;{secondary.label}{/if}{/if}{#if set.rir}&nbsp;<span style="color: #888;">(RIR: {set.rir})</span>{/if}</span>
         </div>
         {#if set.customInputs && getCustomReqs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const reqs = getCustomReqs(set.programId, set.workoutExerciseId)}{@const req = reqs?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.8em; margin: 2px 0 0 45px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value}&nbsp;(Target: {req.value}){/if}</div>{/if}{/each}{/if}
         {#if set.notes && set.notes !== 'Did not complete'}

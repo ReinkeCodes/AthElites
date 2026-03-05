@@ -252,6 +252,50 @@
     return date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   }
 
+  // metricsV2 helpers
+  function getMetric(metricsV2, key) {
+    if (!metricsV2 || !Array.isArray(metricsV2)) return null;
+    return metricsV2.find(m => m.key === key) || null;
+  }
+
+  function formatTimeValue(seconds) {
+    if (seconds == null || isNaN(seconds)) return '-';
+    if (seconds < 60) return `${Math.round(seconds)} s`;
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  function formatPrimaryMetric(set) {
+    if (set.metricsV2 && Array.isArray(set.metricsV2)) {
+      const time = getMetric(set.metricsV2, 'time');
+      if (time) return { value: formatTimeValue(time.value), label: '' };
+      const reps = getMetric(set.metricsV2, 'reps');
+      if (reps) return { value: reps.value ?? '-', label: 'reps' };
+    }
+    // Legacy fallback
+    if (set.repsMetric === 'time') {
+      return { value: set.reps || '-', label: '' };
+    }
+    return { value: set.reps || '-', label: 'reps' };
+  }
+
+  function formatSecondaryMetric(set) {
+    if (set.metricsV2 && Array.isArray(set.metricsV2)) {
+      const load = getMetric(set.metricsV2, 'load');
+      if (load) return { value: load.value, label: 'lbs' };
+      const distance = getMetric(set.metricsV2, 'distance');
+      if (distance) return { value: distance.value, label: 'dist' };
+      return null;
+    }
+    // Legacy fallback
+    if (!set.weight) return null;
+    if (set.weightMetric === 'distance') {
+      return { value: set.weight, label: 'dist' };
+    }
+    return { value: set.weight, label: 'lbs' };
+  }
+
   function getSessionLogs(session) {
     // Filter logs by unique session ID (completedWorkoutId)
     const sessionLogs = allLogs.filter(log => log.completedWorkoutId === session.id);
@@ -277,6 +321,7 @@
         notes: log.notes,
         repsMetric: log.repsMetric || 'reps',
         weightMetric: log.weightMetric || 'weight',
+        metricsV2: log.metricsV2,
         customInputs: log.customInputs,
         workoutExerciseId: log.workoutExerciseId,
         programId: log.programId
@@ -1609,9 +1654,11 @@
       {#if exerciseSessionSets.length > 0}
       <div style="font-weight: 600; margin-bottom: 10px; font-size: 0.9em;">Session Sets</div>
       {#each exerciseSessionSets as set}
+        {@const primary = formatPrimaryMetric(set)}
+        {@const secondary = formatSecondaryMetric(set)}
         <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 6px; background: #f8f9fa; border-radius: 6px;">
           <span style="font-weight: bold; color: #667eea; min-width: 45px;">Set {set.setNumber || 1}</span>
-          <span style="flex: 1;">{set.reps || '-'} × {set.weight || '-'} lbs</span>
+          <span style="flex: 1;"><strong>{primary.value}</strong>{#if primary.label}&nbsp;{primary.label}{/if}{#if secondary}&nbsp;@&nbsp;<strong>{secondary.value}</strong>{#if secondary.label}&nbsp;{secondary.label}{/if}{/if}</span>
           {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
           <button
             onclick={(e) => { e.stopPropagation(); deleteSetLog(set.id); }}
