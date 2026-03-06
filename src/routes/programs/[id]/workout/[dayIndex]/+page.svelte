@@ -1,7 +1,7 @@
 <script>
   import { page } from '$app/stores';
   import { auth, db } from '$lib/firebase.js';
-  import { doc, onSnapshot, getDoc, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc, getDocsFromServer, setDoc, increment, serverTimestamp } from 'firebase/firestore';
+  import { doc, onSnapshot, getDoc, getDocFromServer, collection, addDoc, query, where, orderBy, limit, getDocs, updateDoc, getDocsFromServer, setDoc, increment, serverTimestamp } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
@@ -44,6 +44,7 @@
 
   // History modal state
   let historyModal = $state({ open: false, exerciseId: null, exerciseName: '' });
+  let historyModalLoadNonce = $state(0);
 
   // Video modal state
   let videoModalExercise = $state(null);
@@ -214,7 +215,52 @@
     return isNaN(num) ? null : num;
   }
 
+  // Format set line for Most Recent Session (metricsV2 preferred, legacy fallback)
+  function formatRecentSetLine(set) {
+    let primary = null;
+    let secondary = null;
+
+    if (set.metricsV2 && Array.isArray(set.metricsV2)) {
+      const time = set.metricsV2.find(m => m.key === 'time');
+      const reps = set.metricsV2.find(m => m.key === 'reps');
+      const load = set.metricsV2.find(m => m.key === 'load');
+      const dist = set.metricsV2.find(m => m.key === 'distance');
+
+      if (time && time.value != null) primary = `${Math.round(time.value)} s`;
+      else if (reps && reps.value != null) primary = `${reps.value} reps`;
+
+      if (load && load.value != null) secondary = `${load.value} lbs`;
+      else if (dist && dist.value != null) secondary = `${dist.value} dist`;
+    } else {
+      // Legacy fallback
+      const repsMetric = set.repsMetric || 'reps';
+      const weightMetric = set.weightMetric || 'weight';
+
+      if (repsMetric === 'time' && set.reps) {
+        let secs = parseFloat(set.reps);
+        if (isNaN(secs) && typeof set.reps === 'string' && set.reps.includes(':')) {
+          const parts = set.reps.split(':').map(p => parseInt(p, 10));
+          if (parts.length === 2) secs = parts[0] * 60 + parts[1];
+        }
+        if (!isNaN(secs)) primary = `${Math.round(secs)} s`;
+      } else if (set.reps) {
+        primary = `${set.reps} reps`;
+      }
+
+      if (set.weight) {
+        secondary = weightMetric === 'distance' ? `${set.weight} dist` : `${set.weight} lbs`;
+      }
+    }
+
+    if (primary && secondary) return `${primary} @ ${secondary}`;
+    if (primary) return primary;
+    if (secondary) return secondary;
+    return '—';
+  }
+
   async function openHistoryModal(exerciseId, exerciseName) {
+    // Increment nonce to invalidate any in-flight loads
+    const nonce = ++historyModalLoadNonce;
     // Clear stale data immediately before opening modal
     exerciseHistory = {
       ...exerciseHistory,
@@ -222,7 +268,7 @@
     };
     historyModal = { open: true, exerciseId, exerciseName };
     // Refresh history for this exercise from Firestore to ensure no stale/orphan PRs
-    await refreshExerciseHistory(exerciseId);
+    await refreshExerciseHistory(exerciseId, nonce);
   }
 
   // Load rep-band PRs from Firestore PR store for an exercise
@@ -236,7 +282,7 @@
       const docId = `${exerciseId}__${bandKey}`;
       const prRef = doc(db, 'user', userId, 'stats', 'prs', 'exercisePrs', docId);
 
-      return getDoc(prRef)
+      return getDocFromServer(prRef)
         .then(snap => ({ band, snap, error: null }))
         .catch(err => ({ band, snap: null, error: err }));
     });
@@ -262,14 +308,14 @@
     return result;
   }
 
-  async function refreshExerciseHistory(exerciseId) {
+  async function refreshExerciseHistory(exerciseId, nonce) {
     if (!currentUserId) return;
 
     try {
       // Load rep-band PRs from Firestore PR store (parallel with log fetch)
       const repRangesPromise = loadExerciseRepBandPrs(currentUserId, exerciseId);
 
-      // Still query workoutLogs for "Most Recent Session" display only
+      // Still query workoutLogs for "Most Recent Session" display only (force server read)
       const logsQuery = query(
         collection(db, 'workoutLogs'),
         where('userId', '==', currentUserId),
@@ -278,7 +324,7 @@
         limit(20)
       );
 
-      const snapshot = await getDocs(logsQuery);
+      const snapshot = await getDocsFromServer(logsQuery);
       const entries = snapshot.docs.map(d => d.data());
 
       // Find most recent session from logs (for display only)
@@ -295,7 +341,10 @@
             weight: log.weight,
             rir: log.rir,
             notes: log.notes,
-            customInputs: log.customInputs
+            customInputs: log.customInputs,
+            metricsV2: log.metricsV2,
+            repsMetric: log.repsMetric,
+            weightMetric: log.weightMetric
           }))
         };
       }
@@ -307,6 +356,9 @@
       } catch (err) {
         console.error('Failed to load rep-band PRs:', err);
       }
+
+      // Race guard: if nonce changed or modal closed/switched, discard results
+      if (nonce !== historyModalLoadNonce || !historyModal.open || historyModal.exerciseId !== exerciseId) return;
 
       // Calculate e1RM from PR-store data only (highest e1rm from available bands)
       let best1RM = null;
@@ -332,15 +384,18 @@
       };
     } catch (e) {
       console.log('Could not refresh exercise history:', e.message || e);
-      // On error, ensure clean state
-      exerciseHistory = {
-        ...exerciseHistory,
-        [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null } }
-      };
+      // On error, ensure clean state (only if still relevant)
+      if (nonce === historyModalLoadNonce && historyModal.open && historyModal.exerciseId === exerciseId) {
+        exerciseHistory = {
+          ...exerciseHistory,
+          [exerciseId]: { entries: [], lastSession: null, e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null } }
+        };
+      }
     }
   }
 
   function closeHistoryModal() {
+    historyModalLoadNonce++; // Invalidate any in-flight loads
     historyModal = { open: false, exerciseId: null, exerciseName: '' };
   }
 
@@ -589,7 +644,10 @@
                 weight: log.weight,
                 rir: log.rir,
                 notes: log.notes,
-                customInputs: log.customInputs
+                customInputs: log.customInputs,
+                metricsV2: log.metricsV2,
+                repsMetric: log.repsMetric,
+                weightMetric: log.weightMetric
               }))
             };
           }
@@ -1770,6 +1828,14 @@
         if (!log || !log.sets) continue;
 
         for (const set of log.sets) {
+          // Skip time/distance sets - only reps-based sets qualify for rep-band PRs
+          const repsMetric = exercise.repsMetric || 'reps';
+          if (set.metricsV2 && Array.isArray(set.metricsV2)) {
+            if (!set.metricsV2.some(m => m.key === 'reps')) continue;
+          } else if (repsMetric === 'time') {
+            continue;
+          }
+
           const weight = parseFloat(set.weight);
           const reps = parseInt(set.reps);
 
@@ -2860,9 +2926,10 @@
           <div style="background: #f8f9fa; padding: 12px; border-radius: 8px; border-left: 3px solid #667eea;">
             <div style="color: #888; font-size: 0.8em; margin-bottom: 8px;">{formatDate(history.lastSession.date)}</div>
             {#each history.lastSession.sets as set}
+              {@const line = formatRecentSetLine(set)}
               <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: white; border-radius: 5px; font-size: 0.9em;">
                 <span style="font-weight: bold; color: #667eea; min-width: 40px;">Set {set.setNumber}</span>
-                <span>{set.reps || '-'} × {set.weight || '-'} lbs</span>
+                <span>{line}</span>
                 {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
               </div>
               {#if set.customInputs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const req = historyExercise?.customReqs?.filter(r => r.clientInput)?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.8em; margin: 0 0 4px 50px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value}&nbsp;(Target: {req.value}){/if}</div>{/if}{/each}{/if}
