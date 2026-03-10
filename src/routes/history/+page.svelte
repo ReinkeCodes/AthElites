@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, query, where, getDocs, getDocsFromServer, orderBy, doc, getDoc, deleteDoc, writeBatch, increment } from 'firebase/firestore';
+  import { collection, query, where, getDocs, getDocsFromServer, orderBy, doc, getDoc, deleteDoc, setDoc, writeBatch, increment, serverTimestamp } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import SessionDetailModal from '$lib/components/SessionDetailModal.svelte';
@@ -15,6 +15,7 @@
   let loading = $state(true);
   let activeTab = $state('workouts'); // 'workouts' or 'prs'
   let prSortMode = $state('alpha'); // 'alpha' | 'alpha_desc' | 'strongest' | 'recent'
+  let recomputingExerciseId = $state(null); // Track which exercise is being recomputed
 
   // Derived target user for queries (admin can view other users)
   function getTargetUserId() {
@@ -237,6 +238,115 @@
     } catch (e) {
       console.log('Could not load PR store data:', e);
       prStoreData = [];
+    }
+  }
+
+  // Check if a log is eligible for rep-band PR (reps+load only, no time/distance)
+  function isEligibleForPr(log) {
+    if (log.metricsV2 && Array.isArray(log.metricsV2)) {
+      const hasReps = log.metricsV2.some(m => m.key === 'reps');
+      const hasLoad = log.metricsV2.some(m => m.key === 'load');
+      const hasTime = log.metricsV2.some(m => m.key === 'time');
+      const hasDistance = log.metricsV2.some(m => m.key === 'distance');
+      return hasReps && hasLoad && !hasTime && !hasDistance;
+    }
+    // Legacy fallback
+    const repsMetric = log.repsMetric || 'reps';
+    const weightMetric = log.weightMetric || 'weight';
+    return repsMetric === 'reps' && weightMetric === 'weight';
+  }
+
+  // Get rep band from reps count
+  function getRepBandFromReps(reps) {
+    if (reps >= 1 && reps <= 5) return '1-5';
+    if (reps >= 6 && reps <= 8) return '6-8';
+    if (reps >= 9 && reps <= 12) return '9-12';
+    if (reps >= 13) return '13+';
+    return null;
+  }
+
+  // Admin-only: Recompute PRs for a specific exercise
+  async function recomputeExercisePrs(exerciseId, exerciseName) {
+    const targetUserId = getTargetUserId();
+    if (!targetUserId || userRole !== 'admin') return;
+
+    recomputingExerciseId = exerciseId;
+
+    try {
+      // Query all logs for this exercise and user
+      const logsQuery = query(
+        collection(db, 'workoutLogs'),
+        where('userId', '==', targetUserId),
+        where('exerciseId', '==', exerciseId)
+      );
+      const snapshot = await getDocsFromServer(logsQuery);
+
+      // Build best PRs per band
+      const bandBests = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
+
+      snapshot.docs.forEach(docSnap => {
+        const log = docSnap.data();
+        if (!isEligibleForPr(log)) return;
+
+        const weight = parseFloat(log.weight);
+        const reps = parseInt(log.reps);
+        if (isNaN(weight) || isNaN(reps) || weight <= 0 || reps <= 0) return;
+
+        const band = getRepBandFromReps(reps);
+        if (!band) return;
+
+        const existing = bandBests[band];
+        if (!existing || weight > existing.weight || (weight === existing.weight && reps > existing.reps)) {
+          bandBests[band] = {
+            weight,
+            reps,
+            sessionId: log.completedWorkoutId || null,
+            loggedAt: log.loggedAt
+          };
+        }
+      });
+
+      // Write or delete PR docs for each band
+      const now = serverTimestamp();
+      for (const band of ['1-5', '6-8', '9-12', '13+']) {
+        const bandKey = band.replace('-', '_').replace('+', '_plus');
+        const docId = `${exerciseId}__${bandKey}`;
+        const prRef = doc(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs', docId);
+
+        const best = bandBests[band];
+        if (best) {
+          await setDoc(prRef, {
+            exerciseId,
+            exerciseNameSnapshot: exerciseName,
+            repBand: band,
+            metric: 'topWeight',
+            bestWeight: best.weight,
+            bestReps: best.reps,
+            achievedAt: best.loggedAt || now,
+            sessionId: best.sessionId,
+            updatedAt: now
+          }, { merge: true });
+        } else {
+          // No candidate for this band - delete if exists
+          try {
+            await deleteDoc(prRef);
+          } catch (e) {
+            // Ignore if doesn't exist
+          }
+        }
+      }
+
+      // Refresh PR list
+      await loadPRStoreData();
+
+      // If modal is open for this exercise, refresh it too
+      if (selectedExercise?.exerciseId === exerciseId) {
+        await openExerciseHistory(exerciseId, exerciseName);
+      }
+    } catch (e) {
+      console.error('Could not recompute PRs:', e);
+    } finally {
+      recomputingExerciseId = null;
     }
   }
 
@@ -1323,6 +1433,16 @@
               <div class="pr-card-session">
                 {formatDate(group.hero.date)}{#if group.hero.dayName} • {group.hero.dayName}{/if}
               </div>
+              <!-- Admin-only: Recompute button -->
+              {#if userRole === 'admin'}
+                <button
+                  onclick={(e) => { e.stopPropagation(); recomputeExercisePrs(group.exerciseId, group.exerciseName); }}
+                  disabled={recomputingExerciseId === group.exerciseId}
+                  style="position: absolute; bottom: 0; right: 0; padding: 4px 8px; font-size: 0.7em; background: {recomputingExerciseId === group.exerciseId ? '#ccc' : '#f0f0f0'}; border: 1px solid #ddd; border-radius: 4px; cursor: {recomputingExerciseId === group.exerciseId ? 'not-allowed' : 'pointer'}; color: #666;"
+                >
+                  {recomputingExerciseId === group.exerciseId ? 'Recomputing…' : 'Recompute'}
+                </button>
+              {/if}
             </div>
 
             <!-- Right: Band Rail -->
@@ -1348,6 +1468,7 @@
               </div>
             {/each}
           </div>
+
         </div>
       {/each}
     {/if}
@@ -1753,6 +1874,7 @@
 
   /* Consolidated PR Card */
   .pr-card-consolidated {
+    position: relative;
     background: white;
     border: 1px solid #e0e0e0;
     border-radius: 12px;
@@ -1773,8 +1895,10 @@
   }
 
   .pr-card-hero {
+    position: relative;
     flex: 1;
     min-width: 0;
+    padding-bottom: 24px;
   }
 
   .pr-card-name {
