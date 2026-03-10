@@ -16,6 +16,7 @@
   let activeTab = $state('workouts'); // 'workouts' or 'prs'
   let prSortMode = $state('alpha'); // 'alpha' | 'alpha_desc' | 'strongest' | 'recent'
   let recomputingExerciseId = $state(null); // Track which exercise is being recomputed
+  let recomputingAllPRs = $state(false); // Track bulk recompute status
 
   // Derived target user for queries (admin can view other users)
   function getTargetUserId() {
@@ -347,6 +348,100 @@
       console.error('Could not recompute PRs:', e);
     } finally {
       recomputingExerciseId = null;
+    }
+  }
+
+  // Admin-only: Recompute ALL PRs for the target user
+  async function recomputeAllPrs() {
+    const targetUserId = getTargetUserId();
+    if (!targetUserId || userRole !== 'admin' || !selectedUserId) return;
+
+    if (!confirm('Recompute ALL personal records for this user? This will recalculate PRs from all workout logs.')) {
+      return;
+    }
+
+    recomputingAllPRs = true;
+
+    try {
+      // Query all logs for this user
+      const logsQuery = query(
+        collection(db, 'workoutLogs'),
+        where('userId', '==', targetUserId)
+      );
+      const snapshot = await getDocsFromServer(logsQuery);
+
+      // Build best PRs per (exerciseId, band)
+      const winners = {}; // Map: "exerciseId__bandKey" -> { weight, reps, sessionId, loggedAt, exerciseName }
+
+      snapshot.docs.forEach(docSnap => {
+        const log = docSnap.data();
+        if (!isEligibleForPr(log)) return;
+
+        const weight = parseFloat(log.weight);
+        const reps = parseInt(log.reps);
+        if (isNaN(weight) || isNaN(reps) || weight <= 0 || reps <= 0) return;
+
+        const band = getRepBandFromReps(reps);
+        if (!band) return;
+
+        const exerciseId = log.exerciseId;
+        if (!exerciseId) return;
+
+        const bandKey = band.replace('-', '_').replace('+', '_plus');
+        const docId = `${exerciseId}__${bandKey}`;
+
+        const existing = winners[docId];
+        if (!existing || weight > existing.weight || (weight === existing.weight && reps > existing.reps)) {
+          winners[docId] = {
+            exerciseId,
+            exerciseName: log.exerciseName || 'Unknown Exercise',
+            band,
+            bandKey,
+            weight,
+            reps,
+            sessionId: log.completedWorkoutId || null,
+            loggedAt: log.loggedAt
+          };
+        }
+      });
+
+      const winnerDocIds = new Set(Object.keys(winners));
+
+      // Write PR docs for all winners
+      const now = serverTimestamp();
+      for (const [docId, winner] of Object.entries(winners)) {
+        const prRef = doc(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs', docId);
+        await setDoc(prRef, {
+          exerciseId: winner.exerciseId,
+          exerciseNameSnapshot: winner.exerciseName,
+          repBand: winner.band,
+          metric: 'topWeight',
+          bestWeight: winner.weight,
+          bestReps: winner.reps,
+          achievedAt: winner.loggedAt || now,
+          sessionId: winner.sessionId,
+          updatedAt: now
+        }, { merge: true });
+      }
+
+      // Delete stale PR docs that are not in winners
+      const prsRef = collection(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs');
+      const existingSnapshot = await getDocsFromServer(prsRef);
+      for (const docSnap of existingSnapshot.docs) {
+        if (!winnerDocIds.has(docSnap.id)) {
+          await deleteDoc(doc(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs', docSnap.id));
+        }
+      }
+
+      // Refresh PR list
+      await loadPRStoreData();
+
+      alert('PRs recomputed successfully!');
+    } catch (e) {
+      console.error('Could not recompute all PRs:', e);
+      alert('Error recomputing PRs. Please try again.');
+    } finally {
+      recomputingAllPRs = false;
     }
   }
 
@@ -1376,6 +1471,17 @@
     {:else}
       <!-- Explainer text -->
       <p class="pr-explainer">Highest weight achieved within each rep range.</p>
+
+      <!-- Admin-only: Bulk recompute all PRs -->
+      {#if userRole === 'admin' && selectedUserId}
+        <button
+          onclick={recomputeAllPrs}
+          disabled={recomputingAllPRs}
+          style="margin-bottom: 12px; padding: 8px 14px; font-size: 0.85em; background: {recomputingAllPRs ? '#ccc' : '#fff3e0'}; border: 1px solid #ff9800; border-radius: 6px; cursor: {recomputingAllPRs ? 'not-allowed' : 'pointer'}; color: #e65100;"
+        >
+          {recomputingAllPRs ? 'Recomputing...' : 'Recompute all PRs'}
+        </button>
+      {/if}
 
       <!-- Legend row -->
       <div class="pr-legend">
