@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, query, where, getDocs, orderBy, doc, getDoc, deleteDoc, writeBatch, increment } from 'firebase/firestore';
+  import { collection, query, where, getDocs, getDocsFromServer, orderBy, doc, getDoc, deleteDoc, writeBatch, increment } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import SessionDetailModal from '$lib/components/SessionDetailModal.svelte';
@@ -198,7 +198,7 @@
 
     try {
       const prsRef = collection(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs');
-      const snapshot = await getDocs(prsRef);
+      const snapshot = await getDocsFromServer(prsRef);
 
       const prs = [];
       snapshot.docs.forEach(docSnap => {
