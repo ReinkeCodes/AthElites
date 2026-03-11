@@ -14,6 +14,7 @@
   let newType = $state('Compound');
   let customType = $state('');
   let newNotes = $state('');
+  let newLaterality = $state('bilateral');
 
   // Edit mode
   let editingId = $state(null);
@@ -22,6 +23,7 @@
   let editCustomType = $state('');
   let editNotes = $state('');
   let editVideoUrl = $state('');
+  let editLaterality = $state('bilateral');
 
   // Video URL
   let newVideoUrl = $state('');
@@ -30,6 +32,7 @@
   // Filter/sort
   let sortBy = $state('alphabetical');
   let filterType = $state('all');
+  let filterLaterality = $state('all');
 
   // Video modal
   let videoModalExercise = $state(null);
@@ -133,6 +136,13 @@
     // Filter by type
     if (filterType !== 'all') {
       result = result.filter(e => e.type === filterType);
+    }
+
+    // Filter by laterality
+    if (filterLaterality === 'bilateral') {
+      result = result.filter(e => e.laterality !== 'unilateral');
+    } else if (filterLaterality === 'unilateral') {
+      result = result.filter(e => e.laterality === 'unilateral');
     }
 
     // Sort
@@ -284,6 +294,7 @@
     editCustomType = getAllTypes().includes(exercise.type) ? '' : exercise.type;
     editNotes = exercise.notes || '';
     editVideoUrl = exercise.videoUrl || '';
+    editLaterality = exercise.laterality || 'bilateral';
     videoUrlError = '';
   }
 
@@ -295,6 +306,7 @@
     editCustomType = '';
     editNotes = '';
     editVideoUrl = '';
+    editLaterality = 'bilateral';
     videoUrlError = '';
   }
 
@@ -319,7 +331,8 @@
       const updateData = {
         name: editName,
         type: finalType,
-        notes: editNotes
+        notes: editNotes,
+        laterality: editLaterality
       };
       if (videoValidation.value) {
         updateData.videoUrl = videoValidation.value;
@@ -366,6 +379,7 @@
         name: newName,
         type: finalType,
         notes: newNotes,
+        laterality: newLaterality,
         createdAt: new Date(),
         createdByRole: userRole,
         createdByUserId: currentUserId
@@ -381,6 +395,7 @@
       customType = '';
       newNotes = '';
       newVideoUrl = '';
+      newLaterality = 'bilateral';
     } catch (err) {
       showToast(`Failed to create exercise: ${err.message}`);
     }
@@ -420,6 +435,13 @@
           {#each getAllTypes() as type}
             <option value={type}>{type}</option>
           {/each}
+        </select>
+      </label>
+      <label style="margin-left: 15px;">
+        Laterality:
+        <select bind:value={newLaterality} style="padding: 8px;">
+          <option value="bilateral">Bilateral</option>
+          <option value="unilateral">Unilateral</option>
         </select>
       </label>
     </div>
@@ -472,6 +494,15 @@
       {/each}
     </select>
   </label>
+
+  <label style="margin-left: 15px;">
+    Laterality:
+    <select bind:value={filterLaterality} style="padding: 5px;">
+      <option value="all">All</option>
+      <option value="bilateral">Bilateral</option>
+      <option value="unilateral">Unilateral</option>
+    </select>
+  </label>
 </div>
 
 {#if getFilteredExercises().length === 0}
@@ -502,6 +533,15 @@
                 style="padding: 8px; flex: 1;"
               />
             {/if}
+          </div>
+          <div>
+            <label>
+              Laterality:
+              <select bind:value={editLaterality} style="padding: 8px;">
+                <option value="bilateral">Bilateral</option>
+                <option value="unilateral">Unilateral</option>
+              </select>
+            </label>
           </div>
           <textarea
             bind:value={editNotes}
