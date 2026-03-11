@@ -344,7 +344,8 @@
             customInputs: log.customInputs,
             metricsV2: log.metricsV2,
             repsMetric: log.repsMetric,
-            weightMetric: log.weightMetric
+            weightMetric: log.weightMetric,
+            side: log.side || null
           }))
         };
       }
@@ -510,6 +511,7 @@
               } else {
                 // Create per-set tracking using workoutExerciseId for uniqueness
                 const numSets = parseInt(exercise.sets) || 3;
+                const isUnilateral = exercise.laterality === 'unilateral';
                 logs[exercise.workoutExerciseId] = {
                   targetSets: numSets,
                   targetReps: exercise.reps || '',
@@ -519,7 +521,8 @@
                     reps: '',
                     weight: '',
                     rir: '',
-                    notes: ''
+                    notes: '',
+                    side: isUnilateral ? 'L' : null
                   }))
                 };
                 // Initialize active set index to 0 (first set)
@@ -647,7 +650,8 @@
                 customInputs: log.customInputs,
                 metricsV2: log.metricsV2,
                 repsMetric: log.repsMetric,
-                weightMetric: log.weightMetric
+                weightMetric: log.weightMetric,
+                side: log.side || null
               }))
             };
           }
@@ -861,10 +865,11 @@
   }
 
   // Add another set to an exercise
-  function addSet(workoutExerciseId) {
+  function addSet(workoutExerciseId, laterality = null) {
     const log = exerciseLogs[workoutExerciseId];
     if (log && log.sets) {
-      log.sets.push({ reps: '', weight: '', rir: '', notes: '' });
+      const isUnilateral = laterality === 'unilateral';
+      log.sets.push({ reps: '', weight: '', rir: '', notes: '', side: isUnilateral ? 'L' : null });
       exerciseLogs = { ...exerciseLogs };
       // Navigate to the newly added set
       activeSetIndices[workoutExerciseId] = log.sets.length - 1;
@@ -2135,6 +2140,7 @@
                   weightMetric: weightMetric,
                   customInputs: set.customInputs || null,
                   metricsV2: metricsV2,
+                  side: set.side || null,
                   loggedAt: loggedAt
                 }));
               }
@@ -2427,7 +2433,7 @@
                       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
                         <!-- Green plus (add set) - left -->
                         <button
-                          onclick={() => addSet(exercise.workoutExerciseId)}
+                          onclick={() => addSet(exercise.workoutExerciseId, exercise.laterality)}
                           style="background: none; border: none; color: #4CAF50; cursor: pointer; font-size: 1.5em; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
                           title="Add set"
                         >+</button>
@@ -2479,6 +2485,22 @@
                             onclick={() => skipSet(exercise.workoutExerciseId, setIndex)}
                             aria-label="Skip this set"
                           >Skip</button>
+                        </div>
+                      {/if}
+
+                      <!-- L/R toggle for unilateral exercises -->
+                      {#if exercise.laterality === 'unilateral'}
+                        <div style="display: flex; justify-content: center; margin-bottom: 10px;">
+                          <div style="display: inline-flex; border: 1px solid #667eea; border-radius: 6px; overflow: hidden;">
+                            <button
+                              onclick={() => { set.side = 'L'; exerciseLogs = { ...exerciseLogs }; }}
+                              style="padding: 6px 16px; border: none; cursor: pointer; font-weight: 600; font-size: 0.9em; background: {set.side === 'L' ? '#667eea' : 'white'}; color: {set.side === 'L' ? 'white' : '#667eea'};"
+                            >L</button>
+                            <button
+                              onclick={() => { set.side = 'R'; exerciseLogs = { ...exerciseLogs }; }}
+                              style="padding: 6px 16px; border: none; border-left: 1px solid #667eea; cursor: pointer; font-weight: 600; font-size: 0.9em; background: {set.side === 'R' ? '#667eea' : 'white'}; color: {set.side === 'R' ? 'white' : '#667eea'};"
+                            >R</button>
+                          </div>
                         </div>
                       {/if}
 
@@ -2929,6 +2951,7 @@
               {@const line = formatRecentSetLine(set)}
               <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: white; border-radius: 5px; font-size: 0.9em;">
                 <span style="font-weight: bold; color: #667eea; min-width: 40px;">Set {set.setNumber}</span>
+                {#if set.side}<span style="background: #e3f2fd; color: #1565c0; font-size: 0.75em; font-weight: 600; padding: 2px 6px; border-radius: 4px;">{set.side}</span>{/if}
                 <span>{line}</span>
                 {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
               </div>

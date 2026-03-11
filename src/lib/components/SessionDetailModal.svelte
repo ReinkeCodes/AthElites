@@ -115,6 +115,7 @@
         {@const secondary = formatSecondaryMetric(set)}
         <div style="display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin-bottom: 4px; background: #f8f9fa; border-radius: 5px; font-size: 0.9em;">
           <span style="font-weight: bold; color: #667eea; min-width: 35px;">Set {set.setNumber}</span>
+          {#if set.side}<span style="background: #e3f2fd; color: #1565c0; font-size: 0.75em; font-weight: 600; padding: 2px 6px; border-radius: 4px;">{set.side}</span>{/if}
           <span style="color: #333;"><strong>{primary.value}</strong>{#if primary.label}&nbsp;{primary.label}{/if}{#if secondary}&nbsp;@&nbsp;<strong>{secondary.value}</strong>{#if secondary.label}&nbsp;{secondary.label}{/if}{/if}{#if set.rir}&nbsp;<span style="color: #888;">(RIR: {set.rir})</span>{/if}</span>
         </div>
         {#if set.customInputs && getCustomReqs}{#each Object.entries(set.customInputs) as [idx, val]}{#if val}{@const reqs = getCustomReqs(set.programId, set.workoutExerciseId)}{@const req = reqs?.[parseInt(idx)]}<div style="color: #9c27b0; font-size: 0.8em; margin: 2px 0 0 45px;">{req?.name || `Custom ${parseInt(idx)+1}`}: {val}{#if req?.value}&nbsp;(Target: {req.value}){/if}</div>{/if}{/each}{/if}

@@ -529,7 +529,8 @@
         metricsV2: log.metricsV2,
         customInputs: log.customInputs,
         workoutExerciseId: log.workoutExerciseId,
-        programId: log.programId
+        programId: log.programId,
+        side: log.side || null
       });
     });
 
