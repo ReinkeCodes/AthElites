@@ -50,8 +50,15 @@
   let videoModalExercise = $state(null);
   let pendingVideoExercise = $state(null);
 
-  // Exercises library (for video URLs)
+  // Exercises library (for video URLs and laterality fallback)
   let exercises = $state([]);
+
+  // Get laterality with fallback to exercise library
+  function getLaterality(exercise) {
+    if (exercise.laterality) return exercise.laterality;
+    const libEx = exercises.find(e => e.id === exercise.exerciseId);
+    return libEx?.laterality || 'bilateral';
+  }
 
   // Single-flight lock to prevent double Finish execution
   let isSavingFinish = $state(false);
@@ -2140,7 +2147,7 @@
                   weightMetric: weightMetric,
                   customInputs: set.customInputs || null,
                   metricsV2: metricsV2,
-                  side: set.side || null,
+                  side: getLaterality(exercise) === 'unilateral' ? (set.side || 'L') : null,
                   loggedAt: loggedAt
                 }));
               }
@@ -2422,6 +2429,7 @@
                   {#if log.sets[activeIdx]}
                     {@const set = log.sets[activeIdx]}
                     {@const setIndex = activeIdx}
+                    {@const laterality = getLaterality(exercise)}
                     <div
                       style="background: white; border: 2px solid #667eea; border-radius: 8px; padding: 12px; margin-bottom: 6px; touch-action: pan-y;"
                       ontouchstart={(e) => handleSwipeStart(exercise.workoutExerciseId, e)}
@@ -2433,7 +2441,7 @@
                       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
                         <!-- Green plus (add set) - left -->
                         <button
-                          onclick={() => addSet(exercise.workoutExerciseId, exercise.laterality)}
+                          onclick={() => addSet(exercise.workoutExerciseId, getLaterality(exercise))}
                           style="background: none; border: none; color: #4CAF50; cursor: pointer; font-size: 1.5em; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
                           title="Add set"
                         >+</button>
@@ -2454,30 +2462,52 @@
                         {/if}
                       </div>
 
-                      <!-- Dot indicator with navigation arrows -->
-                      <div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 10px;">
-                        <button
-                          onclick={() => prevSet(exercise.workoutExerciseId)}
-                          disabled={activeIdx === 0}
-                          aria-label="Previous set"
-                          style="background: none; border: none; font-size: 1.5em; color: {activeIdx === 0 ? '#ccc' : '#555'}; cursor: {activeIdx === 0 ? 'default' : 'pointer'}; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
-                        >&lt;</button>
-                        <div style="display: flex; gap: 8px;">
-                          {#each log.sets as dotSet, dotIndex}
-                            {@const completionState = getSetCompletionState(dotSet)}
-                            {@const isActive = dotIndex === activeIdx}
-                            <div style="width: {isActive ? '12px' : '10px'}; height: {isActive ? '12px' : '10px'}; border-radius: 50%; background: {getDotColor(completionState)}; {isActive ? 'box-shadow: 0 0 0 2px #667eea;' : ''} transition: all 0.2s;"></div>
-                          {/each}
+                      <!-- 3-column control row: L/R toggle (left) | Set selector (center) | spacer (right) -->
+                      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                        <!-- Left column: L/R toggle (left-aligned, above label column) -->
+                        <div style="min-width: 60px;">
+                          {#if laterality === 'unilateral'}
+                            <div
+                              onclick={() => { set.side = (set.side || 'L') === 'L' ? 'R' : 'L'; exerciseLogs = { ...exerciseLogs }; }}
+                              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); set.side = (set.side || 'L') === 'L' ? 'R' : 'L'; exerciseLogs = { ...exerciseLogs }; } }}
+                              role="button"
+                              tabindex="0"
+                              style="display: inline-flex; padding: 6px 8px; margin: -6px -8px; cursor: pointer;"
+                            >
+                              <div style="display: inline-flex; border: 1px solid #667eea; border-radius: 4px; overflow: hidden; align-items: center;">
+                                <span style="padding: {(set.side || 'L') === 'L' ? '4px 10px' : '2px 5px'}; font-weight: {(set.side || 'L') === 'L' ? '700' : '400'}; font-size: {(set.side || 'L') === 'L' ? '0.85em' : '0.55em'}; background: {(set.side || 'L') === 'L' ? '#667eea' : 'white'}; color: {(set.side || 'L') === 'L' ? 'white' : '#999'};">L</span>
+                                <span style="padding: {set.side === 'R' ? '4px 10px' : '2px 5px'}; border-left: 1px solid #667eea; font-weight: {set.side === 'R' ? '700' : '400'}; font-size: {set.side === 'R' ? '0.85em' : '0.55em'}; background: {set.side === 'R' ? '#667eea' : 'white'}; color: {set.side === 'R' ? 'white' : '#999'};">R</span>
+                              </div>
+                            </div>
+                          {/if}
                         </div>
-                        <button
-                          onclick={() => nextSet(exercise.workoutExerciseId)}
-                          disabled={activeIdx === log.sets.length - 1}
-                          aria-label="Next set"
-                          style="background: none; border: none; font-size: 1.5em; color: {activeIdx === log.sets.length - 1 ? '#ccc' : '#555'}; cursor: {activeIdx === log.sets.length - 1 ? 'default' : 'pointer'}; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
-                        >&gt;</button>
+                        <!-- Middle column: Set selector (centered) -->
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                          <button
+                            onclick={() => prevSet(exercise.workoutExerciseId)}
+                            disabled={activeIdx === 0}
+                            aria-label="Previous set"
+                            style="background: none; border: none; font-size: 1.5em; color: {activeIdx === 0 ? '#ccc' : '#555'}; cursor: {activeIdx === 0 ? 'default' : 'pointer'}; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
+                          >&lt;</button>
+                          <div style="display: flex; gap: 8px;">
+                            {#each log.sets as dotSet, dotIndex}
+                              {@const completionState = getSetCompletionState(dotSet)}
+                              {@const isActive = dotIndex === activeIdx}
+                              <div style="width: {isActive ? '12px' : '10px'}; height: {isActive ? '12px' : '10px'}; border-radius: 50%; background: {getDotColor(completionState)}; {isActive ? 'box-shadow: 0 0 0 2px #667eea;' : ''} transition: all 0.2s;"></div>
+                            {/each}
+                          </div>
+                          <button
+                            onclick={() => nextSet(exercise.workoutExerciseId)}
+                            disabled={activeIdx === log.sets.length - 1}
+                            aria-label="Next set"
+                            style="background: none; border: none; font-size: 1.5em; color: {activeIdx === log.sets.length - 1 ? '#ccc' : '#555'}; cursor: {activeIdx === log.sets.length - 1 ? 'default' : 'pointer'}; padding: 8px; min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center;"
+                          >&gt;</button>
+                        </div>
+                        <!-- Right column: spacer for centering -->
+                        <div style="min-width: 60px;"></div>
                       </div>
 
-                      <!-- Skip set button (below tracker dots) - only show if set has empty fields -->
+                      <!-- Skip set button (centered below selector) -->
                       {#if setHasEmptyFields(set)}
                         <div style="display: flex; justify-content: center; margin-bottom: 6px;">
                           <button
@@ -2485,22 +2515,6 @@
                             onclick={() => skipSet(exercise.workoutExerciseId, setIndex)}
                             aria-label="Skip this set"
                           >Skip</button>
-                        </div>
-                      {/if}
-
-                      <!-- L/R toggle for unilateral exercises -->
-                      {#if exercise.laterality === 'unilateral'}
-                        <div style="display: flex; justify-content: center; margin-bottom: 10px;">
-                          <div style="display: inline-flex; border: 1px solid #667eea; border-radius: 6px; overflow: hidden;">
-                            <button
-                              onclick={() => { set.side = 'L'; exerciseLogs = { ...exerciseLogs }; }}
-                              style="padding: 6px 16px; border: none; cursor: pointer; font-weight: 600; font-size: 0.9em; background: {set.side === 'L' ? '#667eea' : 'white'}; color: {set.side === 'L' ? 'white' : '#667eea'};"
-                            >L</button>
-                            <button
-                              onclick={() => { set.side = 'R'; exerciseLogs = { ...exerciseLogs }; }}
-                              style="padding: 6px 16px; border: none; border-left: 1px solid #667eea; cursor: pointer; font-weight: 600; font-size: 0.9em; background: {set.side === 'R' ? '#667eea' : 'white'}; color: {set.side === 'R' ? 'white' : '#667eea'};"
-                            >R</button>
-                          </div>
                         </div>
                       {/if}
 
