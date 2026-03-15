@@ -1554,7 +1554,8 @@
     const hasValue = currentVal !== null && currentVal !== undefined && String(currentVal).trim() !== '' && currentVal !== 'DNC';
     // Use current value if present, otherwise use lastEntered/target as base
     const base = hasValue ? parseFloat(currentVal) || 0 : getStepperBase(workoutExerciseId, field);
-    let newVal = base + delta;
+    // First tap on empty field: seed to displayed placeholder/default, don't apply delta yet
+    let newVal = hasValue ? base + delta : base;
     if (field === 'rir') newVal = Math.max(0, Math.min(10, newVal));
     else newVal = Math.max(0, newVal);
     log.sets[setIndex][field] = String(newVal);
@@ -2476,7 +2477,7 @@
                             >
                               <div style="display: inline-flex; border: 1px solid #667eea; border-radius: 4px; overflow: hidden; align-items: center;">
                                 <span style="padding: {(set.side || 'L') === 'L' ? '4px 10px' : '2px 5px'}; font-weight: {(set.side || 'L') === 'L' ? '700' : '400'}; font-size: {(set.side || 'L') === 'L' ? '0.85em' : '0.55em'}; background: {(set.side || 'L') === 'L' ? '#667eea' : 'white'}; color: {(set.side || 'L') === 'L' ? 'white' : '#999'};">L</span>
-                                <span style="padding: {set.side === 'R' ? '4px 10px' : '2px 5px'}; border-left: 1px solid #667eea; font-weight: {set.side === 'R' ? '700' : '400'}; font-size: {set.side === 'R' ? '0.85em' : '0.55em'}; background: {set.side === 'R' ? '#667eea' : 'white'}; color: {set.side === 'R' ? 'white' : '#999'};">R</span>
+                                <span style="padding: {set.side === 'R' ? '4px 10px' : '2px 5px'}; font-weight: {set.side === 'R' ? '700' : '400'}; font-size: {set.side === 'R' ? '0.85em' : '0.55em'}; background: {set.side === 'R' ? '#667eea' : 'white'}; color: {set.side === 'R' ? 'white' : '#999'};">R</span>
                               </div>
                             </div>
                           {/if}
