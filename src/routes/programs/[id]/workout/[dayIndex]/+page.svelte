@@ -7,6 +7,7 @@
   import { goto } from '$app/navigation';
   import { setDraft, getDraftKey as getDraftKeyHelper } from '$lib/workoutDraft.js';
   import { primeGoalTimerAudio, playGoalTimerAudio, primeRestTimerAudio, playRestTimerAudio, pauseRestTimerAudio, resumeRestTimerAudio, stopRestTimerAudio, isRestSfxEnabled } from '$lib/utils/timerFeedback.js';
+  import { getPrDocId, buildPrPayload, isValidSideForPr, bandToKey, getRepBandFromReps, ALL_REP_BANDS, extractPrCandidate, isPrBetterThanExisting } from '$lib/prHelpers.js';
   import timerIcon from '$lib/assets/timer-icon-7797.png';
 
   let program = $state(null);
@@ -506,6 +507,10 @@
         const programDays = program.publishedDays || program.days;
         day = programDays?.[dayIndex];
 
+        // Load exercises library first so getLaterality() can use it for initialization
+        const exercisesSnap = await getDocs(collection(db, 'exercises'));
+        exercises = exercisesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
         // Initialize exercise logs for all exercises
         if (day?.sections) {
           const logs = {};
@@ -518,7 +523,8 @@
               } else {
                 // Create per-set tracking using workoutExerciseId for uniqueness
                 const numSets = parseInt(exercise.sets) || 3;
-                const isUnilateral = exercise.laterality === 'unilateral';
+                // Use getLaterality to check library if exercise.laterality is not set
+                const isUnilateral = getLaterality(exercise) === 'unilateral';
                 logs[exercise.workoutExerciseId] = {
                   targetSets: numSets,
                   targetReps: exercise.reps || '',
@@ -555,10 +561,6 @@
           if (currentUserId) {
             await loadExerciseHistory();
           }
-
-          // Load exercises library for video URLs
-          const exercisesSnap = await getDocs(collection(db, 'exercises'));
-          exercises = exercisesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         }
       }
     });
@@ -1816,19 +1818,10 @@
     }, { merge: true });
   }
 
-  // Rep-band classification for strength PRs
-  // Bands: 1-5, 6-8, 9-12, 13+
-  function getRepBand(reps) {
-    if (reps >= 1 && reps <= 5) return '1-5';
-    if (reps >= 6 && reps <= 8) return '6-8';
-    if (reps >= 9 && reps <= 12) return '9-12';
-    if (reps >= 13) return '13+';
-    return null;
-  }
-
   // Collect PR candidates from the current session (strength sets only, full-tracking sections)
-  // Returns: Map<string, { exerciseId, exerciseName, repBand, weight, reps }>
-  // Key format: `${exerciseId}__${repBand}`
+  // Uses canonical extractPrCandidate helper to ensure same logic as recompute
+  // Returns: Map<string, { exerciseId, exerciseName, repBand, weight, reps, laterality, side }>
+  // Key format: `${exerciseId}__${repBand}` for bilateral, `${exerciseId}__${repBand}__${side}` for unilateral
   function collectPrCandidates() {
     const candidates = new Map();
 
@@ -1840,36 +1833,20 @@
         const log = exerciseLogs[exercise.workoutExerciseId];
         if (!log || !log.sets) continue;
 
+        const laterality = getLaterality(exercise);
+
         for (const set of log.sets) {
-          // Skip time/distance sets - only reps-based sets qualify for rep-band PRs
-          const repsMetric = exercise.repsMetric || 'reps';
-          if (set.metricsV2 && Array.isArray(set.metricsV2)) {
-            if (!set.metricsV2.some(m => m.key === 'reps')) continue;
-          } else if (repsMetric === 'time') {
-            continue;
-          }
+          // Use canonical helper to extract PR candidate (handles eligibility, validation, side)
+          const candidate = extractPrCandidate(set, exercise, laterality);
+          if (!candidate) continue;
 
-          const weight = parseFloat(set.weight);
-          const reps = parseInt(set.reps);
-
-          // Must have valid numeric weight + reps for strength PR
-          if (isNaN(weight) || isNaN(reps) || weight <= 0 || reps <= 0) continue;
-
-          const repBand = getRepBand(reps);
-          if (!repBand) continue;
-
-          const key = `${exercise.exerciseId}__${repBand}`;
+          // Build side-aware doc ID as key
+          const key = getPrDocId(candidate.exerciseId, candidate.repBand, candidate.laterality, candidate.side);
           const existing = candidates.get(key);
 
           // Keep best: highest weight wins, tie-breaker = more reps
-          if (!existing || weight > existing.weight || (weight === existing.weight && reps > existing.reps)) {
-            candidates.set(key, {
-              exerciseId: exercise.exerciseId,
-              exerciseName: exercise.name,
-              repBand,
-              weight,
-              reps
-            });
+          if (!existing || isPrBetterThanExisting(candidate, { bestWeight: existing.weight, bestReps: existing.reps })) {
+            candidates.set(key, candidate);
           }
         }
       }
@@ -1879,64 +1856,53 @@
   }
 
   // Update exercise PR docs for this session (write-forward, non-blocking)
-  // Path: user/{userId}/stats/prs/exercisePrs/{exerciseId}__{repBand}
+  // Uses canonical helpers to ensure same logic as recompute
+  // Path: user/{userId}/stats/prs/exercisePrs/{docId}
+  // For bilateral: exerciseId__bandKey
+  // For unilateral: exerciseId__bandKey__side
   async function updateExercisePrs(userId, sessionId) {
     const candidates = collectPrCandidates();
     if (candidates.size === 0) return;
 
     const now = serverTimestamp();
 
-    for (const [key, candidate] of candidates) {
+    for (const [docId, candidate] of candidates) {
       try {
-        // Document ID: replace hyphen with underscore, plus with _plus for Firestore safety
-        // Path: user/{uid}/stats/prs/exercisePrs/{docId} (6 segments = valid doc ref)
-        // Examples: "6-8" → "6_8", "13+" → "13_plus"
-        const bandKey = candidate.repBand.replace('-', '_').replace('+', '_plus');
-        const docId = `${candidate.exerciseId}__${bandKey}`;
+        // docId is already the correct side-aware format from collectPrCandidates
         const prRef = doc(db, 'user', userId, 'stats', 'prs', 'exercisePrs', docId);
 
         const prSnap = await getDoc(prRef);
+        const existing = prSnap.exists() ? prSnap.data() : null;
 
-        let shouldUpdate = false;
-        if (!prSnap.exists()) {
-          // No existing PR - create it
-          shouldUpdate = true;
-        } else {
-          const existing = prSnap.data();
-          const existingWeight = existing.bestWeight || 0;
-          const existingReps = existing.bestReps || 0;
-
-          // Update if candidate beats existing: higher weight, or same weight with more reps
-          if (candidate.weight > existingWeight) {
-            shouldUpdate = true;
-          } else if (candidate.weight === existingWeight && candidate.reps > existingReps) {
-            shouldUpdate = true;
-          }
-        }
-
-        if (shouldUpdate) {
-          await setDoc(prRef, {
+        // Use canonical comparison helper
+        if (isPrBetterThanExisting(candidate, existing)) {
+          // Build payload with schema v2 metadata using canonical helper
+          const payload = buildPrPayload({
             exerciseId: candidate.exerciseId,
-            exerciseNameSnapshot: candidate.exerciseName,
-            repBand: candidate.repBand,
-            metric: 'topWeight',
-            bestWeight: candidate.weight,
-            bestReps: candidate.reps,
+            exerciseName: candidate.exerciseName,
+            band: candidate.repBand,
+            weight: candidate.weight,
+            reps: candidate.reps,
+            laterality: candidate.laterality,
+            side: candidate.side,
+            sessionId,
             achievedAt: now,
-            sessionId: sessionId,
             updatedAt: now
-          }, { merge: true });
+          });
+
+          await setDoc(prRef, payload, { merge: true });
         }
       } catch (err) {
         // Non-fatal: log and continue with other PR candidates
-        console.error(`PR update failed for ${key}:`, err);
+        console.error(`PR update failed for ${docId}:`, err);
       }
     }
   }
 
   // Detect new PRs achieved in this session by comparing candidates against existing PR docs
+  // Uses canonical helpers to ensure same logic as recompute
   // Must be called BEFORE updateExercisePrs() to get accurate "prev" values
-  // Returns: Array<{ exerciseId, exerciseName, repBand, newWeight, newReps, prevWeight, prevReps }>
+  // Returns: Array<{ exerciseId, exerciseName, repBand, newWeight, newReps, prevWeight, prevReps, side }>
   async function detectNewPrs(userId) {
     const candidates = collectPrCandidates();
     if (candidates.size === 0) return [];
@@ -1947,48 +1913,32 @@
     const readPromises = [];
     const candidateList = Array.from(candidates.entries());
 
-    for (const [key, candidate] of candidateList) {
-      const bandKey = candidate.repBand.replace('-', '_').replace('+', '_plus');
-      const docId = `${candidate.exerciseId}__${bandKey}`;
+    for (const [docId, candidate] of candidateList) {
+      // docId is already the correct side-aware format from collectPrCandidates
       const prRef = doc(db, 'user', userId, 'stats', 'prs', 'exercisePrs', docId);
 
       readPromises.push(
         getDoc(prRef)
-          .then(snap => ({ key, candidate, snap, error: null }))
-          .catch(err => ({ key, candidate, snap: null, error: err }))
+          .then(snap => ({ docId, candidate, snap, error: null }))
+          .catch(err => ({ docId, candidate, snap: null, error: err }))
       );
     }
 
     const results = await Promise.all(readPromises);
 
-    for (const { key, candidate, snap, error } of results) {
+    for (const { docId, candidate, snap, error } of results) {
       if (error) {
         // Non-fatal: skip this candidate if read fails
-        console.error(`PR read failed for ${key}:`, error);
+        console.error(`PR read failed for ${docId}:`, error);
         continue;
       }
 
-      let isNewPr = false;
-      let prevWeight = null;
-      let prevReps = null;
+      const existing = (snap && snap.exists()) ? snap.data() : null;
+      const prevWeight = existing?.bestWeight || null;
+      const prevReps = existing?.bestReps || null;
 
-      if (!snap || !snap.exists()) {
-        // No existing PR doc - this is a new PR
-        isNewPr = true;
-      } else {
-        const existing = snap.data();
-        prevWeight = existing.bestWeight || 0;
-        prevReps = existing.bestReps || 0;
-
-        // Check if candidate beats existing
-        if (candidate.weight > prevWeight) {
-          isNewPr = true;
-        } else if (candidate.weight === prevWeight && candidate.reps > prevReps) {
-          isNewPr = true;
-        }
-      }
-
-      if (isNewPr) {
+      // Use canonical comparison helper
+      if (isPrBetterThanExisting(candidate, existing)) {
         newPrs.push({
           exerciseId: candidate.exerciseId,
           exerciseName: candidate.exerciseName,
@@ -1996,7 +1946,8 @@
           newWeight: candidate.weight,
           newReps: candidate.reps,
           prevWeight,
-          prevReps
+          prevReps,
+          side: candidate.side
         });
       }
     }
