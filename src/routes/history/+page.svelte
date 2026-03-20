@@ -846,6 +846,7 @@
   // Load rep-band PRs from Firestore PR store
   // Path: user/{uid}/stats/prs/exercisePrs/{exerciseId}__{repBandKey}
   // Returns: { '1-5': PR|null, '6-8': PR|null, '9-12': PR|null, '13+': PR|null }
+  // Load bilateral-only rep-band PRs (legacy function, used for backward compatibility)
   async function loadExerciseRepBandPrs(userId, exerciseId) {
     const bands = ['1-5', '6-8', '9-12', '13+'];
     const result = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
@@ -881,19 +882,90 @@
     return result;
   }
 
+  // Load side-aware rep-band PRs for unilateral exercises
+  // Returns { left: { repRanges, e1rm }, right: { repRanges, e1rm } }
+  async function loadExerciseRepBandPrsSideAware(userId, exerciseId) {
+    const bands = ['1-5', '6-8', '9-12', '13+'];
+    const sides = ['L', 'R'];
+
+    const result = {
+      left: { repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null }, e1rm: null },
+      right: { repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null }, e1rm: null }
+    };
+
+    // Build all read promises for both sides and all bands
+    const readPromises = [];
+    for (const side of sides) {
+      for (const band of bands) {
+        const bandKey = band.replace('-', '_').replace('+', '_plus');
+        const docId = `${exerciseId}__${bandKey}__${side}`;
+        const prRef = doc(db, 'user', userId, 'stats', 'prs', 'exercisePrs', docId);
+
+        readPromises.push(
+          getDoc(prRef)
+            .then(snap => ({ side, band, snap, error: null }))
+            .catch(err => ({ side, band, snap: null, error: err }))
+        );
+      }
+    }
+
+    const results = await Promise.all(readPromises);
+
+    // Process results and populate side-specific data
+    for (const { side, band, snap, error } of results) {
+      if (error) {
+        console.error(`Failed to read PR for ${side} ${band}:`, error);
+        continue;
+      }
+      if (snap && snap.exists()) {
+        const data = snap.data();
+        const sideKey = side === 'L' ? 'left' : 'right';
+        result[sideKey].repRanges[band] = {
+          weight: data.bestWeight,
+          reps: data.bestReps,
+          date: data.achievedAt,
+          notes: null
+        };
+      }
+    }
+
+    // Calculate e1RM for each side independently
+    for (const sideKey of ['left', 'right']) {
+      let best1RM = null;
+      for (const band of bands) {
+        const pr = result[sideKey].repRanges[band];
+        if (pr && pr.weight > 0 && pr.reps > 0) {
+          const e1rm = pr.weight * (1 + pr.reps / 30);
+          if (!best1RM || e1rm > best1RM.e1rm) {
+            best1RM = { e1rm: Math.round(e1rm), weight: pr.weight, reps: pr.reps, date: pr.date };
+          }
+        }
+      }
+      result[sideKey].e1rm = best1RM;
+    }
+
+    return result;
+  }
+
   async function openExerciseHistory(exerciseId, exerciseName) {
     selectedExercise = { exerciseId, exerciseName };
 
     // Clear stale data immediately to prevent orphan PR display
-    selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null } };
+    selectedExerciseHistory = { e1rm: null, repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null }, laterality: 'bilateral' };
     exerciseSessions = [];
     selectedExerciseSession = null;
     exerciseSessionSets = [];
 
     const targetUserId = getTargetUserId();
 
+    // Detect laterality for this exercise
+    await loadExercisesLibrary();
+    const laterality = getExerciseLaterality(exerciseId);
+
     // Load rep-band PRs from Firestore PR store (parallel with log processing)
-    const repRangesPromise = loadExerciseRepBandPrs(targetUserId, exerciseId);
+    const repRangesPromise = laterality === 'unilateral'
+      ? loadExerciseRepBandPrsSideAware(targetUserId, exerciseId)
+      : loadExerciseRepBandPrs(targetUserId, exerciseId);
 
     // Get unique sessions for this exercise (last 10) - for session list display only
     const exerciseLogs = allLogs.filter(l => l.exerciseId === exerciseId && l.completedWorkoutId);
@@ -909,26 +981,40 @@
     });
 
     // Wait for rep-band PRs from Firestore
-    let repRanges = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
-    try {
-      repRanges = await repRangesPromise;
-    } catch (err) {
-      console.error('Failed to load rep-band PRs:', err);
-    }
+    if (laterality === 'unilateral') {
+      // Side-aware data structure
+      let sideAwareData = {
+        left: { repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null }, e1rm: null },
+        right: { repRanges: { '1-5': null, '6-8': null, '9-12': null, '13+': null }, e1rm: null }
+      };
+      try {
+        sideAwareData = await repRangesPromise;
+      } catch (err) {
+        console.error('Failed to load side-aware rep-band PRs:', err);
+      }
+      selectedExerciseHistory = { laterality: 'unilateral', left: sideAwareData.left, right: sideAwareData.right };
+    } else {
+      // Bilateral data structure (existing behavior)
+      let repRanges = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
+      try {
+        repRanges = await repRangesPromise;
+      } catch (err) {
+        console.error('Failed to load rep-band PRs:', err);
+      }
 
-    // Calculate e1RM from PR-store data only (highest e1rm from available bands)
-    let best1RM = null;
-    for (const band of ['1-5', '6-8', '9-12', '13+']) {
-      const pr = repRanges[band];
-      if (pr && pr.weight > 0 && pr.reps > 0) {
-        const e1rm = pr.weight * (1 + pr.reps / 30);
-        if (!best1RM || e1rm > best1RM.e1rm) {
-          best1RM = { e1rm: Math.round(e1rm), weight: pr.weight, reps: pr.reps, date: pr.date, notes: null };
+      // Calculate e1RM from PR-store data only (highest e1rm from available bands)
+      let best1RM = null;
+      for (const band of ['1-5', '6-8', '9-12', '13+']) {
+        const pr = repRanges[band];
+        if (pr && pr.weight > 0 && pr.reps > 0) {
+          const e1rm = pr.weight * (1 + pr.reps / 30);
+          if (!best1RM || e1rm > best1RM.e1rm) {
+            best1RM = { e1rm: Math.round(e1rm), weight: pr.weight, reps: pr.reps, date: pr.date, notes: null };
+          }
         }
       }
+      selectedExerciseHistory = { laterality: 'bilateral', e1rm: best1RM, repRanges };
     }
-
-    selectedExerciseHistory = { e1rm: best1RM, repRanges };
 
     programIds.forEach(pid => loadProgram(pid));
     exerciseSessions = Object.values(sessionMap)
@@ -2000,7 +2086,10 @@
 {/if}
 
 {#if selectedExercise}
-{@const allBandsMissing = selectedExerciseHistory?.repRanges && !selectedExerciseHistory.repRanges['1-5'] && !selectedExerciseHistory.repRanges['6-8'] && !selectedExerciseHistory.repRanges['9-12'] && !selectedExerciseHistory.repRanges['13+']}
+{@const isUnilateralModal = selectedExerciseHistory?.laterality === 'unilateral'}
+{@const allBandsMissing = isUnilateralModal
+  ? (!selectedExerciseHistory?.left?.repRanges?.['1-5'] && !selectedExerciseHistory?.left?.repRanges?.['6-8'] && !selectedExerciseHistory?.left?.repRanges?.['9-12'] && !selectedExerciseHistory?.left?.repRanges?.['13+'] && !selectedExerciseHistory?.right?.repRanges?.['1-5'] && !selectedExerciseHistory?.right?.repRanges?.['6-8'] && !selectedExerciseHistory?.right?.repRanges?.['9-12'] && !selectedExerciseHistory?.right?.repRanges?.['13+'])
+  : (selectedExerciseHistory?.repRanges && !selectedExerciseHistory.repRanges['1-5'] && !selectedExerciseHistory.repRanges['6-8'] && !selectedExerciseHistory.repRanges['9-12'] && !selectedExerciseHistory.repRanges['13+'])}
 <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px;" onclick={closeExerciseHistory}>
   <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto;" onclick={(e) => e.stopPropagation()}>
     <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white;">
@@ -2008,77 +2097,267 @@
     </div>
     <div style="padding: 15px 20px;">
       <!-- Estimated 1RM -->
-      <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center;">
-        <div style="font-size: 0.8em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px;">Estimated 1RM</div>
-        {#if selectedExerciseHistory?.e1rm}
-          <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">{selectedExerciseHistory.e1rm.e1rm} lbs</div>
-          <div style="font-size: 0.8em; opacity: 0.85;">Based on {selectedExerciseHistory.e1rm.reps} × {selectedExerciseHistory.e1rm.weight} lbs ({formatDate(selectedExerciseHistory.e1rm.date)})</div>
-        {:else}
-          <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">—</div>
-        {/if}
-      </div>
+      {#if isUnilateralModal}
+        <!-- Unilateral: Split E1RM into LEFT/RIGHT halves -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
+          <!-- Left Side E1RM -->
+          <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 12px; border-radius: 10px; text-align: center;">
+            <div style="font-size: 0.7em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px;">LEFT SIDE</div>
+            <div style="font-size: 0.65em; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.5px;">Est. 1RM</div>
+            {#if selectedExerciseHistory?.left?.e1rm}
+              <div style="font-size: 1.5em; font-weight: bold; margin: 3px 0;">{selectedExerciseHistory.left.e1rm.e1rm} lbs</div>
+              <div style="font-size: 0.7em; opacity: 0.85;">{selectedExerciseHistory.left.e1rm.reps} × {selectedExerciseHistory.left.e1rm.weight} lbs</div>
+            {:else}
+              <div style="font-size: 1.5em; font-weight: bold; margin: 3px 0;">—</div>
+              <div style="font-size: 0.7em; opacity: 0.7;">No data</div>
+            {/if}
+          </div>
+          <!-- Right Side E1RM -->
+          <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 12px; border-radius: 10px; text-align: center;">
+            <div style="font-size: 0.7em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 2px;">RIGHT SIDE</div>
+            <div style="font-size: 0.65em; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.5px;">Est. 1RM</div>
+            {#if selectedExerciseHistory?.right?.e1rm}
+              <div style="font-size: 1.5em; font-weight: bold; margin: 3px 0;">{selectedExerciseHistory.right.e1rm.e1rm} lbs</div>
+              <div style="font-size: 0.7em; opacity: 0.85;">{selectedExerciseHistory.right.e1rm.reps} × {selectedExerciseHistory.right.e1rm.weight} lbs</div>
+            {:else}
+              <div style="font-size: 1.5em; font-weight: bold; margin: 3px 0;">—</div>
+              <div style="font-size: 0.7em; opacity: 0.7;">No data</div>
+            {/if}
+          </div>
+        </div>
+      {:else}
+        <!-- Bilateral: Full-width E1RM -->
+        <div style="background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center;">
+          <div style="font-size: 0.8em; opacity: 0.9; text-transform: uppercase; letter-spacing: 1px;">Estimated 1RM</div>
+          {#if selectedExerciseHistory?.e1rm}
+            <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">{selectedExerciseHistory.e1rm.e1rm} lbs</div>
+            <div style="font-size: 0.8em; opacity: 0.85;">Based on {selectedExerciseHistory.e1rm.reps} × {selectedExerciseHistory.e1rm.weight} lbs ({formatDate(selectedExerciseHistory.e1rm.date)})</div>
+          {:else}
+            <div style="font-size: 2em; font-weight: bold; margin: 5px 0;">—</div>
+          {/if}
+        </div>
+      {/if}
 
       <!-- Rep Range PRs -->
       <div style="margin-bottom: 15px;">
         <div style="font-weight: 600; color: #333; margin-bottom: 10px; font-size: 0.9em;">Rep Range PRs</div>
-        <div style="display: grid; gap: 8px;">
-          <!-- 1-5 Reps (Strength) -->
-          <div style="background: #e3f2fd; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #1565c0;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-weight: 600; color: #1565c0;">1-5 Reps (Strength)</span>
-              {#if selectedExerciseHistory?.repRanges?.['1-5']}
-                <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['1-5'].reps} × {selectedExerciseHistory.repRanges['1-5'].weight} lbs</span>
-              {:else}
-                <span style="font-weight: bold; color: #999;">—</span>
-              {/if}
+        {#if isUnilateralModal}
+          <!-- Unilateral: Split Rep Ranges into LEFT/RIGHT columns -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+            <!-- Left Side Rep Ranges -->
+            <div>
+              <div style="font-size: 0.75em; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Left Side</div>
+              <div style="display: grid; gap: 6px;">
+                <div style="background: #e3f2fd; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #1565c0; display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <div style="font-size: 0.8em; font-weight: 600; color: #1565c0;">Strength</div>
+                    <div style="font-size: 0.65em; color: #666;">(1-5 Reps)</div>
+                  </div>
+                  <div style="text-align: right;">
+                    {#if selectedExerciseHistory?.left?.repRanges?.['1-5']}
+                      <div style="font-weight: bold; color: #333; font-size: 0.85em;">{selectedExerciseHistory.left.repRanges['1-5'].reps} × {selectedExerciseHistory.left.repRanges['1-5'].weight} lbs</div>
+                      {#if selectedExerciseHistory.left.repRanges['1-5'].date}
+                        <div style="font-size: 0.6em; color: #888; margin-top: 1px;">{formatDate(selectedExerciseHistory.left.repRanges['1-5'].date)}</div>
+                      {/if}
+                    {:else}
+                      <div style="color: #999; font-size: 0.85em;">—</div>
+                    {/if}
+                  </div>
+                </div>
+                <div style="background: #f3e5f5; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #7b1fa2; display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <div style="font-size: 0.8em; font-weight: 600; color: #7b1fa2;">Power</div>
+                    <div style="font-size: 0.65em; color: #666;">(6-8 Reps)</div>
+                  </div>
+                  <div style="text-align: right;">
+                    {#if selectedExerciseHistory?.left?.repRanges?.['6-8']}
+                      <div style="font-weight: bold; color: #333; font-size: 0.85em;">{selectedExerciseHistory.left.repRanges['6-8'].reps} × {selectedExerciseHistory.left.repRanges['6-8'].weight} lbs</div>
+                      {#if selectedExerciseHistory.left.repRanges['6-8'].date}
+                        <div style="font-size: 0.6em; color: #888; margin-top: 1px;">{formatDate(selectedExerciseHistory.left.repRanges['6-8'].date)}</div>
+                      {/if}
+                    {:else}
+                      <div style="color: #999; font-size: 0.85em;">—</div>
+                    {/if}
+                  </div>
+                </div>
+                <div style="background: #e8f5e9; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #2e7d32; display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <div style="font-size: 0.8em; font-weight: 600; color: #2e7d32;">Hypertrophy</div>
+                    <div style="font-size: 0.65em; color: #666;">(9-12 Reps)</div>
+                  </div>
+                  <div style="text-align: right;">
+                    {#if selectedExerciseHistory?.left?.repRanges?.['9-12']}
+                      <div style="font-weight: bold; color: #333; font-size: 0.85em;">{selectedExerciseHistory.left.repRanges['9-12'].reps} × {selectedExerciseHistory.left.repRanges['9-12'].weight} lbs</div>
+                      {#if selectedExerciseHistory.left.repRanges['9-12'].date}
+                        <div style="font-size: 0.6em; color: #888; margin-top: 1px;">{formatDate(selectedExerciseHistory.left.repRanges['9-12'].date)}</div>
+                      {/if}
+                    {:else}
+                      <div style="color: #999; font-size: 0.85em;">—</div>
+                    {/if}
+                  </div>
+                </div>
+                <div style="background: #fef3c7; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #b8860b; display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <div style="font-size: 0.8em; font-weight: 600; color: #b8860b;">Endurance</div>
+                    <div style="font-size: 0.65em; color: #666;">(13+ Reps)</div>
+                  </div>
+                  <div style="text-align: right;">
+                    {#if selectedExerciseHistory?.left?.repRanges?.['13+']}
+                      <div style="font-weight: bold; color: #333; font-size: 0.85em;">{selectedExerciseHistory.left.repRanges['13+'].reps} × {selectedExerciseHistory.left.repRanges['13+'].weight} lbs</div>
+                      {#if selectedExerciseHistory.left.repRanges['13+'].date}
+                        <div style="font-size: 0.6em; color: #888; margin-top: 1px;">{formatDate(selectedExerciseHistory.left.repRanges['13+'].date)}</div>
+                      {/if}
+                    {:else}
+                      <div style="color: #999; font-size: 0.85em;">—</div>
+                    {/if}
+                  </div>
+                </div>
+              </div>
             </div>
-            {#if selectedExerciseHistory?.repRanges?.['1-5']?.date}
-              <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['1-5'].date)}</div>
-            {/if}
-          </div>
-          <!-- 6-8 Reps (Power) -->
-          <div style="background: #f3e5f5; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #7b1fa2;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-weight: 600; color: #7b1fa2;">6-8 Reps (Power)</span>
-              {#if selectedExerciseHistory?.repRanges?.['6-8']}
-                <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['6-8'].reps} × {selectedExerciseHistory.repRanges['6-8'].weight} lbs</span>
-              {:else}
-                <span style="font-weight: bold; color: #999;">—</span>
-              {/if}
+            <!-- Right Side Rep Ranges -->
+            <div>
+              <div style="font-size: 0.75em; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Right Side</div>
+              <div style="display: grid; gap: 6px;">
+                <div style="background: #e3f2fd; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #1565c0; display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <div style="font-size: 0.8em; font-weight: 600; color: #1565c0;">Strength</div>
+                    <div style="font-size: 0.65em; color: #666;">(1-5 Reps)</div>
+                  </div>
+                  <div style="text-align: right;">
+                    {#if selectedExerciseHistory?.right?.repRanges?.['1-5']}
+                      <div style="font-weight: bold; color: #333; font-size: 0.85em;">{selectedExerciseHistory.right.repRanges['1-5'].reps} × {selectedExerciseHistory.right.repRanges['1-5'].weight} lbs</div>
+                      {#if selectedExerciseHistory.right.repRanges['1-5'].date}
+                        <div style="font-size: 0.6em; color: #888; margin-top: 1px;">{formatDate(selectedExerciseHistory.right.repRanges['1-5'].date)}</div>
+                      {/if}
+                    {:else}
+                      <div style="color: #999; font-size: 0.85em;">—</div>
+                    {/if}
+                  </div>
+                </div>
+                <div style="background: #f3e5f5; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #7b1fa2; display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <div style="font-size: 0.8em; font-weight: 600; color: #7b1fa2;">Power</div>
+                    <div style="font-size: 0.65em; color: #666;">(6-8 Reps)</div>
+                  </div>
+                  <div style="text-align: right;">
+                    {#if selectedExerciseHistory?.right?.repRanges?.['6-8']}
+                      <div style="font-weight: bold; color: #333; font-size: 0.85em;">{selectedExerciseHistory.right.repRanges['6-8'].reps} × {selectedExerciseHistory.right.repRanges['6-8'].weight} lbs</div>
+                      {#if selectedExerciseHistory.right.repRanges['6-8'].date}
+                        <div style="font-size: 0.6em; color: #888; margin-top: 1px;">{formatDate(selectedExerciseHistory.right.repRanges['6-8'].date)}</div>
+                      {/if}
+                    {:else}
+                      <div style="color: #999; font-size: 0.85em;">—</div>
+                    {/if}
+                  </div>
+                </div>
+                <div style="background: #e8f5e9; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #2e7d32; display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <div style="font-size: 0.8em; font-weight: 600; color: #2e7d32;">Hypertrophy</div>
+                    <div style="font-size: 0.65em; color: #666;">(9-12 Reps)</div>
+                  </div>
+                  <div style="text-align: right;">
+                    {#if selectedExerciseHistory?.right?.repRanges?.['9-12']}
+                      <div style="font-weight: bold; color: #333; font-size: 0.85em;">{selectedExerciseHistory.right.repRanges['9-12'].reps} × {selectedExerciseHistory.right.repRanges['9-12'].weight} lbs</div>
+                      {#if selectedExerciseHistory.right.repRanges['9-12'].date}
+                        <div style="font-size: 0.6em; color: #888; margin-top: 1px;">{formatDate(selectedExerciseHistory.right.repRanges['9-12'].date)}</div>
+                      {/if}
+                    {:else}
+                      <div style="color: #999; font-size: 0.85em;">—</div>
+                    {/if}
+                  </div>
+                </div>
+                <div style="background: #fef3c7; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #b8860b; display: flex; justify-content: space-between; align-items: flex-start;">
+                  <div>
+                    <div style="font-size: 0.8em; font-weight: 600; color: #b8860b;">Endurance</div>
+                    <div style="font-size: 0.65em; color: #666;">(13+ Reps)</div>
+                  </div>
+                  <div style="text-align: right;">
+                    {#if selectedExerciseHistory?.right?.repRanges?.['13+']}
+                      <div style="font-weight: bold; color: #333; font-size: 0.85em;">{selectedExerciseHistory.right.repRanges['13+'].reps} × {selectedExerciseHistory.right.repRanges['13+'].weight} lbs</div>
+                      {#if selectedExerciseHistory.right.repRanges['13+'].date}
+                        <div style="font-size: 0.6em; color: #888; margin-top: 1px;">{formatDate(selectedExerciseHistory.right.repRanges['13+'].date)}</div>
+                      {/if}
+                    {:else}
+                      <div style="color: #999; font-size: 0.85em;">—</div>
+                    {/if}
+                  </div>
+                </div>
+              </div>
             </div>
-            {#if selectedExerciseHistory?.repRanges?.['6-8']?.date}
-              <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['6-8'].date)}</div>
-            {/if}
           </div>
-          <!-- 9-12 Reps (Hypertrophy) -->
-          <div style="background: #e8f5e9; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #2e7d32;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-weight: 600; color: #2e7d32;">9-12 Reps (Hypertrophy)</span>
-              {#if selectedExerciseHistory?.repRanges?.['9-12']}
-                <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['9-12'].reps} × {selectedExerciseHistory.repRanges['9-12'].weight} lbs</span>
-              {:else}
-                <span style="font-weight: bold; color: #999;">—</span>
-              {/if}
+        {:else}
+          <!-- Bilateral: Full-width Rep Ranges -->
+          <div style="display: grid; gap: 8px;">
+            <!-- 1-5 Reps (Strength) -->
+            <div style="background: #e3f2fd; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #1565c0; display: flex; justify-content: space-between; align-items: flex-start;">
+              <div>
+                <div style="font-weight: 600; color: #1565c0;">Strength</div>
+                <div style="font-size: 0.75em; color: #666;">(1-5 Reps)</div>
+              </div>
+              <div style="text-align: right;">
+                {#if selectedExerciseHistory?.repRanges?.['1-5']}
+                  <div style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['1-5'].reps} × {selectedExerciseHistory.repRanges['1-5'].weight} lbs</div>
+                  {#if selectedExerciseHistory.repRanges['1-5'].date}
+                    <div style="font-size: 0.7em; color: #888; margin-top: 2px;">{formatDate(selectedExerciseHistory.repRanges['1-5'].date)}</div>
+                  {/if}
+                {:else}
+                  <div style="font-weight: bold; color: #999;">—</div>
+                {/if}
+              </div>
             </div>
-            {#if selectedExerciseHistory?.repRanges?.['9-12']?.date}
-              <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['9-12'].date)}</div>
-            {/if}
-          </div>
-          <!-- 13+ Reps (Endurance) -->
-          <div style="background: #fef3c7; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #b8860b;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <span style="font-weight: 600; color: #b8860b;">13+ Reps (Endurance)</span>
-              {#if selectedExerciseHistory?.repRanges?.['13+']}
-                <span style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['13+'].reps} × {selectedExerciseHistory.repRanges['13+'].weight} lbs</span>
-              {:else}
-                <span style="font-weight: bold; color: #999;">—</span>
-              {/if}
+            <!-- 6-8 Reps (Power) -->
+            <div style="background: #f3e5f5; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #7b1fa2; display: flex; justify-content: space-between; align-items: flex-start;">
+              <div>
+                <div style="font-weight: 600; color: #7b1fa2;">Power</div>
+                <div style="font-size: 0.75em; color: #666;">(6-8 Reps)</div>
+              </div>
+              <div style="text-align: right;">
+                {#if selectedExerciseHistory?.repRanges?.['6-8']}
+                  <div style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['6-8'].reps} × {selectedExerciseHistory.repRanges['6-8'].weight} lbs</div>
+                  {#if selectedExerciseHistory.repRanges['6-8'].date}
+                    <div style="font-size: 0.7em; color: #888; margin-top: 2px;">{formatDate(selectedExerciseHistory.repRanges['6-8'].date)}</div>
+                  {/if}
+                {:else}
+                  <div style="font-weight: bold; color: #999;">—</div>
+                {/if}
+              </div>
             </div>
-            {#if selectedExerciseHistory?.repRanges?.['13+']?.date}
-              <div style="font-size: 0.8em; color: #666; margin-top: 4px;">{formatDate(selectedExerciseHistory.repRanges['13+'].date)}</div>
-            {/if}
+            <!-- 9-12 Reps (Hypertrophy) -->
+            <div style="background: #e8f5e9; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #2e7d32; display: flex; justify-content: space-between; align-items: flex-start;">
+              <div>
+                <div style="font-weight: 600; color: #2e7d32;">Hypertrophy</div>
+                <div style="font-size: 0.75em; color: #666;">(9-12 Reps)</div>
+              </div>
+              <div style="text-align: right;">
+                {#if selectedExerciseHistory?.repRanges?.['9-12']}
+                  <div style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['9-12'].reps} × {selectedExerciseHistory.repRanges['9-12'].weight} lbs</div>
+                  {#if selectedExerciseHistory.repRanges['9-12'].date}
+                    <div style="font-size: 0.7em; color: #888; margin-top: 2px;">{formatDate(selectedExerciseHistory.repRanges['9-12'].date)}</div>
+                  {/if}
+                {:else}
+                  <div style="font-weight: bold; color: #999;">—</div>
+                {/if}
+              </div>
+            </div>
+            <!-- 13+ Reps (Endurance) -->
+            <div style="background: #fef3c7; padding: 10px 12px; border-radius: 8px; border-left: 4px solid #b8860b; display: flex; justify-content: space-between; align-items: flex-start;">
+              <div>
+                <div style="font-weight: 600; color: #b8860b;">Endurance</div>
+                <div style="font-size: 0.75em; color: #666;">(13+ Reps)</div>
+              </div>
+              <div style="text-align: right;">
+                {#if selectedExerciseHistory?.repRanges?.['13+']}
+                  <div style="font-weight: bold; color: #333;">{selectedExerciseHistory.repRanges['13+'].reps} × {selectedExerciseHistory.repRanges['13+'].weight} lbs</div>
+                  {#if selectedExerciseHistory.repRanges['13+'].date}
+                    <div style="font-size: 0.7em; color: #888; margin-top: 2px;">{formatDate(selectedExerciseHistory.repRanges['13+'].date)}</div>
+                  {/if}
+                {:else}
+                  <div style="font-weight: bold; color: #999;">—</div>
+                {/if}
+              </div>
+            </div>
           </div>
-        </div>
+        {/if}
         {#if allBandsMissing}
           <div style="font-size: 0.75em; color: #888; margin-top: 10px; text-align: center;">
             PR tracking unavailable for workouts completed before Feb 20, 2026.
@@ -2103,6 +2382,9 @@
         {@const secondary = formatSecondaryMetric(set)}
         <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 6px; background: #f8f9fa; border-radius: 6px;">
           <span style="font-weight: bold; color: #667eea; min-width: 45px;">Set {set.setNumber || 1}</span>
+          {#if isUnilateralModal && set.side}
+            <span style="font-size: 0.7em; font-weight: 600; padding: 2px 6px; border-radius: 4px; background: {set.side === 'L' ? '#e3f2fd' : '#fce4ec'}; color: {set.side === 'L' ? '#1565c0' : '#c2185b'};">{set.side === 'L' ? 'L' : 'R'}</span>
+          {/if}
           <span style="flex: 1;"><strong>{primary.value}</strong>{#if primary.label}&nbsp;{primary.label}{/if}{#if secondary}&nbsp;@&nbsp;<strong>{secondary.value}</strong>{#if secondary.label}&nbsp;{secondary.label}{/if}{/if}</span>
           {#if set.rir}<span style="color: #888;">(RIR: {set.rir})</span>{/if}
           <button
