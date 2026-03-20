@@ -195,27 +195,37 @@
   }
 
   // Load all rep-band PRs from Firestore PR store
-  // Path: user/{uid}/stats/prs/exercisePrs/{exerciseId}__{bandKey}
+  // Path: user/{uid}/stats/prs/exercisePrs/{exerciseId}__{bandKey} (bilateral)
+  // Path: user/{uid}/stats/prs/exercisePrs/{exerciseId}__{bandKey}__{side} (unilateral)
   async function loadPRStoreData() {
     const targetUserId = getTargetUserId();
     if (!targetUserId) return;
 
     try {
+      // Load exercises library first to determine laterality
+      await loadExercisesLibrary();
+
       const prsRef = collection(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs');
       const snapshot = await getDocsFromServer(prsRef);
 
       const prs = [];
       snapshot.docs.forEach(docSnap => {
         const data = docSnap.data();
-        const docId = docSnap.id; // Format: {exerciseId}__{bandKey}
+        const docId = docSnap.id;
         const parts = docId.split('__');
-        if (parts.length !== 2) return;
+
+        // Handle both bilateral (2 parts) and unilateral (3 parts) formats
+        if (parts.length < 2 || parts.length > 3) return;
 
         const exerciseId = parts[0];
         const bandKey = parts[1]; // e.g., "1_5", "6_8", "9_12", "13_plus"
+        const side = parts.length === 3 ? parts[2] : null; // 'L', 'R', or null
 
         // Convert bandKey back to display format
         let repBand = bandKey.replace('_plus', '+').replace('_', '-');
+
+        // Determine laterality from exercises library or doc data
+        const laterality = data.laterality || exercisesCache[exerciseId]?.laterality || 'bilateral';
 
         prs.push({
           exerciseId,
@@ -224,14 +234,21 @@
           weight: data.bestWeight,
           reps: data.bestReps,
           date: data.achievedAt,
-          dayName: data.dayName || ''
+          dayName: data.dayName || '',
+          side, // 'L', 'R', or null
+          laterality // 'bilateral' or 'unilateral'
         });
       });
 
-      // Sort by exercise name, then by rep band
+      // Sort by exercise name, then by side, then by rep band
       prs.sort((a, b) => {
         const nameCompare = a.exerciseName.localeCompare(b.exerciseName);
         if (nameCompare !== 0) return nameCompare;
+        // Sort sides: L before R before null
+        const sideOrder = { 'L': 1, 'R': 2 };
+        const sideA = sideOrder[a.side] || 3;
+        const sideB = sideOrder[b.side] || 3;
+        if (sideA !== sideB) return sideA - sideB;
         // Sort bands: 1-5, 6-8, 9-12, 13+
         const bandOrder = { '1-5': 1, '6-8': 2, '9-12': 3, '13+': 4 };
         return (bandOrder[a.repBand] || 99) - (bandOrder[b.repBand] || 99);
@@ -599,61 +616,131 @@
     return prStoreData;
   }
 
+  // Compute hero PR from a list of bands: highest weight, then highest reps, then most recent
+  function computeHeroAndRecent(bands) {
+    if (!bands || bands.length === 0) return { hero: null, mostRecentAt: null };
+
+    let hero = bands[0];
+    let mostRecentAt = null;
+
+    for (const band of bands) {
+      // Track most recent timestamp across all bands
+      const bandDate = band.date?.toDate ? band.date.toDate() : (band.date ? new Date(band.date) : null);
+      if (bandDate && (!mostRecentAt || bandDate > mostRecentAt)) {
+        mostRecentAt = bandDate;
+      }
+
+      if (band.weight > hero.weight) {
+        hero = band;
+      } else if (band.weight === hero.weight) {
+        if (band.reps > hero.reps) {
+          hero = band;
+        } else if (band.reps === hero.reps) {
+          // Tie-breaker: most recent
+          const heroDate = hero.date?.toDate ? hero.date.toDate() : new Date(hero.date || 0);
+          if (bandDate && bandDate > heroDate) {
+            hero = band;
+          }
+        }
+      }
+    }
+
+    return { hero, mostRecentAt };
+  }
+
   // Get grouped PRs by exercise (for consolidated cards)
+  // For unilateral exercises, creates separate L/R side buckets
   function getGroupedPRs() {
     // Group PRs by exerciseId
     const groups = {};
+    const bandOrder = { '1-5': 1, '6-8': 2, '9-12': 3, '13+': 4 };
+
     prStoreData.forEach(pr => {
       if (!groups[pr.exerciseId]) {
         groups[pr.exerciseId] = {
           exerciseId: pr.exerciseId,
           exerciseName: pr.exerciseName,
-          bands: []
+          laterality: pr.laterality || 'bilateral',
+          // Bilateral: bands array
+          bands: [],
+          // Unilateral: separate L/R buckets
+          leftBands: [],
+          rightBands: [],
+          // Track if we have any side-aware PRs
+          hasSidedPrs: false
         };
       }
-      groups[pr.exerciseId].bands.push(pr);
+
+      const group = groups[pr.exerciseId];
+
       // Update exercise name if this one is better (non-Unknown)
       if (pr.exerciseName && pr.exerciseName !== 'Unknown Exercise') {
-        groups[pr.exerciseId].exerciseName = pr.exerciseName;
+        group.exerciseName = pr.exerciseName;
+      }
+
+      // Update laterality if we have better info
+      if (pr.laterality === 'unilateral') {
+        group.laterality = 'unilateral';
+      }
+
+      // Route PR to appropriate bucket
+      if (pr.side === 'L') {
+        group.leftBands.push(pr);
+        group.hasSidedPrs = true;
+      } else if (pr.side === 'R') {
+        group.rightBands.push(pr);
+        group.hasSidedPrs = true;
+      } else {
+        // Bilateral or legacy PR without side
+        group.bands.push(pr);
       }
     });
 
     // For each group, sort bands and compute hero + mostRecentAt
-    const bandOrder = { '1-5': 1, '6-8': 2, '9-12': 3, '13+': 4 };
-
     return Object.values(groups).map(group => {
-      // Sort bands in standard order
-      group.bands.sort((a, b) => (bandOrder[a.repBand] || 99) - (bandOrder[b.repBand] || 99));
+      // Determine if exercise is unilateral based on:
+      // 1. Explicit laterality field, OR
+      // 2. Presence of any side-aware PRs (L or R)
+      const isUnilateral = group.laterality === 'unilateral' || group.hasSidedPrs;
 
-      // Compute hero: highest weight, then highest reps, then most recent
-      let hero = group.bands[0];
-      let mostRecentAt = null;
+      if (isUnilateral) {
+        // Mark as unilateral for the UI
+        group.laterality = 'unilateral';
 
-      for (const band of group.bands) {
-        // Track most recent timestamp across all bands
-        const bandDate = band.date?.toDate ? band.date.toDate() : (band.date ? new Date(band.date) : null);
-        if (bandDate && (!mostRecentAt || bandDate > mostRecentAt)) {
-          mostRecentAt = bandDate;
-        }
+        // Sort each side's bands
+        group.leftBands.sort((a, b) => (bandOrder[a.repBand] || 99) - (bandOrder[b.repBand] || 99));
+        group.rightBands.sort((a, b) => (bandOrder[a.repBand] || 99) - (bandOrder[b.repBand] || 99));
 
-        if (band.weight > hero.weight) {
-          hero = band;
-        } else if (band.weight === hero.weight) {
-          if (band.reps > hero.reps) {
-            hero = band;
-          } else if (band.reps === hero.reps) {
-            // Tie-breaker: most recent
-            const heroDate = hero.date?.toDate ? hero.date.toDate() : new Date(hero.date || 0);
-            if (bandDate && bandDate > heroDate) {
-              hero = band;
-            }
-          }
-        }
+        // Compute hero and mostRecentAt for each side
+        const leftResult = computeHeroAndRecent(group.leftBands);
+        const rightResult = computeHeroAndRecent(group.rightBands);
+
+        group.leftHero = leftResult.hero;
+        group.leftMostRecentAt = leftResult.mostRecentAt;
+        group.rightHero = rightResult.hero;
+        group.rightMostRecentAt = rightResult.mostRecentAt;
+
+        // Overall hero for sorting: pick best from both sides
+        const allBands = [...group.leftBands, ...group.rightBands];
+        const overallResult = computeHeroAndRecent(allBands);
+        group.hero = overallResult.hero;
+        group.mostRecentAt = overallResult.mostRecentAt;
+
+        // For compatibility, keep bands as combined list (used by some sorting)
+        group.bands = allBands;
+      } else {
+        // Bilateral: original behavior
+        group.bands.sort((a, b) => (bandOrder[a.repBand] || 99) - (bandOrder[b.repBand] || 99));
+        const result = computeHeroAndRecent(group.bands);
+        group.hero = result.hero;
+        group.mostRecentAt = result.mostRecentAt;
       }
 
-      group.hero = hero;
-      group.mostRecentAt = mostRecentAt;
       return group;
+    }).filter(group => {
+      // Filter out groups with no valid PRs (safety check)
+      // A group is valid if it has at least one PR in any bucket
+      return group.bands.length > 0 || group.leftBands.length > 0 || group.rightBands.length > 0;
     });
   }
 
@@ -1577,58 +1664,135 @@
       <p style="color: #888; margin-bottom: 15px;">{groupedPRs.length} exercise{groupedPRs.length !== 1 ? 's' : ''} with PRs</p>
 
       {#each groupedPRs as group}
-        {@const heroColor = getRepBandColor(group.hero.repBand)}
+        {@const isUnilateral = group.laterality === 'unilateral'}
         <div
           onclick={() => openExerciseHistory(group.exerciseId, group.exerciseName)}
           class="pr-card-consolidated"
         >
-          <div class="pr-card-main">
-            <!-- Left: Hero -->
-            <div class="pr-card-hero">
-              <div class="pr-card-name">{group.exerciseName}</div>
-              <div class="pr-card-hero-stats">
-                <div class="pr-card-weight">{group.hero.weight} <span class="pr-card-unit">lbs</span></div>
-                <div class="pr-card-reps">{group.hero.reps} reps</div>
+          {#if isUnilateral}
+            <!-- Unilateral: Split card with Left/Right sides -->
+            <div class="pr-card-unilateral">
+              <!-- Exercise name spanning full width -->
+              <div class="pr-card-name-full">
+                {group.exerciseName}
+                <!-- Admin-only: Recompute button -->
+                {#if userRole === 'admin'}
+                  <button
+                    onclick={(e) => { e.stopPropagation(); recomputeExercisePrs(group.exerciseId, group.exerciseName); }}
+                    disabled={recomputingExerciseId === group.exerciseId}
+                    style="position: absolute; top: 8px; right: 8px; padding: 4px 8px; font-size: 0.7em; background: {recomputingExerciseId === group.exerciseId ? '#ccc' : '#f0f0f0'}; border: 1px solid #ddd; border-radius: 4px; cursor: {recomputingExerciseId === group.exerciseId ? 'not-allowed' : 'pointer'}; color: #666;"
+                  >
+                    {recomputingExerciseId === group.exerciseId ? 'Recomputing…' : 'Recompute'}
+                  </button>
+                {/if}
               </div>
-              <div class="pr-card-session">
-                {formatDate(group.hero.date)}{#if group.hero.dayName} • {group.hero.dayName}{/if}
+
+              <!-- Two-column split layout -->
+              <div class="pr-card-split">
+                <!-- Left Side -->
+                <div class="pr-card-side">
+                  <div class="pr-card-side-label">Left Side</div>
+                  {#if group.leftHero}
+                    <div class="pr-card-side-content">
+                      <div class="pr-card-side-hero">
+                        <div class="pr-card-weight">{group.leftHero.weight} <span class="pr-card-unit">lbs</span></div>
+                        <div class="pr-card-reps">{group.leftHero.reps} reps</div>
+                        <div class="pr-card-session">{formatDate(group.leftHero.date)}</div>
+                      </div>
+                      <div class="pr-band-rail-side">
+                        {#each group.leftBands as band}
+                          {@const bandColor = getRepBandColor(band.repBand)}
+                          <div class="pr-band-rail-item" style="border-left-color: {bandColor};">
+                            <span class="pr-band-rail-label" style="color: {bandColor};">{band.repBand}</span>
+                            <span class="pr-band-rail-value">{band.reps} × {band.weight}</span>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="pr-card-side-empty">No PR yet</div>
+                  {/if}
+                </div>
+
+                <!-- Divider -->
+                <div class="pr-card-divider"></div>
+
+                <!-- Right Side -->
+                <div class="pr-card-side">
+                  <div class="pr-card-side-label">Right Side</div>
+                  {#if group.rightHero}
+                    <div class="pr-card-side-content">
+                      <div class="pr-card-side-hero">
+                        <div class="pr-card-weight">{group.rightHero.weight} <span class="pr-card-unit">lbs</span></div>
+                        <div class="pr-card-reps">{group.rightHero.reps} reps</div>
+                        <div class="pr-card-session">{formatDate(group.rightHero.date)}</div>
+                      </div>
+                      <div class="pr-band-rail-side">
+                        {#each group.rightBands as band}
+                          {@const bandColor = getRepBandColor(band.repBand)}
+                          <div class="pr-band-rail-item" style="border-left-color: {bandColor};">
+                            <span class="pr-band-rail-label" style="color: {bandColor};">{band.repBand}</span>
+                            <span class="pr-band-rail-value">{band.reps} × {band.weight}</span>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {:else}
+                    <div class="pr-card-side-empty">No PR yet</div>
+                  {/if}
+                </div>
               </div>
-              <!-- Admin-only: Recompute button -->
-              {#if userRole === 'admin'}
-                <button
-                  onclick={(e) => { e.stopPropagation(); recomputeExercisePrs(group.exerciseId, group.exerciseName); }}
-                  disabled={recomputingExerciseId === group.exerciseId}
-                  style="position: absolute; bottom: 0; right: 0; padding: 4px 8px; font-size: 0.7em; background: {recomputingExerciseId === group.exerciseId ? '#ccc' : '#f0f0f0'}; border: 1px solid #ddd; border-radius: 4px; cursor: {recomputingExerciseId === group.exerciseId ? 'not-allowed' : 'pointer'}; color: #666;"
-                >
-                  {recomputingExerciseId === group.exerciseId ? 'Recomputing…' : 'Recompute'}
-                </button>
-              {/if}
+            </div>
+          {:else}
+            <!-- Bilateral: Original single-card layout -->
+            {@const heroColor = getRepBandColor(group.hero.repBand)}
+            <div class="pr-card-main">
+              <!-- Left: Hero -->
+              <div class="pr-card-hero">
+                <div class="pr-card-name">{group.exerciseName}</div>
+                <div class="pr-card-hero-stats">
+                  <div class="pr-card-weight">{group.hero.weight} <span class="pr-card-unit">lbs</span></div>
+                  <div class="pr-card-reps">{group.hero.reps} reps</div>
+                </div>
+                <div class="pr-card-session">
+                  {formatDate(group.hero.date)}{#if group.hero.dayName} • {group.hero.dayName}{/if}
+                </div>
+                <!-- Admin-only: Recompute button -->
+                {#if userRole === 'admin'}
+                  <button
+                    onclick={(e) => { e.stopPropagation(); recomputeExercisePrs(group.exerciseId, group.exerciseName); }}
+                    disabled={recomputingExerciseId === group.exerciseId}
+                    style="position: absolute; bottom: 0; right: 0; padding: 4px 8px; font-size: 0.7em; background: {recomputingExerciseId === group.exerciseId ? '#ccc' : '#f0f0f0'}; border: 1px solid #ddd; border-radius: 4px; cursor: {recomputingExerciseId === group.exerciseId ? 'not-allowed' : 'pointer'}; color: #666;"
+                  >
+                    {recomputingExerciseId === group.exerciseId ? 'Recomputing…' : 'Recompute'}
+                  </button>
+                {/if}
+              </div>
+
+              <!-- Right: Band Rail -->
+              <div class="pr-band-rail">
+                {#each group.bands as band}
+                  {@const bandColor = getRepBandColor(band.repBand)}
+                  <div class="pr-band-rail-item" style="border-left-color: {bandColor};">
+                    <span class="pr-band-rail-label" style="color: {bandColor};">{band.repBand}</span>
+                    <span class="pr-band-rail-value">{band.reps} × {band.weight} lbs</span>
+                  </div>
+                {/each}
+              </div>
             </div>
 
-            <!-- Right: Band Rail -->
-            <div class="pr-band-rail">
+            <!-- Mobile: Band chips (shown at narrow widths) -->
+            <div class="pr-band-chips-mobile">
               {#each group.bands as band}
                 {@const bandColor = getRepBandColor(band.repBand)}
-                <div class="pr-band-rail-item" style="border-left-color: {bandColor};">
-                  <span class="pr-band-rail-label" style="color: {bandColor};">{band.repBand}</span>
-                  <span class="pr-band-rail-value">{band.reps} × {band.weight} lbs</span>
+                {@const bandBg = getRepBandBg(band.repBand)}
+                <div class="pr-band-chip-mobile" style="background: {bandBg}; color: {bandColor};">
+                  <span class="pr-band-chip-label">{band.repBand}</span>
+                  <span class="pr-band-chip-value">{band.reps}×{band.weight}</span>
                 </div>
               {/each}
             </div>
-          </div>
-
-          <!-- Mobile: Band chips (shown at narrow widths) -->
-          <div class="pr-band-chips-mobile">
-            {#each group.bands as band}
-              {@const bandColor = getRepBandColor(band.repBand)}
-              {@const bandBg = getRepBandBg(band.repBand)}
-              <div class="pr-band-chip-mobile" style="background: {bandBg}; color: {bandColor};">
-                <span class="pr-band-chip-label">{band.repBand}</span>
-                <span class="pr-band-chip-value">{band.reps}×{band.weight}</span>
-              </div>
-            {/each}
-          </div>
-
+          {/if}
         </div>
       {/each}
     {/if}
@@ -2165,6 +2329,133 @@
 
     .pr-band-chips-mobile {
       display: flex;
+    }
+  }
+
+  /* Unilateral Split Card Styles */
+  .pr-card-unilateral {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pr-card-name-full {
+    font-weight: 600;
+    font-size: 1.05em;
+    color: #333;
+    margin-bottom: 12px;
+    padding-right: 80px; /* Space for recompute button */
+  }
+
+  .pr-card-split {
+    display: flex;
+    gap: 0;
+  }
+
+  .pr-card-side {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pr-card-divider {
+    width: 1px;
+    background: #e0e0e0;
+    margin: 0 12px;
+    align-self: stretch;
+  }
+
+  .pr-card-side-label {
+    font-size: 0.75em;
+    font-weight: 600;
+    color: #667eea;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+
+  .pr-card-side-content {
+    display: flex;
+    gap: 10px;
+  }
+
+  .pr-card-side-hero {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pr-band-rail-side {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-left: 8px;
+    border-left: 1px solid #eee;
+    min-width: 90px;
+  }
+
+  .pr-band-rail-side .pr-band-rail-item {
+    font-size: 0.75em;
+    gap: 4px;
+  }
+
+  .pr-band-rail-side .pr-band-rail-label {
+    min-width: 28px;
+    font-size: 0.9em;
+  }
+
+  .pr-band-rail-side .pr-band-rail-value {
+    font-size: 0.9em;
+  }
+
+  .pr-card-side-empty {
+    color: #999;
+    font-size: 0.9em;
+    font-style: italic;
+    padding: 12px 0;
+  }
+
+  /* Smaller text in unilateral card halves */
+  .pr-card-side .pr-card-weight {
+    font-size: 1.4em;
+  }
+
+  .pr-card-side .pr-card-reps {
+    font-size: 0.85em;
+  }
+
+  .pr-card-side .pr-card-session {
+    font-size: 0.75em;
+  }
+
+  /* Mobile: stack unilateral halves vertically */
+  @media (max-width: 480px) {
+    .pr-card-split {
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .pr-card-divider {
+      width: 100%;
+      height: 1px;
+      margin: 0;
+    }
+
+    .pr-card-side-content {
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .pr-band-rail-side {
+      border-left: none;
+      padding-left: 0;
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .pr-band-rail-side .pr-band-rail-item {
+      padding: 4px 8px;
+      background: #f5f5f5;
+      border-radius: 4px;
+      border-left: 3px solid;
     }
   }
 </style>
