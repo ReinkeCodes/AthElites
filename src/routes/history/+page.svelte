@@ -4,6 +4,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import SessionDetailModal from '$lib/components/SessionDetailModal.svelte';
+  import { getPrDocId, buildPrPayload, isValidSideForPr, getStalePrDocIds, isEligibleForPr as isEligibleForPrHelper, getRepBandFromReps, bandToKey, ALL_REP_BANDS, extractPrCandidateFromLog, isPrBetterThanExisting } from '$lib/prHelpers.js';
 
   let currentUserId = $state(null);
   let userRole = $state(null);
@@ -17,6 +18,7 @@
   let prSortMode = $state('alpha'); // 'alpha' | 'alpha_desc' | 'strongest' | 'recent'
   let recomputingExerciseId = $state(null); // Track which exercise is being recomputed
   let recomputingAllPRs = $state(false); // Track bulk recompute status
+  let exercisesCache = $state({}); // Cache exerciseId -> { laterality, name, ... }
 
   // Derived target user for queries (admin can view other users)
   function getTargetUserId() {
@@ -243,30 +245,41 @@
   }
 
   // Check if a log is eligible for rep-band PR (reps+load only, no time/distance)
+  // Uses imported helper from prHelpers.js
   function isEligibleForPr(log) {
-    if (log.metricsV2 && Array.isArray(log.metricsV2)) {
-      const hasReps = log.metricsV2.some(m => m.key === 'reps');
-      const hasLoad = log.metricsV2.some(m => m.key === 'load');
-      const hasTime = log.metricsV2.some(m => m.key === 'time');
-      const hasDistance = log.metricsV2.some(m => m.key === 'distance');
-      return hasReps && hasLoad && !hasTime && !hasDistance;
+    return isEligibleForPrHelper(log);
+  }
+
+  // Load exercises library to get laterality info for recompute
+  async function loadExercisesLibrary() {
+    if (Object.keys(exercisesCache).length > 0) return exercisesCache;
+
+    try {
+      const snapshot = await getDocsFromServer(collection(db, 'exercises'));
+      const cache = {};
+      snapshot.docs.forEach(docSnap => {
+        const data = docSnap.data();
+        cache[docSnap.id] = {
+          id: docSnap.id,
+          name: data.name,
+          laterality: data.laterality || 'bilateral'
+        };
+      });
+      exercisesCache = cache;
+      return cache;
+    } catch (e) {
+      console.error('Failed to load exercises library:', e);
+      return {};
     }
-    // Legacy fallback
-    const repsMetric = log.repsMetric || 'reps';
-    const weightMetric = log.weightMetric || 'weight';
-    return repsMetric === 'reps' && weightMetric === 'weight';
   }
 
-  // Get rep band from reps count
-  function getRepBandFromReps(reps) {
-    if (reps >= 1 && reps <= 5) return '1-5';
-    if (reps >= 6 && reps <= 8) return '6-8';
-    if (reps >= 9 && reps <= 12) return '9-12';
-    if (reps >= 13) return '13+';
-    return null;
+  // Get laterality for an exercise, defaulting to bilateral if not found
+  function getExerciseLaterality(exerciseId) {
+    return exercisesCache[exerciseId]?.laterality || 'bilateral';
   }
 
-  // Admin-only: Recompute PRs for a specific exercise
+  // Admin-only: Recompute PRs for a specific exercise (side-aware for unilateral)
+  // Uses canonical helpers to ensure same logic as live PR writes
   async function recomputeExercisePrs(exerciseId, exerciseName) {
     const targetUserId = getTargetUserId();
     if (!targetUserId || userRole !== 'admin') return;
@@ -274,6 +287,10 @@
     recomputingExerciseId = exerciseId;
 
     try {
+      // Load exercises library to get laterality
+      await loadExercisesLibrary();
+      const laterality = getExerciseLaterality(exerciseId);
+
       // Query all logs for this exercise and user
       const logsQuery = query(
         collection(db, 'workoutLogs'),
@@ -282,57 +299,90 @@
       );
       const snapshot = await getDocsFromServer(logsQuery);
 
-      // Build best PRs per band
-      const bandBests = { '1-5': null, '6-8': null, '9-12': null, '13+': null };
+      // Build best PRs per band (and per side for unilateral)
+      // Uses canonical extractPrCandidateFromLog helper
+      const bandBests = {};
 
       snapshot.docs.forEach(docSnap => {
         const log = docSnap.data();
-        if (!isEligibleForPr(log)) return;
 
-        const weight = parseFloat(log.weight);
-        const reps = parseInt(log.reps);
-        if (isNaN(weight) || isNaN(reps) || weight <= 0 || reps <= 0) return;
+        // Use canonical helper to extract PR candidate (handles eligibility, validation, side)
+        const candidate = extractPrCandidateFromLog(log, laterality);
+        if (!candidate) return;
 
-        const band = getRepBandFromReps(reps);
-        if (!band) return;
+        // Build the key for tracking best (using canonical doc ID format)
+        const key = getPrDocId(candidate.exerciseId, candidate.repBand, candidate.laterality, candidate.side);
 
-        const existing = bandBests[band];
-        if (!existing || weight > existing.weight || (weight === existing.weight && reps > existing.reps)) {
-          bandBests[band] = {
-            weight,
-            reps,
-            sessionId: log.completedWorkoutId || null,
-            loggedAt: log.loggedAt
+        const existing = bandBests[key];
+        // Use canonical comparison helper
+        if (!existing || isPrBetterThanExisting(candidate, { bestWeight: existing.weight, bestReps: existing.reps })) {
+          bandBests[key] = {
+            ...candidate,
+            // Preserve additional fields from log
+            sessionId: candidate.sessionId,
+            loggedAt: candidate.loggedAt
           };
         }
       });
 
-      // Write or delete PR docs for each band
       const now = serverTimestamp();
-      for (const band of ['1-5', '6-8', '9-12', '13+']) {
-        const bandKey = band.replace('-', '_').replace('+', '_plus');
-        const docId = `${exerciseId}__${bandKey}`;
+      const writtenDocIds = new Set();
+
+      // Write PR docs for winners using canonical payload builder
+      for (const [docId, best] of Object.entries(bandBests)) {
         const prRef = doc(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs', docId);
 
-        const best = bandBests[band];
-        if (best) {
-          await setDoc(prRef, {
-            exerciseId,
-            exerciseNameSnapshot: exerciseName,
-            repBand: band,
-            metric: 'topWeight',
-            bestWeight: best.weight,
-            bestReps: best.reps,
-            achievedAt: best.loggedAt || now,
-            sessionId: best.sessionId,
-            updatedAt: now
-          }, { merge: true });
-        } else {
-          // No candidate for this band - delete if exists
+        const payload = buildPrPayload({
+          exerciseId: best.exerciseId,
+          exerciseName: best.exerciseName,
+          band: best.repBand,
+          weight: best.weight,
+          reps: best.reps,
+          laterality: best.laterality,
+          side: best.side,
+          sessionId: best.sessionId,
+          achievedAt: best.loggedAt || now,
+          updatedAt: now
+        });
+
+        await setDoc(prRef, payload, { merge: true });
+        writtenDocIds.add(docId);
+      }
+
+      // Clean up stale docs for each band
+      for (const band of ALL_REP_BANDS) {
+        // Delete any stale docs that are the wrong format for this laterality
+        const staleDocs = getStalePrDocIds(exerciseId, band, laterality);
+        for (const staleDocId of staleDocs) {
           try {
-            await deleteDoc(prRef);
+            await deleteDoc(doc(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs', staleDocId));
           } catch (e) {
             // Ignore if doesn't exist
+          }
+        }
+
+        // Also delete docs for this band/laterality that weren't winners
+        if (laterality === 'unilateral') {
+          // For unilateral, check both sides
+          for (const side of ['L', 'R']) {
+            const docId = getPrDocId(exerciseId, band, laterality, side);
+            if (!writtenDocIds.has(docId)) {
+              try {
+                await deleteDoc(doc(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs', docId));
+              } catch (e) {
+                // Ignore
+              }
+            }
+          }
+        } else {
+          // For bilateral
+          const docId = getPrDocId(exerciseId, band, laterality, null);
+          if (!writtenDocIds.has(docId)) {
+            try {
+              await deleteDoc(doc(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs', docId));
+            } catch (e) {
+              // Ignore
+            }
           }
         }
       }
@@ -351,7 +401,8 @@
     }
   }
 
-  // Admin-only: Recompute ALL PRs for the target user
+  // Admin-only: Recompute ALL PRs for the target user (side-aware for unilateral)
+  // Uses canonical helpers to ensure same logic as live PR writes
   async function recomputeAllPrs() {
     const targetUserId = getTargetUserId();
     if (!targetUserId || userRole !== 'admin' || !selectedUserId) return;
@@ -363,6 +414,9 @@
     recomputingAllPRs = true;
 
     try {
+      // Load exercises library to get laterality for each exercise
+      await loadExercisesLibrary();
+
       // Query all logs for this user
       const logsQuery = query(
         collection(db, 'workoutLogs'),
@@ -370,58 +424,57 @@
       );
       const snapshot = await getDocsFromServer(logsQuery);
 
-      // Build best PRs per (exerciseId, band)
-      const winners = {}; // Map: "exerciseId__bandKey" -> { weight, reps, sessionId, loggedAt, exerciseName }
+      // Build best PRs per (exerciseId, band, side)
+      // Uses canonical extractPrCandidateFromLog helper
+      const winners = {};
 
       snapshot.docs.forEach(docSnap => {
         const log = docSnap.data();
-        if (!isEligibleForPr(log)) return;
-
-        const weight = parseFloat(log.weight);
-        const reps = parseInt(log.reps);
-        if (isNaN(weight) || isNaN(reps) || weight <= 0 || reps <= 0) return;
-
-        const band = getRepBandFromReps(reps);
-        if (!band) return;
-
         const exerciseId = log.exerciseId;
         if (!exerciseId) return;
 
-        const bandKey = band.replace('-', '_').replace('+', '_plus');
-        const docId = `${exerciseId}__${bandKey}`;
+        const laterality = getExerciseLaterality(exerciseId);
+
+        // Use canonical helper to extract PR candidate (handles eligibility, validation, side)
+        const candidate = extractPrCandidateFromLog(log, laterality);
+        if (!candidate) return;
+
+        // Build the key using canonical doc ID format
+        const docId = getPrDocId(candidate.exerciseId, candidate.repBand, candidate.laterality, candidate.side);
 
         const existing = winners[docId];
-        if (!existing || weight > existing.weight || (weight === existing.weight && reps > existing.reps)) {
+        // Use canonical comparison helper
+        if (!existing || isPrBetterThanExisting(candidate, { bestWeight: existing.weight, bestReps: existing.reps })) {
           winners[docId] = {
-            exerciseId,
-            exerciseName: log.exerciseName || 'Unknown Exercise',
-            band,
-            bandKey,
-            weight,
-            reps,
-            sessionId: log.completedWorkoutId || null,
-            loggedAt: log.loggedAt
+            ...candidate,
+            // Preserve additional fields from log
+            sessionId: candidate.sessionId,
+            loggedAt: candidate.loggedAt
           };
         }
       });
 
       const winnerDocIds = new Set(Object.keys(winners));
 
-      // Write PR docs for all winners
+      // Write PR docs for all winners with schema v2 metadata using canonical payload builder
       const now = serverTimestamp();
       for (const [docId, winner] of Object.entries(winners)) {
         const prRef = doc(db, 'user', targetUserId, 'stats', 'prs', 'exercisePrs', docId);
-        await setDoc(prRef, {
+
+        const payload = buildPrPayload({
           exerciseId: winner.exerciseId,
-          exerciseNameSnapshot: winner.exerciseName,
-          repBand: winner.band,
-          metric: 'topWeight',
-          bestWeight: winner.weight,
-          bestReps: winner.reps,
-          achievedAt: winner.loggedAt || now,
+          exerciseName: winner.exerciseName,
+          band: winner.repBand,
+          weight: winner.weight,
+          reps: winner.reps,
+          laterality: winner.laterality,
+          side: winner.side,
           sessionId: winner.sessionId,
+          achievedAt: winner.loggedAt || now,
           updatedAt: now
-        }, { merge: true });
+        });
+
+        await setDoc(prRef, payload, { merge: true });
       }
 
       // Delete stale PR docs that are not in winners
