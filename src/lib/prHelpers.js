@@ -315,6 +315,65 @@ export function extractPrCandidate(set, exercise, laterality) {
 }
 
 /**
+ * Compute side-to-side comparison for unilateral exercises.
+ *
+ * Returns comparison data including label, severity, and whether to show.
+ *
+ * Thresholds:
+ * - Under 10%: "No Imbalance" (severity: 'none')
+ * - 10% to 15% inclusive: "Worth Monitoring" (severity: 'monitoring')
+ * - Over 15%: "Asymmetry to Address" (severity: 'address')
+ *
+ * @param {number|null} leftE1RM - Left side best e1RM value
+ * @param {number|null} rightE1RM - Right side best e1RM value
+ * @returns {Object} { shouldShow, strongerSide, differencePercent, label, severity }
+ */
+export function computeUnilateralComparison(leftE1RM, rightE1RM) {
+  // Validate both sides have positive values
+  if (!leftE1RM || !rightE1RM || leftE1RM <= 0 || rightE1RM <= 0) {
+    return {
+      shouldShow: false,
+      strongerSide: null,
+      differencePercent: 0,
+      label: '',
+      severity: 'none'
+    };
+  }
+
+  // Determine stronger and weaker sides
+  const leftStronger = leftE1RM >= rightE1RM;
+  const strongerValue = leftStronger ? leftE1RM : rightE1RM;
+  const weakerValue = leftStronger ? rightE1RM : leftE1RM;
+  const strongerSide = leftStronger ? 'Left Side' : 'Right Side';
+
+  // Calculate percent difference: ((stronger / weaker) - 1) * 100
+  const differencePercent = Math.round(((strongerValue / weakerValue) - 1) * 100);
+
+  // Determine severity and label based on thresholds
+  let severity;
+  let label;
+
+  if (differencePercent < 10) {
+    severity = 'none';
+    label = 'No Imbalance';
+  } else if (differencePercent <= 15) {
+    severity = 'monitoring';
+    label = `${strongerSide} is (+${differencePercent}%) Stronger (Worth Monitoring)`;
+  } else {
+    severity = 'address';
+    label = `${strongerSide} is (+${differencePercent}%) Stronger (Asymmetry to Address)`;
+  }
+
+  return {
+    shouldShow: true,
+    strongerSide,
+    differencePercent,
+    label,
+    severity
+  };
+}
+
+/**
  * Extract PR candidate data from a saved workoutLog document.
  * Returns null if the log is not eligible or has invalid data.
  *

@@ -4,7 +4,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import SessionDetailModal from '$lib/components/SessionDetailModal.svelte';
-  import { getPrDocId, buildPrPayload, isValidSideForPr, getStalePrDocIds, isEligibleForPr as isEligibleForPrHelper, getRepBandFromReps, bandToKey, ALL_REP_BANDS, extractPrCandidateFromLog, isPrBetterThanExisting } from '$lib/prHelpers.js';
+  import { getPrDocId, buildPrPayload, isValidSideForPr, getStalePrDocIds, isEligibleForPr as isEligibleForPrHelper, getRepBandFromReps, bandToKey, ALL_REP_BANDS, extractPrCandidateFromLog, isPrBetterThanExisting, computeUnilateralComparison } from '$lib/prHelpers.js';
 
   let currentUserId = $state(null);
   let userRole = $state(null);
@@ -1757,6 +1757,21 @@
         >
           {#if isUnilateral}
             <!-- Unilateral: Split card with Left/Right sides -->
+            {@const leftBestE1rm = group.leftBands?.reduce((best, band) => {
+              if (band.weight > 0 && band.reps > 0) {
+                const e1rm = band.weight * (1 + band.reps / 30);
+                return e1rm > best ? e1rm : best;
+              }
+              return best;
+            }, 0) || 0}
+            {@const rightBestE1rm = group.rightBands?.reduce((best, band) => {
+              if (band.weight > 0 && band.reps > 0) {
+                const e1rm = band.weight * (1 + band.reps / 30);
+                return e1rm > best ? e1rm : best;
+              }
+              return best;
+            }, 0) || 0}
+            {@const comparison = computeUnilateralComparison(leftBestE1rm, rightBestE1rm)}
             <div class="pr-card-unilateral">
               <!-- Exercise name spanning full width -->
               <div class="pr-card-name-full">
@@ -1773,14 +1788,21 @@
                 {/if}
               </div>
 
+              <!-- Comparison row (below title) -->
+              {#if comparison.shouldShow}
+                <div style="text-align: center; padding: 4px 12px 8px; font-size: 0.85em; color: {comparison.severity === 'none' ? '#666' : '#d32f2f'};">
+                  {comparison.label}
+                </div>
+              {/if}
+
               <!-- Two-column split layout -->
               <div class="pr-card-split">
                 <!-- Left Side -->
                 <div class="pr-card-side">
-                  <div class="pr-card-side-label">Left Side</div>
                   {#if group.leftHero}
                     <div class="pr-card-side-content">
                       <div class="pr-card-side-hero">
+                        <div style="font-size: 0.75em; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Left Side</div>
                         <div class="pr-card-weight">{group.leftHero.weight} <span class="pr-card-unit">lbs</span></div>
                         <div class="pr-card-reps">{group.leftHero.reps} reps</div>
                         <div class="pr-card-session">{formatDate(group.leftHero.date)}</div>
@@ -1796,7 +1818,10 @@
                       </div>
                     </div>
                   {:else}
-                    <div class="pr-card-side-empty">No PR yet</div>
+                    <div class="pr-card-side-empty">
+                      <div style="font-size: 0.75em; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Left Side</div>
+                      No PR yet
+                    </div>
                   {/if}
                 </div>
 
@@ -1805,10 +1830,10 @@
 
                 <!-- Right Side -->
                 <div class="pr-card-side">
-                  <div class="pr-card-side-label">Right Side</div>
                   {#if group.rightHero}
                     <div class="pr-card-side-content">
                       <div class="pr-card-side-hero">
+                        <div style="font-size: 0.75em; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Right Side</div>
                         <div class="pr-card-weight">{group.rightHero.weight} <span class="pr-card-unit">lbs</span></div>
                         <div class="pr-card-reps">{group.rightHero.reps} reps</div>
                         <div class="pr-card-session">{formatDate(group.rightHero.date)}</div>
@@ -1824,7 +1849,10 @@
                       </div>
                     </div>
                   {:else}
-                    <div class="pr-card-side-empty">No PR yet</div>
+                    <div class="pr-card-side-empty">
+                      <div style="font-size: 0.75em; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Right Side</div>
+                      No PR yet
+                    </div>
                   {/if}
                 </div>
               </div>
@@ -2094,6 +2122,12 @@
   <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto;" onclick={(e) => e.stopPropagation()}>
     <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white;">
       <h3 style="margin: 0;">{selectedExercise.exerciseName}</h3>
+      {#if isUnilateralModal}
+        {@const modalComparison = computeUnilateralComparison(selectedExerciseHistory?.left?.e1rm?.e1rm, selectedExerciseHistory?.right?.e1rm?.e1rm)}
+        {#if modalComparison.shouldShow}
+          <div style="font-size: 0.85em; margin-top: 6px; color: {modalComparison.severity === 'none' ? '#666' : '#d32f2f'};">{modalComparison.label}</div>
+        {/if}
+      {/if}
     </div>
     <div style="padding: 15px 20px;">
       <!-- Estimated 1RM -->
