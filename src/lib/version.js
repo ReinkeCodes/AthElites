@@ -4,7 +4,7 @@
  */
 
 // App version (semantic versioning)
-export const APP_VERSION = '0.12.20';
+export const APP_VERSION = '0.12.21';
 
 // Feature versions - track when specific features were last updated
 // Increment when making significant changes to a feature
@@ -12,7 +12,7 @@ export const APP_VERSION = '0.12.20';
 export const FEATURE_VERSIONS = {
   appVersioning: { v: 1, date: '02 - 25 - 2026' },
   exerciseCreateFlow: { v: 1, date: '02 - 25 - 2026' },
-  exerciseHistoryModalFormat: { v: 4, date: '04 - 03 - 2026' },
+  exerciseHistoryModalFormat: { v: 5, date: '04 - 03 - 2026' },
   exerciseLaterality: { v: 1, date: '03 - 10 - 2026' },
   exerciseLibraryTypeDropdown: { v: 1, date: '02 - 25 - 2026' },
   exercisePickerModal: { v: 1, date: '02 - 25 - 2026' },
@@ -26,7 +26,7 @@ export const FEATURE_VERSIONS = {
   restTimerToast: { v: 1, date: '02 - 25 - 2026' },
   settingsEmailActions: { v: 1, date: '03 - 04 - 2026' },
   tonnageTracking: { v: 1, date: '02 - 25 - 2026' },
-  unilateralLogging: { v: 5, date: '03 - 19 - 2026' },
+  unilateralLogging: { v: 6, date: '04 - 03 - 2026' },
   workoutSessionQoL: { v: 3, date: '03 - 19 - 2026' }
 };
 

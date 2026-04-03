@@ -7,7 +7,7 @@
   import { goto } from '$app/navigation';
   import { setDraft, getDraftKey as getDraftKeyHelper } from '$lib/workoutDraft.js';
   import { primeGoalTimerAudio, playGoalTimerAudio, primeRestTimerAudio, playRestTimerAudio, pauseRestTimerAudio, resumeRestTimerAudio, stopRestTimerAudio, isRestSfxEnabled } from '$lib/utils/timerFeedback.js';
-  import { getPrDocId, buildPrPayload, isValidSideForPr, bandToKey, getRepBandFromReps, ALL_REP_BANDS, extractPrCandidate, isPrBetterThanExisting } from '$lib/prHelpers.js';
+  import { getPrDocId, buildPrPayload, isValidSideForPr, bandToKey, getRepBandFromReps, ALL_REP_BANDS, extractPrCandidate, isPrBetterThanExisting, computeUnilateralComparison } from '$lib/prHelpers.js';
   import timerIcon from '$lib/assets/timer-icon-7797.png';
 
   let program = $state(null);
@@ -2926,6 +2926,12 @@
     <div style="background: white; border-radius: 12px; width: 100%; max-width: 500px; max-height: 80vh; overflow-y: auto;" onclick={(e) => e.stopPropagation()}>
       <div style="padding: 15px 20px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white; z-index: 1;">
         <h3 style="margin: 0;">{historyModal.exerciseName}</h3>
+        {#if isUnilateralModal}
+          {@const historyComparison = computeUnilateralComparison(history?.left?.e1rm?.e1rm, history?.right?.e1rm?.e1rm)}
+          {#if historyComparison.shouldShow}
+            <div style="font-size: 0.85em; margin-top: 6px; color: {historyComparison.severity === 'none' ? '#666' : '#d32f2f'};">{historyComparison.label}</div>
+          {/if}
+        {/if}
       </div>
       <div style="padding: 15px 20px;">
         <!-- Estimated 1RM -->
