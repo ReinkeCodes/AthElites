@@ -9,6 +9,9 @@
   import { browser } from '$app/environment';
   import { goto } from '$app/navigation';
 
+  // DEV ONLY: Import to initialize dev helper on window (remove before production)
+  import '$lib/programCycleHelpers.js';
+
   let { children } = $props();
   let user = $state(null);
   let userRole = $state(null);
