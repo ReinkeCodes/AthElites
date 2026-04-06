@@ -5,6 +5,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
+  import { buildCycleRecord, createProgramCycle, listProgramCycles, isCycleExpired, getProgramCycleDoc } from '$lib/programCycleHelpers.js';
 
   let program = $state(null);
   let userRole = $state(null);
@@ -45,6 +46,21 @@
 
   // Assign users search
   let assignUserSearch = $state('');
+
+  // Cycle assignment fields
+  let cycleStartDate = $state(new Date().toISOString().split('T')[0]); // Default to today (YYYY-MM-DD format for input)
+  let cycleDurationWeeks = $state(8); // Default to 8 weeks
+  let cycleAssignError = $state('');
+
+  // Cycle state for user categorization
+  // effectivelyActiveCycles = status 'active' AND endsAt not in past
+  // pastCycles = all other cycles (expired by date, or non-active status)
+  let programCyclesMap = $state({}); // userId -> { effectivelyActiveCycles: [], pastCycles: [], allCycles: [] }
+  let cyclesLoaded = $state(false);
+  let selectedUsers = $state(new Set()); // userIds selected for cycle action
+  let showCycleConfirmation = $state(false); // confirmation modal for updating active cycles
+  let cycleActionPending = $state(false); // loading state for cycle action
+  let cycleActionJustSucceeded = $state(false); // triggers publish reminder when unpublished changes exist
 
   // Exercise in section
   let addingExerciseToSection = $state(null);
@@ -243,20 +259,231 @@
     }
   });
 
-  async function toggleAssignment(clientId) {
+  // Toggle user selection for cycle action (does not perform action immediately)
+  function toggleUserSelection(clientId) {
+    const newSet = new Set(selectedUsers);
+    if (newSet.has(clientId)) {
+      newSet.delete(clientId);
+    } else {
+      newSet.add(clientId);
+    }
+    selectedUsers = newSet;
+  }
+
+  // Check if any selected users have effectively active cycles
+  function getSelectedUsersWithActiveCycles() {
+    return Array.from(selectedUsers).filter(uid => userHasEffectivelyActiveCycle(uid));
+  }
+
+  // Handle cycle action button click - validate and show confirmation if needed
+  function handleCycleAction() {
+    cycleAssignError = '';
+
+    if (selectedUsers.size === 0) {
+      cycleAssignError = 'Select at least one user';
+      return;
+    }
+
+    // Validate cycle start date
+    if (!cycleStartDate) {
+      cycleAssignError = 'Cycle start date is required';
+      return;
+    }
+
+    // Validate cycle duration
+    const durationNum = parseInt(cycleDurationWeeks);
+    if (!cycleDurationWeeks || isNaN(durationNum) || durationNum <= 0 || !Number.isInteger(durationNum)) {
+      cycleAssignError = 'Cycle duration must be a positive whole number';
+      return;
+    }
+
+    // Parse start date
+    const startDate = new Date(cycleStartDate + 'T00:00:00');
+    if (isNaN(startDate.getTime())) {
+      cycleAssignError = 'Invalid cycle start date';
+      return;
+    }
+
+    // Check if any selected users have active cycles - show confirmation
+    const usersWithActiveCycles = getSelectedUsersWithActiveCycles();
+    if (usersWithActiveCycles.length > 0) {
+      showCycleConfirmation = true;
+      return;
+    }
+
+    // No active cycles to update - proceed directly
+    executeCycleAction();
+  }
+
+  // Execute the cycle action (create new or update existing)
+  async function executeCycleAction() {
+    cycleAssignError = '';
+    cycleActionPending = true;
+    showCycleConfirmation = false;
+
+    const durationNum = parseInt(cycleDurationWeeks);
+    const startDate = new Date(cycleStartDate + 'T00:00:00');
+
+    // Compute endsAt
+    const endsAtDate = new Date(startDate);
+    endsAtDate.setDate(endsAtDate.getDate() + (durationNum * 7));
+
     // Use assignedToUids as canonical, fall back to assignedTo for legacy data
     const currentAssigned = program.assignedToUids || program.assignedTo || [];
-    // Handle legacy string format
     const currentList = Array.isArray(currentAssigned) ? currentAssigned : [currentAssigned];
-    const newAssigned = currentList.includes(clientId)
-      ? currentList.filter(id => id !== clientId)
-      : [...currentList, clientId];
-    // Write to both assignedToUids (canonical) and assignedTo (backward compat)
-    await updateDoc(doc(db, 'programs', program.id), {
-      assignedToUids: newAssigned,
-      assignedTo: newAssigned
-    });
+    const usersToAddToAssigned = [];
+
+    try {
+      for (const clientId of selectedUsers) {
+        const existingActiveCycle = getUserEffectivelyActiveCycle(clientId);
+
+        if (existingActiveCycle) {
+          // UPDATE existing active cycle
+          const cycleDocRef = getProgramCycleDoc(clientId, existingActiveCycle.id);
+          await updateDoc(cycleDocRef, {
+            startedAt: startDate,
+            durationWeeks: durationNum,
+            endsAt: endsAtDate
+          });
+          console.log(`[Cycle] Updated active cycle ${existingActiveCycle.id} for user ${clientId}`);
+        } else {
+          // CREATE new cycle
+          const cycleData = buildCycleRecord({
+            userId: clientId,
+            programId: program.id,
+            programNameSnapshot: program.name || program.title || 'Unnamed Program',
+            assignedByUserId: currentUserId,
+            startedAt: startDate,
+            durationWeeks: durationNum,
+            status: 'active'
+          });
+          await createProgramCycle(cycleData);
+          console.log(`[Cycle] Created new cycle for user ${clientId} on program ${program.id}`);
+
+          // Track users who need to be added to assignedTo
+          if (!currentList.includes(clientId)) {
+            usersToAddToAssigned.push(clientId);
+          }
+        }
+      }
+
+      // Add new users to assignedTo list
+      if (usersToAddToAssigned.length > 0) {
+        const newAssigned = [...currentList, ...usersToAddToAssigned];
+        await updateDoc(doc(db, 'programs', program.id), {
+          assignedToUids: newAssigned,
+          assignedTo: newAssigned
+        });
+      }
+
+      // Clear selection and reload cycles
+      selectedUsers = new Set();
+      await loadProgramCycles();
+
+      // Trigger publish reminder if there are unpublished changes
+      if (hasUnpublishedChanges) {
+        cycleActionJustSucceeded = true;
+      }
+    } catch (err) {
+      console.error('[Cycle] Failed to execute cycle action:', err);
+      cycleAssignError = 'Failed to process cycle action: ' + err.message;
+    } finally {
+      cycleActionPending = false;
+    }
   }
+
+  // Cancel the confirmation dialog
+  function cancelCycleConfirmation() {
+    showCycleConfirmation = false;
+  }
+
+  // Load cycles for all clients for this program
+  async function loadProgramCycles() {
+    if (!program?.id || clients.length === 0) return;
+
+    const newMap = {};
+    for (const client of clients) {
+      try {
+        const cycles = await listProgramCycles(client.id, { programId: program.id });
+        // Effectively active = status 'active' AND endsAt not in past
+        const effectivelyActiveCycles = cycles.filter(c => c.status === 'active' && !isCycleExpired(c));
+        // Past = everything else (non-active status OR expired by date)
+        const pastCycles = cycles.filter(c => c.status !== 'active' || isCycleExpired(c));
+        newMap[client.id] = { effectivelyActiveCycles, pastCycles, allCycles: cycles };
+      } catch (err) {
+        console.error(`[Cycle] Failed to load cycles for user ${client.id}:`, err);
+        newMap[client.id] = { effectivelyActiveCycles: [], pastCycles: [], allCycles: [] };
+      }
+    }
+    programCyclesMap = newMap;
+    cyclesLoaded = true;
+  }
+
+  // Categorize a single user based on their cycle state and legacy assignment
+  // Uses EFFECTIVE activity: status='active' AND endsAt not in past
+  function getUserCycleCategory(userId) {
+    const legacyAssigned = program?.assignedTo || [];
+    const isLegacyAssigned = legacyAssigned.includes(userId);
+    const userCycles = programCyclesMap[userId] || { effectivelyActiveCycles: [], pastCycles: [], allCycles: [] };
+    const hasEffectivelyActiveCycle = userCycles.effectivelyActiveCycles.length > 0;
+    const hasPastCycle = userCycles.pastCycles.length > 0;
+    const hasCycleHistory = userCycles.allCycles.length > 0;
+
+    if (hasEffectivelyActiveCycle) {
+      return 'active'; // Active on This Program (effectively active)
+    }
+    if (hasPastCycle) {
+      return 'previous'; // Previously Assigned (has cycle history but none effectively active)
+    }
+    if (isLegacyAssigned && !hasCycleHistory) {
+      return 'legacy'; // Legacy Assigned (No Cycle Record)
+    }
+    return 'notAssigned'; // Not Yet Assigned
+  }
+
+  // Check if a user has an effectively active cycle
+  function userHasEffectivelyActiveCycle(userId) {
+    const userCycles = programCyclesMap[userId] || { effectivelyActiveCycles: [] };
+    return userCycles.effectivelyActiveCycles.length > 0;
+  }
+
+  // Get the effectively active cycle for a user (for updating)
+  function getUserEffectivelyActiveCycle(userId) {
+    const userCycles = programCyclesMap[userId] || { effectivelyActiveCycles: [] };
+    return userCycles.effectivelyActiveCycles[0] || null;
+  }
+
+  // Get categorized client lists for display
+  function getCategorizedClients() {
+    const searchLower = assignUserSearch.toLowerCase();
+    const filtered = clients.filter(c => {
+      const name = (c.displayName || '').toLowerCase();
+      const email = (c.email || '').toLowerCase();
+      return name.includes(searchLower) || email.includes(searchLower);
+    }).sort((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || '', undefined, { sensitivity: 'base' }));
+
+    const active = [];
+    const previous = [];
+    const legacy = [];
+    const notAssigned = [];
+
+    for (const client of filtered) {
+      const category = getUserCycleCategory(client.id);
+      if (category === 'active') active.push(client);
+      else if (category === 'previous') previous.push(client);
+      else if (category === 'legacy') legacy.push(client);
+      else notAssigned.push(client);
+    }
+
+    return { active, previous, legacy, notAssigned };
+  }
+
+  // Effect to load cycles when program and clients are ready
+  $effect(() => {
+    if (program?.id && clients.length > 0 && !cyclesLoaded) {
+      loadProgramCycles();
+    }
+  });
 
   // Day functions
   async function addDay(e) {
@@ -942,18 +1169,24 @@
   {#if userRole === 'admin' || userRole === 'coach'}
     <!-- Publish Status Banner -->
     {#if hasUnpublishedChanges}
-      <div style="background: #fff3e0; border: 2px solid #ff9800; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+      <div style="background: #fff3e0; border: 2px solid {cycleActionJustSucceeded ? '#e65100' : '#ff9800'}; padding: 15px; border-radius: 8px; margin-bottom: 20px; {cycleActionJustSucceeded ? 'animation: pulse-border 1s ease-in-out 2;' : ''}">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
           <div>
-            <strong style="color: #e65100;">Unpublished Changes</strong>
+            <strong style="color: #e65100;">
+              {cycleActionJustSucceeded ? 'Publish Recommended' : 'Unpublished Changes'}
+            </strong>
             <p style="margin: 5px 0 0 0; font-size: 0.9em; color: #666;">
-              Clients won't see your changes until you publish.
+              {#if cycleActionJustSucceeded}
+                Cycle updated. Clients may still see an older published version until you click Publish to Clients.
+              {:else}
+                Clients won't see your changes until you publish.
+              {/if}
             </p>
           </div>
           <button
-            onclick={publishChanges}
+            onclick={() => { publishChanges(); cycleActionJustSucceeded = false; }}
             disabled={publishing}
-            style="padding: 10px 20px; background: #ff9800; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 5px;"
+            style="padding: 10px 20px; background: {cycleActionJustSucceeded ? '#e65100' : '#ff9800'}; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 5px;"
           >
             {publishing ? 'Publishing...' : 'Publish to Clients'}
           </button>
@@ -1014,37 +1247,245 @@
     {/if}
 
     <!-- Assign to Users -->
-    <details style="margin-bottom: 20px;" ontoggle={(e) => { if (!e.currentTarget.open) assignUserSearch = ''; }}>
+    <details style="margin-bottom: 20px;" ontoggle={(e) => { if (!e.currentTarget.open) { assignUserSearch = ''; selectedUsers = new Set(); cycleActionJustSucceeded = false; } }}>
       <summary style="cursor: pointer; font-weight: bold;">Assign to Users ({program.assignedTo?.length || 0} assigned)</summary>
       <div style="padding: 10px; background: #f5f5f5; margin-top: 5px;">
+        <!-- Cycle Settings -->
+        <div style="margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #ddd;">
+          <div style="font-weight: 500; margin-bottom: 8px; font-size: 0.9em; color: #555;">Cycle Settings</div>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <label style="flex: 1; min-width: 140px;">
+              <span style="display: block; font-size: 0.85em; color: #666; margin-bottom: 3px;">Cycle Start Date</span>
+              <input
+                type="date"
+                bind:value={cycleStartDate}
+                style="width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em;"
+              />
+            </label>
+            <label style="flex: 1; min-width: 140px;">
+              <span style="display: block; font-size: 0.85em; color: #666; margin-bottom: 3px;">Cycle Duration (weeks)</span>
+              <input
+                type="number"
+                bind:value={cycleDurationWeeks}
+                min="1"
+                style="width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em;"
+              />
+            </label>
+          </div>
+          {#if cycleAssignError}
+            <div style="color: #c62828; font-size: 0.85em; margin-top: 8px;">{cycleAssignError}</div>
+          {/if}
+        </div>
+
         {#if clients.length === 0}
           <p>No users yet.</p>
+        {:else if !cyclesLoaded}
+          <p style="color: #888; font-size: 0.9em;">Loading user states...</p>
         {:else}
-          <input type="text" bind:value={assignUserSearch} placeholder="Search users…" style="width: 100%; padding: 6px 8px; margin-bottom: 8px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em;" />
-          {@const filtered = getFilteredClients()}
-          {#if filtered.length === 0}
+          {@const categorized = getCategorizedClients()}
+          {@const selectedWithActive = getSelectedUsersWithActiveCycles()}
+
+          <input type="text" bind:value={assignUserSearch} placeholder="Search users…" style="width: 100%; padding: 6px 8px; margin-bottom: 12px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em;" />
+
+          {#if categorized.active.length === 0 && categorized.previous.length === 0 && categorized.legacy.length === 0 && categorized.notAssigned.length === 0}
             <p style="color: #999; font-size: 0.9em; margin: 8px 0;">No matches</p>
           {:else}
-            {#each filtered as client}
-              <label style="display: block; margin: 5px 0;">
-                <input
-                  type="checkbox"
-                  checked={program.assignedTo?.includes(client.id)}
-                  onchange={() => toggleAssignment(client.id)}
-                />
-                {client.displayName || client.email}
-                {#if client.role && client.role !== 'client'}
-                  <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
-                {/if}
-                {#if client.displayName}
-                  <span style="color: #888; font-size: 0.85em;">({client.email})</span>
-                {/if}
-              </label>
-            {/each}
+            <!-- Active on This Program -->
+            {#if categorized.active.length > 0}
+              <div style="margin-bottom: 16px;">
+                <div style="font-size: 0.8em; font-weight: 600; color: #2e7d32; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #c8e6c9;">
+                  Active on This Program ({categorized.active.length})
+                </div>
+                <p style="font-size: 0.8em; color: #388e3c; margin: 0 0 6px 0;">Select to update existing cycle timing</p>
+                {#each categorized.active as client}
+                  <label style="display: flex; align-items: center; margin: 4px 0; padding: 6px 8px; background: {selectedUsers.has(client.id) ? '#c8e6c9' : '#e8f5e9'}; border-radius: 4px; cursor: pointer; border: {selectedUsers.has(client.id) ? '2px solid #4CAF50' : '2px solid transparent'};">
+                    <input
+                      type="checkbox"
+                      checked={selectedUsers.has(client.id)}
+                      onchange={() => toggleUserSelection(client.id)}
+                      style="margin-right: 8px;"
+                    />
+                    <span style="flex: 1;">
+                      {client.displayName || client.email}
+                      {#if client.role && client.role !== 'client'}
+                        <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                      {/if}
+                      {#if client.displayName}
+                        <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                      {/if}
+                    </span>
+                    <span style="font-size: 0.75em; color: #2e7d32; font-weight: 500;">active</span>
+                  </label>
+                {/each}
+              </div>
+            {/if}
+
+            <!-- Previously Assigned -->
+            {#if categorized.previous.length > 0}
+              <div style="margin-bottom: 16px;">
+                <div style="font-size: 0.8em; font-weight: 600; color: #5d4037; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #d7ccc8;">
+                  Previously Assigned ({categorized.previous.length})
+                </div>
+                <p style="font-size: 0.8em; color: #795548; margin: 0 0 6px 0;">Select to start a new cycle</p>
+                {#each categorized.previous as client}
+                  <label style="display: flex; align-items: center; margin: 4px 0; padding: 6px 8px; background: {selectedUsers.has(client.id) ? '#d7ccc8' : '#efebe9'}; border-radius: 4px; cursor: pointer; border: {selectedUsers.has(client.id) ? '2px solid #795548' : '2px solid transparent'};">
+                    <input
+                      type="checkbox"
+                      checked={selectedUsers.has(client.id)}
+                      onchange={() => toggleUserSelection(client.id)}
+                      style="margin-right: 8px;"
+                    />
+                    <span style="flex: 1;">
+                      {client.displayName || client.email}
+                      {#if client.role && client.role !== 'client'}
+                        <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                      {/if}
+                      {#if client.displayName}
+                        <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                      {/if}
+                    </span>
+                    <span style="font-size: 0.75em; color: #8d6e63;">past cycle</span>
+                  </label>
+                {/each}
+              </div>
+            {/if}
+
+            <!-- Legacy Assigned (No Cycle Record) -->
+            {#if categorized.legacy.length > 0}
+              <div style="margin-bottom: 16px;">
+                <div style="font-size: 0.8em; font-weight: 600; color: #e65100; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #ffe0b2;">
+                  Legacy Assigned (No Cycle Record) ({categorized.legacy.length})
+                </div>
+                <p style="font-size: 0.8em; color: #ef6c00; margin: 0 0 6px 0;">Select to start a new cycle</p>
+                {#each categorized.legacy as client}
+                  <label style="display: flex; align-items: center; margin: 4px 0; padding: 6px 8px; background: {selectedUsers.has(client.id) ? '#ffe0b2' : '#fff3e0'}; border-radius: 4px; cursor: pointer; border: {selectedUsers.has(client.id) ? '2px solid #ef6c00' : '2px solid transparent'};">
+                    <input
+                      type="checkbox"
+                      checked={selectedUsers.has(client.id)}
+                      onchange={() => toggleUserSelection(client.id)}
+                      style="margin-right: 8px;"
+                    />
+                    <span style="flex: 1;">
+                      {client.displayName || client.email}
+                      {#if client.role && client.role !== 'client'}
+                        <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                      {/if}
+                      {#if client.displayName}
+                        <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                      {/if}
+                    </span>
+                    <span style="font-size: 0.75em; color: #e65100;">legacy</span>
+                  </label>
+                {/each}
+              </div>
+            {/if}
+
+            <!-- Not Yet Assigned -->
+            {#if categorized.notAssigned.length > 0}
+              <div style="margin-bottom: 16px;">
+                <div style="font-size: 0.8em; font-weight: 600; color: #455a64; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #cfd8dc;">
+                  Not Yet Assigned ({categorized.notAssigned.length})
+                </div>
+                <p style="font-size: 0.8em; color: #607d8b; margin: 0 0 6px 0;">Select to start a new cycle</p>
+                {#each categorized.notAssigned as client}
+                  <label style="display: flex; align-items: center; margin: 4px 0; padding: 6px 8px; background: {selectedUsers.has(client.id) ? '#cfd8dc' : '#eceff1'}; border-radius: 4px; cursor: pointer; border: {selectedUsers.has(client.id) ? '2px solid #607d8b' : '2px solid transparent'};">
+                    <input
+                      type="checkbox"
+                      checked={selectedUsers.has(client.id)}
+                      onchange={() => toggleUserSelection(client.id)}
+                      style="margin-right: 8px;"
+                    />
+                    <span style="flex: 1;">
+                      {client.displayName || client.email}
+                      {#if client.role && client.role !== 'client'}
+                        <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                      {/if}
+                      {#if client.displayName}
+                        <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                      {/if}
+                    </span>
+                  </label>
+                {/each}
+              </div>
+            {/if}
+
+            <!-- Action Button and Summary -->
+            <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #ddd;">
+              {#if selectedUsers.size > 0}
+                <div style="margin-bottom: 10px; padding: 10px; background: #e3f2fd; border-radius: 6px; font-size: 0.85em;">
+                  <strong>Selected: {selectedUsers.size} user{selectedUsers.size > 1 ? 's' : ''}</strong>
+                  {#if selectedWithActive.length > 0}
+                    <div style="color: #1565c0; margin-top: 4px;">
+                      {selectedWithActive.length} will have existing active cycle updated
+                    </div>
+                  {/if}
+                  {#if selectedUsers.size - selectedWithActive.length > 0}
+                    <div style="color: #1565c0; margin-top: 4px;">
+                      {selectedUsers.size - selectedWithActive.length} will receive a new cycle
+                    </div>
+                  {/if}
+                </div>
+              {/if}
+              <button
+                onclick={handleCycleAction}
+                disabled={selectedUsers.size === 0 || cycleActionPending}
+                style="width: 100%; padding: 10px 16px; background: {selectedUsers.size > 0 ? '#4CAF50' : '#ccc'}; color: white; border: none; border-radius: 6px; font-size: 0.95em; font-weight: 500; cursor: {selectedUsers.size > 0 ? 'pointer' : 'not-allowed'};"
+              >
+                {cycleActionPending ? 'Processing...' : 'Create / Update Cycle for Selected Users'}
+              </button>
+
+              <!-- Inline publish reminder after successful cycle action -->
+              {#if cycleActionJustSucceeded && hasUnpublishedChanges}
+                <div style="margin-top: 12px; padding: 10px 12px; background: #fff3e0; border-left: 3px solid #e65100; border-radius: 4px; font-size: 0.85em;">
+                  <strong style="color: #e65100;">Cycle updated.</strong>
+                  <span style="color: #666;"> Clients may still see an older published version. </span>
+                  <button
+                    onclick={() => { cycleActionJustSucceeded = false; }}
+                    style="background: none; border: none; color: #888; cursor: pointer; font-size: 0.85em; padding: 0 4px;"
+                    title="Dismiss"
+                  >✕</button>
+                </div>
+              {/if}
+            </div>
           {/if}
         {/if}
       </div>
     </details>
+
+    <!-- Cycle Update Confirmation Modal -->
+    {#if showCycleConfirmation}
+      {@const usersToUpdate = getSelectedUsersWithActiveCycles()}
+      <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;">
+        <div style="background: white; padding: 20px; border-radius: 10px; max-width: 400px; width: 100%;">
+          <h3 style="margin: 0 0 15px 0; color: #e65100;">Update Active Cycles?</h3>
+          <p style="color: #666; margin-bottom: 15px;">
+            {usersToUpdate.length} selected user{usersToUpdate.length > 1 ? 's have' : ' has'} an existing active cycle for this program.
+            Proceeding will <strong>update their existing active cycle</strong> with the new timing values:
+          </p>
+          <div style="background: #fff3e0; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 0.9em;">
+            <div><strong>Start Date:</strong> {cycleStartDate}</div>
+            <div><strong>Duration:</strong> {cycleDurationWeeks} weeks</div>
+          </div>
+          <p style="color: #888; font-size: 0.85em; margin-bottom: 15px;">
+            This will not create duplicate cycles. The existing active cycle will be modified.
+          </p>
+          <div style="display: flex; gap: 10px;">
+            <button
+              onclick={executeCycleAction}
+              style="flex: 1; padding: 10px; background: #e65100; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 500;"
+            >
+              Yes, Update Cycles
+            </button>
+            <button
+              onclick={cancelCycleConfirmation}
+              style="flex: 1; padding: 10px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 5px; cursor: pointer;"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
   {/if}
 
   <!-- Add Day -->
@@ -1703,6 +2144,12 @@
 {/if}
 
 <style>
+  /* Pulse animation for publish reminder */
+  @keyframes pulse-border {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(230, 81, 0, 0); }
+    50% { box-shadow: 0 0 0 4px rgba(230, 81, 0, 0.3); }
+  }
+
   /* Exercise Picker Modal */
   .picker-backdrop {
     position: fixed;
