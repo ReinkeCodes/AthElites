@@ -1,6 +1,6 @@
 <script>
   import { auth, db } from '$lib/firebase.js';
-  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, query, where, updateDoc } from 'firebase/firestore';
+  import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, getDocs, query, where, updateDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { listProgramCycles, normalizeExpiredCyclesIfNeeded, getEndOfDay } from '$lib/programCycleHelpers.js';
@@ -10,7 +10,6 @@
   let newProgramDescription = $state('');
   let userRole = $state(null);
   let currentUserId = $state(null);
-  let activeView = $state('my'); // 'my' (Perform Workout) or 'all' (Modify Programs)
   let loading = $state(true);
   let roleError = $state(null);
 
@@ -33,6 +32,10 @@
   let clientCycles = $state([]);
   let cyclesLoading = $state(false);
 
+  // Admin/coach program cycle state (for status indicators)
+  let allProgramCycles = $state([]);
+  let statusLoading = $state(false);
+
   // Delete confirmation modal state
   let deleteConfirmProgram = $state(null);
 
@@ -46,7 +49,7 @@
 
   function getFilteredPrograms() {
     let filtered;
-    if (activeView === 'my' || userRole === 'client') {
+    if (userRole === 'client') {
       // Clients see: programs assigned to them OR programs they created
       // Check both assignedToUids (canonical) and assignedTo (legacy) for display
       filtered = programs.filter(p =>
@@ -56,20 +59,9 @@
         (p.createdByRole === 'client' && p.createdByUserId === currentUserId)
       );
     } else {
-      // Admin/Coach "All Programs": exclude client-created programs
+      // Admin/Coach: all non-client-created programs
       filtered = programs.filter(p => p.createdByRole !== 'client');
     }
-    // Sort alphabetically for display
-    return sortProgramsAlphabetically(filtered);
-  }
-
-  function getMyPrograms() {
-    // Check both assignedToUids (canonical) and assignedTo (legacy)
-    const filtered = programs.filter(p =>
-      p.assignedToUids?.includes(currentUserId) ||
-      p.assignedTo?.includes?.(currentUserId) ||
-      p.assignedTo === currentUserId
-    );
     // Sort alphabetically for display
     return sortProgramsAlphabetically(filtered);
   }
@@ -175,6 +167,10 @@
               // Load cycles for client program grouping
               if (role === 'client') {
                 loadClientCycles(user.uid);
+              }
+              // Load all cycles for admin/coach status indicators
+              if (role === 'admin' || role === 'coach') {
+                loadAllCycles();
               }
             } else {
               // Role field exists but is null/undefined
@@ -397,6 +393,56 @@
     );
     return getFilteredPrograms().filter(p => !activeProgramIds.has(p.id));
   }
+
+  // =============================================================================
+  // Admin/Coach status indicator helpers
+  // =============================================================================
+
+  async function loadAllCycles() {
+    statusLoading = true;
+    try {
+      // Load every user's programCycles subcollection in parallel.
+      // Admin already has read access to user documents and their subcollections
+      // (same access the clients dashboard uses via listProgramCycles).
+      // This avoids a collectionGroup query which requires additional Firestore rule config.
+      const usersSnap = await getDocs(collection(db, 'user'));
+      const userIds = usersSnap.docs.map(d => d.id);
+      const cycleArrays = await Promise.all(
+        userIds.map(uid => listProgramCycles(uid).catch(() => []))
+      );
+      allProgramCycles = cycleArrays.flat();
+    } catch (e) {
+      console.log('Could not load program cycles for status indicators:', e);
+      allProgramCycles = [];
+    }
+    statusLoading = false;
+  }
+
+  // Primary status: current / archived / none — based on client cycle usage only.
+  // The logged-in admin/coach's self cycles are intentionally excluded here;
+  // they surface separately via isMineActive.
+  function getPrimaryStatus(program) {
+    const clientCycles = allProgramCycles.filter(
+      c => c.programId === program.id && c.userId !== currentUserId
+    );
+
+    // Current: at least one client has an effectively active cycle
+    if (clientCycles.some(isEffectivelyActive)) return 'current';
+
+    // Archived: past client cycle history OR legacy assigned/no-cycle history
+    const hasLegacyAssignment = (program.assignedToUids?.length > 0) ||
+      (Array.isArray(program.assignedTo) ? program.assignedTo.length > 0 : !!program.assignedTo);
+    if (clientCycles.length > 0 || hasLegacyAssignment) return 'archived';
+
+    return 'none';
+  }
+
+  // Secondary "Mine" indicator: logged-in admin/coach has an active self-cycle on this program
+  function isMineActive(programId) {
+    return allProgramCycles.some(
+      c => c.programId === programId && c.userId === currentUserId && isEffectivelyActive(c)
+    );
+  }
 </script>
 
 <h1>Programs</h1>
@@ -409,24 +455,6 @@
   </div>
 {:else}
   {#if userRole === 'admin' || userRole === 'coach'}
-    <!-- View Tabs -->
-    <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid #eee;">
-      <button
-        onclick={() => activeView = 'my'}
-        style="flex: 1; padding: 12px; border: none; background: {activeView === 'my' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'my' ? 'bold' : 'normal'}; border-bottom: {activeView === 'my' ? '3px solid #4CAF50' : 'none'}; margin-bottom: -2px;"
-      >
-        Perform Workout ({getMyPrograms().length})
-      </button>
-      <button
-        onclick={() => activeView = 'all'}
-        style="flex: 1; padding: 12px; border: none; background: {activeView === 'all' ? 'white' : '#f5f5f5'}; cursor: pointer; font-weight: {activeView === 'all' ? 'bold' : 'normal'}; border-bottom: {activeView === 'all' ? '3px solid #2196F3' : 'none'}; margin-bottom: -2px;"
-      >
-        Modify Programs
-      </button>
-    </div>
-  {/if}
-
-  {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
   <h2>Create Program</h2>
   <form onsubmit={createProgram} style="margin-bottom: 20px;">
     <div style="margin-bottom: 10px;">
@@ -534,87 +562,93 @@
     {/if}
   {/if}
 {:else}
-  <!-- Admin/Coach view: unchanged -->
-  <h2>{activeView === 'my' ? 'Your Programs' : 'All Programs'}</h2>
+  <!-- Admin/Coach unified program library -->
+  <h2 style="margin-bottom: 12px;">All Programs</h2>
   {#if getFilteredPrograms().length === 0}
-    <p>{activeView === 'my' ? 'No programs assigned to you yet.' : 'No programs created yet.'}</p>
+    <p style="color: #888;">No programs created yet.</p>
   {:else}
     {#each getFilteredPrograms() as program}
-      {#if (userRole === 'admin' || userRole === 'coach') && activeView === 'all'}
-        <!-- Admin/Coach edit view -->
-        {#if editingProgramId === program.id}
-          <!-- Inline rename form -->
-          <div class="program-card" style="border: 1px solid #2196F3; padding: 15px; margin: 10px 0; border-radius: 5px; background: #f5faff;">
-            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-              <input
-                type="text"
-                bind:value={editingProgramName}
-                style="flex: 1; min-width: 150px; padding: 8px; border: 1px solid {renameError ? '#f44336' : '#ccc'}; border-radius: 4px; font-size: 1em;"
-                placeholder="Program name"
-                onkeydown={(e) => e.key === 'Enter' && saveRenameProgram(program)}
-              />
-              <button
-                onclick={() => saveRenameProgram(program)}
-                style="padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;"
-              >Save</button>
-              <button
-                onclick={cancelRenameProgram}
-                style="padding: 8px 16px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;"
-              >Cancel</button>
-            </div>
-            {#if renameError}
-              <p style="margin: 8px 0 0 0; color: #f44336; font-size: 0.85em;">{renameError}</p>
-            {/if}
+      {@const primaryStatus = getPrimaryStatus(program)}
+      {@const isMine = isMineActive(program.id)}
+      {#if editingProgramId === program.id}
+        <!-- Inline rename form -->
+        <div class="program-card" style="border: 1px solid #2196F3; padding: 15px; margin: 10px 0; border-radius: 5px; background: #f5faff;">
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <input
+              type="text"
+              bind:value={editingProgramName}
+              style="flex: 1; min-width: 150px; padding: 8px; border: 1px solid {renameError ? '#f44336' : '#ccc'}; border-radius: 4px; font-size: 1em;"
+              placeholder="Program name"
+              onkeydown={(e) => e.key === 'Enter' && saveRenameProgram(program)}
+            />
+            <button
+              onclick={() => saveRenameProgram(program)}
+              style="padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;"
+            >Save</button>
+            <button
+              onclick={cancelRenameProgram}
+              style="padding: 8px 16px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;"
+            >Cancel</button>
           </div>
-        {:else}
-          <!-- Normal view: fully clickable card -->
-          <a href="/programs/{program.id}" class="program-card" style="display: block; text-decoration: none; color: inherit; border: 1px solid {program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white; position: relative;">
-            <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1;">
-                <strong style="font-size: 1.2em;">{program.name}</strong>
-                {#if program.isClientCopy}
-                  <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+          {#if renameError}
+            <p style="margin: 8px 0 0 0; color: #f44336; font-size: 0.85em;">{renameError}</p>
+          {/if}
+        </div>
+      {:else}
+        <!-- Unified program card: explicit Perform + Edit, status chips, no click-anywhere-edit -->
+        <div class="program-card" style="border: 1px solid #ddd; padding: 14px 15px; margin: 10px 0; border-radius: 5px; background: white;">
+          <!-- Top row: name, status chips, utility actions -->
+          <div style="display: flex; justify-content: space-between; align-items: start; gap: 10px;">
+            <div style="flex: 1; min-width: 0;">
+              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                <strong style="font-size: 1.1em;">{program.name}</strong>
+                {#if primaryStatus === 'current'}
+                  <span style="background: #dcfce7; color: #15803d; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Current</span>
+                {:else if primaryStatus === 'archived'}
+                  <span style="background: #f3f4f6; color: #6b7280; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Archived</span>
+                {:else}
+                  <span style="background: #f9fafb; color: #9ca3af; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; border: 1px solid #e5e7eb;">No Active Cycle</span>
+                {/if}
+                {#if isMine}
+                  <span style="background: #dbeafe; color: #1d4ed8; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Mine</span>
                 {/if}
               </div>
-              <div style="display: flex; gap: 4px; align-items: center;">
-                <button
-                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); startRenameProgram(program); }}
-                  style="background: none; border: none; color: #666; font-size: 0.9em; cursor: pointer; padding: 4px 8px; line-height: 1;"
-                  title="Rename program"
-                >✎</button>
-                <button
-                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); deleteProgram(program.id); }}
-                  style="background: none; border: none; color: #999; font-size: 1.2em; cursor: pointer; padding: 4px 8px; line-height: 1;"
-                  title="Delete program"
-                >×</button>
-              </div>
-            </div>
-            {#if program.description}
-              <p style="margin: 5px 0; color: #666;">{program.description}</p>
-            {/if}
-            <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
-              {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
-              {#if program.assignedTo?.length > 0}
-                • {program.assignedTo.length} assigned
-              {/if}
-            </p>
-          </a>
-        {/if}
-      {:else}
-        <!-- Admin/Coach Perform Workout view -->
-        <div class="program-card" style="display: block; border: 1px solid {isOwnClientProgram(program) ? '#4CAF50' : program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {isOwnClientProgram(program) ? 'border-left: 4px solid #4CAF50;' : program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white; position: relative;">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-            <a href="/programs/{program.id}/days" style="flex: 1; text-decoration: none; color: inherit; cursor: pointer;">
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                <strong style="font-size: 1.2em;">{program.name}</strong>
-              </div>
               {#if program.description}
-                <p style="margin: 5px 0; color: #666;">{program.description}</p>
+                <p style="margin: 4px 0 0 0; color: #666; font-size: 0.88em;">{program.description}</p>
               {/if}
-              <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
+              <p style="margin: 3px 0 0 0; font-size: 0.82em; color: #999;">
                 {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+                {#if (program.assignedToUids?.length || 0) > 0}
+                  · {program.assignedToUids.length} assigned
+                {:else if Array.isArray(program.assignedTo) && program.assignedTo.length > 0}
+                  · {program.assignedTo.length} assigned
+                {/if}
               </p>
-            </a>
+            </div>
+            <!-- Utility actions: rename + delete -->
+            <div style="display: flex; gap: 2px; align-items: center; flex-shrink: 0;">
+              <button
+                onclick={() => startRenameProgram(program)}
+                style="background: none; border: none; color: #888; font-size: 0.9em; cursor: pointer; padding: 4px 7px; line-height: 1; border-radius: 4px;"
+                title="Rename program"
+              >✎</button>
+              <button
+                onclick={() => deleteProgram(program.id)}
+                style="background: none; border: none; color: #bbb; font-size: 1.1em; cursor: pointer; padding: 4px 7px; line-height: 1; border-radius: 4px;"
+                title="Delete program"
+              >×</button>
+            </div>
+          </div>
+          <!-- Primary + secondary action buttons -->
+          <div style="display: flex; gap: 8px; margin-top: 11px;">
+            <a
+              href="/programs/{program.id}/days"
+              style="padding: 6px 14px; background: #4CAF50; color: white; text-decoration: none; border-radius: 4px; font-size: 0.87em; font-weight: 500;"
+            >Perform</a>
+            <a
+              href="/programs/{program.id}"
+              style="padding: 6px 14px; background: #f5f5f5; border: 1px solid #ddd; color: #444; text-decoration: none; border-radius: 4px; font-size: 0.87em;"
+            >Edit</a>
           </div>
         </div>
       {/if}
