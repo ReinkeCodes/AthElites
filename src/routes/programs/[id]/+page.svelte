@@ -5,7 +5,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
-  import { buildCycleRecord, createProgramCycle, listProgramCycles, isCycleExpired, getProgramCycleDoc } from '$lib/programCycleHelpers.js';
+  import { buildCycleRecord, createProgramCycle, listProgramCycles, isCycleExpired, getProgramCycleDoc, normalizeExpiredCyclesIfNeeded } from '$lib/programCycleHelpers.js';
 
   let program = $state(null);
   let userRole = $state(null);
@@ -405,11 +405,13 @@
     for (const client of clients) {
       try {
         const cycles = await listProgramCycles(client.id, { programId: program.id });
+        // Opportunistically normalize any cycles that are stored as active but effectively expired
+        const normalizedCycles = await normalizeExpiredCyclesIfNeeded(client.id, cycles);
         // Effectively active = status 'active' AND endsAt not in past
-        const effectivelyActiveCycles = cycles.filter(c => c.status === 'active' && !isCycleExpired(c));
+        const effectivelyActiveCycles = normalizedCycles.filter(c => c.status === 'active' && !isCycleExpired(c));
         // Past = everything else (non-active status OR expired by date)
-        const pastCycles = cycles.filter(c => c.status !== 'active' || isCycleExpired(c));
-        newMap[client.id] = { effectivelyActiveCycles, pastCycles, allCycles: cycles };
+        const pastCycles = normalizedCycles.filter(c => c.status !== 'active' || isCycleExpired(c));
+        newMap[client.id] = { effectivelyActiveCycles, pastCycles, allCycles: normalizedCycles };
       } catch (err) {
         console.error(`[Cycle] Failed to load cycles for user ${client.id}:`, err);
         newMap[client.id] = { effectivelyActiveCycles: [], pastCycles: [], allCycles: [] };

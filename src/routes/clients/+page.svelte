@@ -5,12 +5,14 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import SessionDetailModal from '$lib/components/SessionDetailModal.svelte';
+  import { listProgramCycles, normalizeExpiredCyclesIfNeeded, getEndOfDay } from '$lib/programCycleHelpers.js';
 
   let loading = $state(true);
   let currentUserId = $state(null);
   let allUsers = $state([]);
   let selectedUserId = $state(null);
   let workoutSessions = $state([]);
+  let allUserSessions = $state([]); // All sessions for cycle stats
   let sessionsLoading = $state(false);
   let sessions7Days = $state(null);
   let sessions7DaysPrev = $state(null);
@@ -22,6 +24,10 @@
   let selectedSession = $state(null);
   let selectedSessionLogs = $state([]);
   let sessionLogsLoading = $state(false);
+
+  // Program cycles state
+  let clientCycles = $state([]);
+  let cyclesLoading = $state(false);
 
   // Compute total prescribed sets for Full Tracking exercises only
   function computePrescribedSets(dayTemplate) {
@@ -82,10 +88,11 @@
     });
   });
 
-  // Load sessions when admin selects a user
+  // Load sessions and cycles when admin selects a user
   $effect(() => {
     if (selectedUserId && !loading) {
       loadWorkoutSessions();
+      loadClientCycles();
     }
   });
 
@@ -108,6 +115,9 @@
           const dateB = b.finishedAt?.toDate ? b.finishedAt.toDate() : new Date(b.finishedAt);
           return dateB - dateA;
         });
+
+      // Store all sessions for cycle stats calculation
+      allUserSessions = allSessions;
 
       // Compute session counts for different windows
       const now = new Date();
@@ -198,6 +208,7 @@
     } catch (e) {
       console.log('Could not load sessions:', e);
       workoutSessions = [];
+      allUserSessions = [];
       sessions7Days = 0;
       sessions7DaysPrev = 0;
       sessions30Days = 0;
@@ -329,6 +340,138 @@
     }
     return missing;
   }
+
+  // =============================================================================
+  // Program Cycle Functions
+  // =============================================================================
+
+  // Load cycles when user is selected (called alongside loadWorkoutSessions)
+  async function loadClientCycles() {
+    if (!selectedUserId) {
+      clientCycles = [];
+      return;
+    }
+    cyclesLoading = true;
+    try {
+      const cycles = await listProgramCycles(selectedUserId);
+      // Opportunistically normalize any cycles that are stored as active but effectively expired
+      const normalizedCycles = await normalizeExpiredCyclesIfNeeded(selectedUserId, cycles);
+      clientCycles = normalizedCycles;
+    } catch (e) {
+      console.log('Could not load client cycles:', e);
+      clientCycles = [];
+    }
+    cyclesLoading = false;
+  }
+
+  // Check if a cycle is effectively active (status='active' AND endsAt not past inclusive end-of-day)
+  function isEffectivelyActive(cycle) {
+    if (cycle.status !== 'active') return false;
+    const now = new Date();
+    const endsAt = cycle.endsAt?.toDate ? cycle.endsAt.toDate() : new Date(cycle.endsAt);
+    // Use inclusive end-of-day: cycle is active through the entire end date
+    const endOfEndDay = getEndOfDay(endsAt);
+    return now <= endOfEndDay;
+  }
+
+  // Get effective end date for a cycle (closedAt if present, otherwise endsAt)
+  function getEffectiveEndDate(cycle) {
+    if (cycle.closedAt) {
+      return cycle.closedAt.toDate ? cycle.closedAt.toDate() : new Date(cycle.closedAt);
+    }
+    return cycle.endsAt?.toDate ? cycle.endsAt.toDate() : new Date(cycle.endsAt);
+  }
+
+  // Get active cycles, sorted by soonest ending first
+  function getActiveCycles() {
+    return clientCycles
+      .filter(isEffectivelyActive)
+      .sort((a, b) => {
+        const aEnd = a.endsAt?.toDate ? a.endsAt.toDate() : new Date(a.endsAt);
+        const bEnd = b.endsAt?.toDate ? b.endsAt.toDate() : new Date(b.endsAt);
+        return aEnd - bEnd; // Soonest ending first
+      });
+  }
+
+  // Get past cycles (not effectively active), sorted by most recently ended first, limit 3
+  function getPastCycles() {
+    return clientCycles
+      .filter(c => !isEffectivelyActive(c))
+      .sort((a, b) => {
+        const aEnd = getEffectiveEndDate(a);
+        const bEnd = getEffectiveEndDate(b);
+        return bEnd - aEnd; // Most recently ended first
+      })
+      .slice(0, 3);
+  }
+
+  // Count sessions that fall within a cycle window
+  function getCycleSessionCount(cycle, isActive) {
+    const startedAt = cycle.startedAt?.toDate ? cycle.startedAt.toDate() : new Date(cycle.startedAt);
+    const endDate = isActive ? new Date() : getEffectiveEndDate(cycle);
+
+    return allUserSessions.filter(session => {
+      if (session.programId !== cycle.programId) return false;
+      if (!session.finishedAt) return false;
+      const sessionDate = session.finishedAt.toDate ? session.finishedAt.toDate() : new Date(session.finishedAt);
+      return sessionDate >= startedAt && sessionDate <= endDate;
+    }).length;
+  }
+
+  // Calculate elapsed weeks for a cycle window
+  function getElapsedWeeks(cycle, isActive) {
+    const startedAt = cycle.startedAt?.toDate ? cycle.startedAt.toDate() : new Date(cycle.startedAt);
+    const endDate = isActive ? new Date() : getEffectiveEndDate(cycle);
+    const msElapsed = endDate - startedAt;
+    const weeksElapsed = msElapsed / (7 * 24 * 60 * 60 * 1000);
+    return Math.max(weeksElapsed, 0.1); // Avoid division by zero
+  }
+
+  // Calculate avg sessions per week (rounded to nearest tenth)
+  function getCycleAvgPerWeek(cycle, isActive) {
+    const sessionCount = getCycleSessionCount(cycle, isActive);
+    const elapsedWeeks = getElapsedWeeks(cycle, isActive);
+    const avg = sessionCount / elapsedWeeks;
+    return Math.round(avg * 10) / 10;
+  }
+
+  // Calculate weeks remaining for active cycles (rounded to nearest tenth)
+  function getWeeksRemaining(cycle) {
+    const now = new Date();
+    const endsAt = cycle.endsAt?.toDate ? cycle.endsAt.toDate() : new Date(cycle.endsAt);
+    const msRemaining = endsAt - now;
+    const weeksRemaining = msRemaining / (7 * 24 * 60 * 60 * 1000);
+    return Math.round(Math.max(weeksRemaining, 0) * 10) / 10;
+  }
+
+  // Format cycle date for display
+  function formatCycleDate(timestamp) {
+    if (!timestamp) return '';
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  // Get display-friendly status label for past cycles
+  function getCycleStatusLabel(cycle) {
+    switch (cycle.status) {
+      case 'completed': return 'Completed';
+      case 'expired': return 'Expired';
+      case 'removed': return 'Removed';
+      case 'active': return 'Past Due'; // Was active but endsAt is in the past
+      default: return cycle.status || 'Unknown';
+    }
+  }
+
+  // Get status color for past cycles
+  function getCycleStatusColor(cycle) {
+    switch (cycle.status) {
+      case 'completed': return '#16a34a';
+      case 'expired': return '#dc2626';
+      case 'removed': return '#888';
+      case 'active': return '#ca8a04'; // Past due (was active but time elapsed)
+      default: return '#888';
+    }
+  }
 </script>
 
 {#if loading}
@@ -379,6 +522,102 @@
       </div>
     </div>
   </div>
+
+  <!-- Program Cycles Sections (below stat cards, above workouts) -->
+  {#if selectedUserId && !cyclesLoading}
+    {@const activeCycles = getActiveCycles()}
+    {@const pastCycles = getPastCycles()}
+
+    <!-- Active Program Cycles -->
+    <div style="margin-bottom: 20px;">
+      <h3 style="margin: 0 0 12px 0; font-size: 1em; color: #333;">Active Program Cycles</h3>
+      {#if activeCycles.length === 0}
+        <p style="color: #888; font-size: 0.9em; padding: 15px; background: #f9f9f9; border-radius: 8px; margin: 0;">No active cycles.</p>
+      {:else}
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          {#each activeCycles as cycle}
+            {@const sessionCount = getCycleSessionCount(cycle, true)}
+            {@const avgPerWeek = getCycleAvgPerWeek(cycle, true)}
+            {@const weeksRemaining = getWeeksRemaining(cycle)}
+            <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px 15px;">
+              <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px;">
+                <div style="flex: 1; min-width: 150px;">
+                  <strong style="font-size: 0.95em; color: #333;">{cycle.programNameSnapshot || 'Unknown Program'}</strong>
+                  <div style="margin-top: 4px; font-size: 0.85em; color: #666;">
+                    Ends {formatCycleDate(cycle.endsAt)} · {weeksRemaining} wk{weeksRemaining !== 1 ? 's' : ''} remaining
+                  </div>
+                </div>
+                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                  <div style="text-align: center; min-width: 50px;">
+                    <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
+                    <div style="font-size: 0.75em; color: #888;">Sessions</div>
+                  </div>
+                  <div style="text-align: center; min-width: 50px;">
+                    <div style="font-size: 1.1em; font-weight: 600; color: #667eea;">{avgPerWeek}</div>
+                    <div style="font-size: 0.75em; color: #888;">Avg/wk</div>
+                  </div>
+                  <button
+                    onclick={() => goto(`/programs/${cycle.programId}`)}
+                    style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
+                  >
+                    Open Program
+                  </button>
+                </div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Past Program Cycles -->
+    <div style="margin-bottom: 20px;">
+      <h3 style="margin: 0 0 12px 0; font-size: 1em; color: #333;">Past Program Cycles</h3>
+      {#if pastCycles.length === 0}
+        <p style="color: #888; font-size: 0.9em; padding: 15px; background: #f9f9f9; border-radius: 8px; margin: 0;">No past cycles.</p>
+      {:else}
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          {#each pastCycles as cycle}
+            {@const sessionCount = getCycleSessionCount(cycle, false)}
+            {@const avgPerWeek = getCycleAvgPerWeek(cycle, false)}
+            {@const effectiveEnd = getEffectiveEndDate(cycle)}
+            <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px 15px;">
+              <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px;">
+                <div style="flex: 1; min-width: 150px;">
+                  <strong style="font-size: 0.95em; color: #333;">{cycle.programNameSnapshot || 'Unknown Program'}</strong>
+                  <div style="margin-top: 4px; font-size: 0.85em; color: #666;">
+                    Ended {formatCycleDate(effectiveEnd)}
+                  </div>
+                </div>
+                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                  <div style="text-align: center; min-width: 50px;">
+                    <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
+                    <div style="font-size: 0.75em; color: #888;">Sessions</div>
+                  </div>
+                  <div style="text-align: center; min-width: 50px;">
+                    <div style="font-size: 1.1em; font-weight: 600; color: #667eea;">{avgPerWeek}</div>
+                    <div style="font-size: 0.75em; color: #888;">Avg/wk</div>
+                  </div>
+                  <div style="text-align: center; min-width: 60px;">
+                    <div style="font-size: 0.85em; font-weight: 500; color: {getCycleStatusColor(cycle)};">{getCycleStatusLabel(cycle)}</div>
+                    <div style="font-size: 0.75em; color: #888;">Status</div>
+                  </div>
+                  <button
+                    onclick={() => goto(`/programs/${cycle.programId}`)}
+                    style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
+                  >
+                    Open Program
+                  </button>
+                </div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {:else if selectedUserId && cyclesLoading}
+    <p style="color: #888; font-size: 0.9em; margin-bottom: 20px;">Loading cycles...</p>
+  {/if}
 
   {#if !selectedUserId}
     <p style="color: #888; text-align: center; padding: 20px 0;">Select a client to view their recent workouts.</p>

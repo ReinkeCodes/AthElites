@@ -261,10 +261,24 @@ export async function updateCycleStatus(userId, cycleId, newStatus) {
 }
 
 /**
+ * Get the end of day (23:59:59.999) for a given date.
+ * Used for inclusive end-of-day comparisons.
+ *
+ * @param {Date} date - The date to get end of day for
+ * @returns {Date} The date set to 23:59:59.999
+ */
+export function getEndOfDay(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+/**
  * Check if a cycle is currently within its active window.
+ * Uses inclusive end-of-day semantics: a cycle ending on Feb 23 is active through all of Feb 23.
  *
  * @param {Object} cycle - The cycle record
- * @returns {boolean} True if current time is between startedAt and endsAt
+ * @returns {boolean} True if current time is between startedAt and end of endsAt day
  */
 export function isCycleInWindow(cycle) {
   const now = new Date();
@@ -277,14 +291,18 @@ export function isCycleInWindow(cycle) {
     ? cycle.endsAt.toDate()
     : new Date(cycle.endsAt);
 
-  return now >= startDate && now <= endDate;
+  // Use inclusive end-of-day: cycle is active through the entire end date
+  const endOfEndDay = getEndOfDay(endDate);
+
+  return now >= startDate && now <= endOfEndDay;
 }
 
 /**
- * Check if a cycle has expired (past its end date but still marked active).
+ * Check if a cycle has expired (past its inclusive end date but still marked active).
+ * Uses inclusive end-of-day semantics: a cycle ending on Feb 23 expires after Feb 23 23:59:59.
  *
  * @param {Object} cycle - The cycle record
- * @returns {boolean} True if cycle is past endsAt but still active
+ * @returns {boolean} True if cycle is past inclusive endsAt but still active
  */
 export function isCycleExpired(cycle) {
   if (cycle.status !== 'active') {
@@ -296,7 +314,90 @@ export function isCycleExpired(cycle) {
     ? cycle.endsAt.toDate()
     : new Date(cycle.endsAt);
 
-  return now > endDate;
+  // Use inclusive end-of-day: cycle expires only after the full end date has passed
+  const endOfEndDay = getEndOfDay(endDate);
+
+  return now > endOfEndDay;
+}
+
+// =============================================================================
+// Lifecycle Normalization
+// =============================================================================
+
+/**
+ * Normalize an expired cycle in Firestore.
+ * Sets status to 'expired' and closedAt to endsAt (if closedAt was null).
+ *
+ * @param {string} userId - The user ID
+ * @param {Object} cycle - The cycle record (must have id)
+ * @returns {Promise<boolean>} True if normalization was performed
+ */
+export async function normalizeCycleToExpired(userId, cycle) {
+  if (!cycle.id) {
+    console.warn('[Cycle] Cannot normalize cycle without id');
+    return false;
+  }
+
+  const docRef = getProgramCycleDoc(userId, cycle.id);
+
+  // For closedAt, use the endsAt timestamp if closedAt is null
+  // This reflects that the cycle naturally expired at its end date
+  const closedAtValue = cycle.closedAt || cycle.endsAt;
+
+  await updateDoc(docRef, {
+    status: 'expired',
+    closedAt: closedAtValue
+  });
+
+  return true;
+}
+
+/**
+ * Opportunistically normalize any expired cycles in a list.
+ * Checks each cycle and normalizes those that are stored as 'active' but
+ * have effectively passed their inclusive end date.
+ *
+ * This is a write-back approach: cycles are normalized when encountered
+ * on cycle-aware surfaces, not by a background job.
+ *
+ * @param {string} userId - The user ID
+ * @param {Array} cycles - Array of cycle records to check
+ * @returns {Promise<Array>} The cycles with in-memory status updated for any that were normalized
+ */
+export async function normalizeExpiredCyclesIfNeeded(userId, cycles) {
+  if (!cycles || cycles.length === 0) return cycles;
+
+  const normalizePromises = [];
+  const updatedCycles = cycles.map(cycle => {
+    // Only normalize cycles that are stored as active but effectively expired
+    if (isCycleExpired(cycle)) {
+      // Queue the Firestore update
+      normalizePromises.push(
+        normalizeCycleToExpired(userId, cycle)
+          .then(() => {
+            console.log(`[Cycle] Normalized cycle ${cycle.id} to expired`);
+          })
+          .catch(err => {
+            console.warn(`[Cycle] Failed to normalize cycle ${cycle.id}:`, err);
+          })
+      );
+
+      // Return in-memory updated copy so UI reflects the change immediately
+      return {
+        ...cycle,
+        status: 'expired',
+        closedAt: cycle.closedAt || cycle.endsAt
+      };
+    }
+    return cycle;
+  });
+
+  // Wait for all normalizations to complete (fire-and-forget style, but we wait)
+  if (normalizePromises.length > 0) {
+    await Promise.all(normalizePromises);
+  }
+
+  return updatedCycles;
 }
 
 // =============================================================================

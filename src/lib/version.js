@@ -4,7 +4,7 @@
  */
 
 // App version (semantic versioning)
-export const APP_VERSION = '0.13.0';
+export const APP_VERSION = '0.14.0';
 
 // Feature versions - track when specific features were last updated
 // Increment when making significant changes to a feature
