@@ -24,11 +24,11 @@ service cloud.firestore {
       match /programCycles/{cycleId} {
         allow read: if request.auth != null && (
           request.auth.uid == userId ||
-          getUserRole() == 'admin'
+          getUserRole() in ['coach', 'admin']
         );
 
         allow create, update, delete: if request.auth != null && (
-          getUserRole() == 'admin'
+          getUserRole() in ['coach', 'admin']
         );
       }
 
