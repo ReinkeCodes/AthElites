@@ -4,6 +4,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/stores';
   import SessionDetailModal from '$lib/components/SessionDetailModal.svelte';
   import { listProgramCycles, normalizeExpiredCyclesIfNeeded, getEndOfDay } from '$lib/programCycleHelpers.js';
 
@@ -83,6 +84,11 @@
           console.log('Could not load users:', e);
         }
         loading = false;
+        // Restore selected client from URL (e.g. after returning via browser back)
+        const clientParam = $page.url.searchParams.get('client');
+        if (clientParam) {
+          selectedUserId = clientParam;
+        }
       } else {
         goto('/');
       }
@@ -511,7 +517,12 @@
     <h1 style="margin: 0;">Client Dashboard</h1>
     <select
       value={selectedUserId}
-      onchange={(e) => selectedUserId = e.target.value}
+      onchange={(e) => {
+        selectedUserId = e.target.value;
+        if (e.target.value) {
+          goto(`/clients?client=${e.target.value}`, { replaceState: true, noScroll: true, keepFocus: true });
+        }
+      }}
       style="padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.95em; min-width: 180px;"
     >
       {#if allUsers.length === 0}
