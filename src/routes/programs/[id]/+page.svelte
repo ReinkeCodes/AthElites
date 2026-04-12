@@ -5,7 +5,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
-  import { buildCycleRecord, createProgramCycle, listProgramCycles, isCycleExpired, getProgramCycleDoc, normalizeExpiredCyclesIfNeeded, getEndOfDay } from '$lib/programCycleHelpers.js';
+  import { buildCycleRecord, createProgramCycle, listProgramCycles, isCycleExpired, getProgramCycleDoc, normalizeExpiredCyclesIfNeeded, getEndOfDay, updateCycleStatus } from '$lib/programCycleHelpers.js';
 
   let program = $state(null);
   let userRole = $state(null);
@@ -61,6 +61,12 @@
   let showCycleConfirmation = $state(false); // confirmation modal for updating active cycles
   let cycleActionPending = $state(false); // loading state for cycle action
   let cycleActionJustSucceeded = $state(false); // triggers publish reminder when unpublished changes exist
+
+  // Lifecycle action modals (Complete / Remove)
+  let showCompleteConfirmation = $state(false);
+  let showRemoveConfirmation = $state(false);
+  let removeAlsoDeassign = $state(false);
+  let lifecycleActionPending = $state(false);
 
   // Exercise in section
   let addingExerciseToSection = $state(null);
@@ -395,6 +401,89 @@
   // Cancel the confirmation dialog
   function cancelCycleConfirmation() {
     showCycleConfirmation = false;
+  }
+
+  // Handle Complete action — only valid for users with an effectively active cycle
+  function handleCompleteAction() {
+    cycleAssignError = '';
+    const withActive = getSelectedUsersWithActiveCycles();
+    if (withActive.length === 0) {
+      cycleAssignError = 'No selected users have an active cycle to complete';
+      return;
+    }
+    showCompleteConfirmation = true;
+  }
+
+  async function executeCompleteAction() {
+    lifecycleActionPending = true;
+    showCompleteConfirmation = false;
+    cycleAssignError = '';
+
+    try {
+      const withActive = getSelectedUsersWithActiveCycles();
+      for (const uid of withActive) {
+        const cycle = getUserEffectivelyActiveCycle(uid);
+        if (cycle) {
+          await updateCycleStatus(uid, cycle.id, 'completed');
+        }
+      }
+      selectedUsers = new Set();
+      await loadProgramCycles();
+    } catch (err) {
+      console.error('[Cycle] Failed to complete cycles:', err);
+      cycleAssignError = 'Failed to complete cycles: ' + err.message;
+    } finally {
+      lifecycleActionPending = false;
+    }
+  }
+
+  // Handle Remove action — marks active cycles as removed, optionally deassigns the program
+  function handleRemoveAction() {
+    cycleAssignError = '';
+    const withActive = getSelectedUsersWithActiveCycles();
+    if (withActive.length === 0) {
+      cycleAssignError = 'No selected users have an active cycle to remove';
+      return;
+    }
+    removeAlsoDeassign = false;
+    showRemoveConfirmation = true;
+  }
+
+  async function executeRemoveAction() {
+    lifecycleActionPending = true;
+    showRemoveConfirmation = false;
+    cycleAssignError = '';
+
+    try {
+      const withActive = getSelectedUsersWithActiveCycles();
+      const uidsToProcess = withActive;
+
+      for (const uid of uidsToProcess) {
+        const cycle = getUserEffectivelyActiveCycle(uid);
+        if (cycle) {
+          await updateCycleStatus(uid, cycle.id, 'removed');
+        }
+      }
+
+      // Optionally deassign from the program
+      if (removeAlsoDeassign && uidsToProcess.length > 0) {
+        const currentAssigned = program.assignedToUids || program.assignedTo || [];
+        const currentList = Array.isArray(currentAssigned) ? currentAssigned : [currentAssigned];
+        const newAssigned = currentList.filter(uid => !uidsToProcess.includes(uid));
+        await updateDoc(doc(db, 'programs', program.id), {
+          assignedToUids: newAssigned,
+          assignedTo: newAssigned
+        });
+      }
+
+      selectedUsers = new Set();
+      await loadProgramCycles();
+    } catch (err) {
+      console.error('[Cycle] Failed to remove cycles:', err);
+      cycleAssignError = 'Failed to remove cycles: ' + err.message;
+    } finally {
+      lifecycleActionPending = false;
+    }
   }
 
   // Load cycles for all clients for this program
@@ -1472,23 +1561,41 @@
                   <strong>Selected: {selectedUsers.size} user{selectedUsers.size > 1 ? 's' : ''}</strong>
                   {#if selectedWithActive.length > 0}
                     <div style="color: #1565c0; margin-top: 4px;">
-                      {selectedWithActive.length} will have existing active cycle updated
+                      {selectedWithActive.length} with an active cycle
                     </div>
                   {/if}
                   {#if selectedUsers.size - selectedWithActive.length > 0}
                     <div style="color: #1565c0; margin-top: 4px;">
-                      {selectedUsers.size - selectedWithActive.length} will receive a new cycle
+                      {selectedUsers.size - selectedWithActive.length} with no active cycle
                     </div>
                   {/if}
                 </div>
               {/if}
-              <button
-                onclick={handleCycleAction}
-                disabled={selectedUsers.size === 0 || cycleActionPending}
-                style="width: 100%; padding: 10px 16px; background: {selectedUsers.size > 0 ? '#4CAF50' : '#ccc'}; color: white; border: none; border-radius: 6px; font-size: 0.95em; font-weight: 500; cursor: {selectedUsers.size > 0 ? 'pointer' : 'not-allowed'};"
-              >
-                {cycleActionPending ? 'Processing...' : 'Create / Update Cycle for Selected Users'}
-              </button>
+
+              <div style="font-size: 0.8em; color: #888; margin-bottom: 6px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em;">For selected users</div>
+              <div style="display: flex; gap: 8px;">
+                <button
+                  onclick={handleCycleAction}
+                  disabled={selectedUsers.size === 0 || cycleActionPending || lifecycleActionPending}
+                  style="flex: 2; padding: 10px 12px; background: {selectedUsers.size > 0 ? '#4CAF50' : '#ccc'}; color: white; border: none; border-radius: 6px; font-size: 0.9em; font-weight: 500; cursor: {selectedUsers.size > 0 ? 'pointer' : 'not-allowed'};"
+                >
+                  {cycleActionPending ? 'Processing...' : 'Create / Update Cycle'}
+                </button>
+                <button
+                  onclick={handleCompleteAction}
+                  disabled={selectedWithActive.length === 0 || cycleActionPending || lifecycleActionPending}
+                  style="flex: 1; padding: 10px 8px; background: {selectedWithActive.length > 0 ? '#1565c0' : '#ccc'}; color: white; border: none; border-radius: 6px; font-size: 0.9em; font-weight: 500; cursor: {selectedWithActive.length > 0 ? 'pointer' : 'not-allowed'};"
+                >
+                  {lifecycleActionPending ? '...' : 'Complete'}
+                </button>
+                <button
+                  onclick={handleRemoveAction}
+                  disabled={selectedWithActive.length === 0 || cycleActionPending || lifecycleActionPending}
+                  style="flex: 1; padding: 10px 8px; background: {selectedWithActive.length > 0 ? '#b71c1c' : '#ccc'}; color: white; border: none; border-radius: 6px; font-size: 0.9em; font-weight: 500; cursor: {selectedWithActive.length > 0 ? 'pointer' : 'not-allowed'};"
+                >
+                  {lifecycleActionPending ? '...' : 'Remove'}
+                </button>
+              </div>
 
               <!-- Inline publish reminder after successful cycle action -->
               {#if cycleActionJustSucceeded && hasUnpublishedChanges}
@@ -1534,6 +1641,81 @@
             </button>
             <button
               onclick={cancelCycleConfirmation}
+              style="flex: 1; padding: 10px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 5px; cursor: pointer;"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Complete Cycle Confirmation Modal -->
+    {#if showCompleteConfirmation}
+      {@const usersToComplete = getSelectedUsersWithActiveCycles()}
+      <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;">
+        <div style="background: white; padding: 20px; border-radius: 10px; max-width: 400px; width: 100%;">
+          <h3 style="margin: 0 0 15px 0; color: #1565c0;">Mark Cycles as Completed?</h3>
+          <p style="color: #666; margin-bottom: 15px;">
+            This will mark the active cycle as <strong>completed</strong> for {usersToComplete.length} user{usersToComplete.length > 1 ? 's' : ''}:
+          </p>
+          <div style="background: #e3f2fd; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 0.9em; max-height: 140px; overflow-y: auto;">
+            {#each usersToComplete as uid}
+              <div style="padding: 2px 0;">{getClientName(uid)}</div>
+            {/each}
+          </div>
+          <p style="color: #888; font-size: 0.85em; margin-bottom: 15px;">
+            Completed cycles move to the client's past history. The program remains assigned.
+          </p>
+          <div style="display: flex; gap: 10px;">
+            <button
+              onclick={executeCompleteAction}
+              style="flex: 1; padding: 10px; background: #1565c0; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 500;"
+            >
+              Yes, Mark Completed
+            </button>
+            <button
+              onclick={() => showCompleteConfirmation = false}
+              style="flex: 1; padding: 10px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 5px; cursor: pointer;"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Remove Cycle Confirmation Modal -->
+    {#if showRemoveConfirmation}
+      {@const usersToRemove = getSelectedUsersWithActiveCycles()}
+      <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;">
+        <div style="background: white; padding: 20px; border-radius: 10px; max-width: 400px; width: 100%;">
+          <h3 style="margin: 0 0 15px 0; color: #b71c1c;">Remove Active Cycles?</h3>
+          <p style="color: #666; margin-bottom: 15px;">
+            This will mark the active cycle as <strong>removed</strong> for {usersToRemove.length} user{usersToRemove.length > 1 ? 's' : ''}:
+          </p>
+          <div style="background: #ffebee; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 0.9em; max-height: 140px; overflow-y: auto;">
+            {#each usersToRemove as uid}
+              <div style="padding: 2px 0;">{getClientName(uid)}</div>
+            {/each}
+          </div>
+          <label style="display: flex; align-items: flex-start; gap: 8px; margin-bottom: 15px; cursor: pointer; font-size: 0.9em; color: #333;">
+            <input
+              type="checkbox"
+              bind:checked={removeAlsoDeassign}
+              style="margin-top: 2px; flex-shrink: 0;"
+            />
+            <span>Also remove client access to this program (deassign)</span>
+          </label>
+          <div style="display: flex; gap: 10px;">
+            <button
+              onclick={executeRemoveAction}
+              style="flex: 1; padding: 10px; background: #b71c1c; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: 500;"
+            >
+              Yes, Remove
+            </button>
+            <button
+              onclick={() => showRemoveConfirmation = false}
               style="flex: 1; padding: 10px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 5px; cursor: pointer;"
             >
               Cancel
