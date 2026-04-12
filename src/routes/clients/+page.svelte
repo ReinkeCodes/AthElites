@@ -28,6 +28,7 @@
   // Program cycles state
   let clientCycles = $state([]);
   let cyclesLoading = $state(false);
+  let clientLegacyPrograms = $state([]); // assigned programs with no cycle records
 
   // Compute total prescribed sets for Full Tracking exercises only
   function computePrescribedSets(dayTemplate) {
@@ -349,6 +350,7 @@
   async function loadClientCycles() {
     if (!selectedUserId) {
       clientCycles = [];
+      clientLegacyPrograms = [];
       return;
     }
     cyclesLoading = true;
@@ -357,11 +359,39 @@
       // Opportunistically normalize any cycles that are stored as active but effectively expired
       const normalizedCycles = await normalizeExpiredCyclesIfNeeded(selectedUserId, cycles);
       clientCycles = normalizedCycles;
+      // Load legacy programs now that we know which programIds have cycles
+      await loadLegacyPrograms(normalizedCycles);
     } catch (e) {
       console.log('Could not load client cycles:', e);
       clientCycles = [];
+      clientLegacyPrograms = [];
     }
     cyclesLoading = false;
+  }
+
+  // Load programs assigned to the client that have no cycle records at all
+  async function loadLegacyPrograms(cycles) {
+    if (!selectedUserId) {
+      clientLegacyPrograms = [];
+      return;
+    }
+    try {
+      const programsSnap = await getDocs(
+        query(collection(db, 'programs'), where('assignedToUids', 'array-contains', selectedUserId))
+      );
+      const assignedPrograms = programsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Exclude any program that already has at least one cycle record for this client
+      const programsWithCycles = new Set((cycles || []).map(c => c.programId));
+      clientLegacyPrograms = assignedPrograms.filter(p => !programsWithCycles.has(p.id));
+    } catch (e) {
+      console.log('Could not load legacy programs:', e);
+      clientLegacyPrograms = [];
+    }
+  }
+
+  // Count all sessions for a program regardless of cycle window (used for legacy items)
+  function getLegacySessionCount(programId) {
+    return allUserSessions.filter(s => s.programId === programId && s.finishedAt).length;
   }
 
   // Check if a cycle is effectively active (status='active' AND endsAt not past inclusive end-of-day)
@@ -573,7 +603,7 @@
     <!-- Past Program Cycles -->
     <div style="margin-bottom: 20px;">
       <h3 style="margin: 0 0 12px 0; font-size: 1em; color: #333;">Past Program Cycles</h3>
-      {#if pastCycles.length === 0}
+      {#if pastCycles.length === 0 && clientLegacyPrograms.length === 0}
         <p style="color: #888; font-size: 0.9em; padding: 15px; background: #f9f9f9; border-radius: 8px; margin: 0;">No past cycles.</p>
       {:else}
         <div style="display: flex; flex-direction: column; gap: 10px;">
@@ -604,6 +634,30 @@
                   </div>
                   <button
                     onclick={() => goto(`/programs/${cycle.programId}`)}
+                    style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
+                  >
+                    Open Program
+                  </button>
+                </div>
+              </div>
+            </div>
+          {/each}
+
+          {#each clientLegacyPrograms as program}
+            {@const sessionCount = getLegacySessionCount(program.id)}
+            <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px 15px;">
+              <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px;">
+                <div style="flex: 1; min-width: 150px;">
+                  <strong style="font-size: 0.95em; color: #333;">{program.name || 'Unknown Program'}</strong>
+                  <div style="margin-top: 4px; font-size: 0.85em; color: #888;">Legacy program</div>
+                </div>
+                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                  <div style="text-align: center; min-width: 50px;">
+                    <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
+                    <div style="font-size: 0.75em; color: #888;">Sessions</div>
+                  </div>
+                  <button
+                    onclick={() => goto(`/programs/${program.id}`)}
                     style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
                   >
                     Open Program
