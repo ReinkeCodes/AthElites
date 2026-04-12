@@ -5,7 +5,7 @@
   import { onAuthStateChanged } from 'firebase/auth';
   import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
-  import { buildCycleRecord, createProgramCycle, listProgramCycles, isCycleExpired, getProgramCycleDoc, normalizeExpiredCyclesIfNeeded } from '$lib/programCycleHelpers.js';
+  import { buildCycleRecord, createProgramCycle, listProgramCycles, isCycleExpired, getProgramCycleDoc, normalizeExpiredCyclesIfNeeded, getEndOfDay } from '$lib/programCycleHelpers.js';
 
   let program = $state(null);
   let userRole = $state(null);
@@ -453,6 +453,41 @@
   function getUserEffectivelyActiveCycle(userId) {
     const userCycles = programCyclesMap[userId] || { effectivelyActiveCycles: [] };
     return userCycles.effectivelyActiveCycles[0] || null;
+  }
+
+  // Get the most recent past cycle for a user on this program
+  function getMostRecentPastCycle(userId) {
+    const userCycles = programCyclesMap[userId] || { pastCycles: [] };
+    if (userCycles.pastCycles.length === 0) return null;
+    return [...userCycles.pastCycles].sort((a, b) => {
+      const aTs = a.closedAt || a.endsAt;
+      const bTs = b.closedAt || b.endsAt;
+      const aDate = aTs?.toDate ? aTs.toDate() : new Date(aTs);
+      const bDate = bTs?.toDate ? bTs.toDate() : new Date(bTs);
+      return bDate - aDate; // most recent first
+    })[0];
+  }
+
+  // Format a Firestore timestamp as "Apr 1, 2026"
+  function formatCycleDate(timestamp) {
+    if (!timestamp) return '';
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  // Format remaining time as "5w 3d remaining" using inclusive end-of-day logic
+  function formatRemainingTime(endsAtTimestamp) {
+    if (!endsAtTimestamp) return '';
+    const now = new Date();
+    const endsAt = endsAtTimestamp.toDate ? endsAtTimestamp.toDate() : new Date(endsAtTimestamp);
+    const msRemaining = getEndOfDay(endsAt) - now;
+    if (msRemaining <= 0) return '0d remaining';
+    const totalDays = Math.ceil(msRemaining / (1000 * 60 * 60 * 24));
+    const weeks = Math.floor(totalDays / 7);
+    const days = totalDays % 7;
+    if (weeks === 0) return `${days}d remaining`;
+    if (days === 0) return `${weeks}w remaining`;
+    return `${weeks}w ${days}d remaining`;
   }
 
   // Get categorized client lists for display
@@ -1300,6 +1335,7 @@
                 </div>
                 <p style="font-size: 0.8em; color: #388e3c; margin: 0 0 6px 0;">Select to update existing cycle timing</p>
                 {#each categorized.active as client}
+                  {@const activeCycle = getUserEffectivelyActiveCycle(client.id)}
                   <label style="display: flex; align-items: center; margin: 4px 0; padding: 6px 8px; background: {selectedUsers.has(client.id) ? '#c8e6c9' : '#e8f5e9'}; border-radius: 4px; cursor: pointer; border: {selectedUsers.has(client.id) ? '2px solid #4CAF50' : '2px solid transparent'};">
                     <input
                       type="checkbox"
@@ -1307,16 +1343,23 @@
                       onchange={() => toggleUserSelection(client.id)}
                       style="margin-right: 8px;"
                     />
-                    <span style="flex: 1;">
-                      {client.displayName || client.email}
-                      {#if client.role && client.role !== 'client'}
-                        <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
-                      {/if}
-                      {#if client.displayName}
-                        <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                    <span style="flex: 1; min-width: 0;">
+                      <span>
+                        {client.displayName || client.email}
+                        {#if client.role && client.role !== 'client'}
+                          <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                        {/if}
+                        {#if client.displayName}
+                          <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                        {/if}
+                      </span>
+                      {#if activeCycle}
+                        <div style="font-size: 0.78em; color: #2e7d32; margin-top: 2px;">
+                          Started {formatCycleDate(activeCycle.startedAt)} • Ends {formatCycleDate(activeCycle.endsAt)} • {formatRemainingTime(activeCycle.endsAt)}
+                        </div>
                       {/if}
                     </span>
-                    <span style="font-size: 0.75em; color: #2e7d32; font-weight: 500;">active</span>
+                    <span style="font-size: 0.75em; color: #2e7d32; font-weight: 500; flex-shrink: 0;">active</span>
                   </label>
                 {/each}
               </div>
@@ -1330,6 +1373,7 @@
                 </div>
                 <p style="font-size: 0.8em; color: #795548; margin: 0 0 6px 0;">Select to start a new cycle</p>
                 {#each categorized.previous as client}
+                  {@const pastCycle = getMostRecentPastCycle(client.id)}
                   <label style="display: flex; align-items: center; margin: 4px 0; padding: 6px 8px; background: {selectedUsers.has(client.id) ? '#d7ccc8' : '#efebe9'}; border-radius: 4px; cursor: pointer; border: {selectedUsers.has(client.id) ? '2px solid #795548' : '2px solid transparent'};">
                     <input
                       type="checkbox"
@@ -1337,16 +1381,23 @@
                       onchange={() => toggleUserSelection(client.id)}
                       style="margin-right: 8px;"
                     />
-                    <span style="flex: 1;">
-                      {client.displayName || client.email}
-                      {#if client.role && client.role !== 'client'}
-                        <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
-                      {/if}
-                      {#if client.displayName}
-                        <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                    <span style="flex: 1; min-width: 0;">
+                      <span>
+                        {client.displayName || client.email}
+                        {#if client.role && client.role !== 'client'}
+                          <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                        {/if}
+                        {#if client.displayName}
+                          <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                        {/if}
+                      </span>
+                      {#if pastCycle}
+                        <div style="font-size: 0.78em; color: #6d4c41; margin-top: 2px;">
+                          Ended {formatCycleDate(pastCycle.closedAt || pastCycle.endsAt)} • {pastCycle.durationWeeks} week{pastCycle.durationWeeks !== 1 ? 's' : ''}
+                        </div>
                       {/if}
                     </span>
-                    <span style="font-size: 0.75em; color: #8d6e63;">past cycle</span>
+                    <span style="font-size: 0.75em; color: #8d6e63; flex-shrink: 0;">past cycle</span>
                   </label>
                 {/each}
               </div>
@@ -1367,16 +1418,19 @@
                       onchange={() => toggleUserSelection(client.id)}
                       style="margin-right: 8px;"
                     />
-                    <span style="flex: 1;">
-                      {client.displayName || client.email}
-                      {#if client.role && client.role !== 'client'}
-                        <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
-                      {/if}
-                      {#if client.displayName}
-                        <span style="color: #888; font-size: 0.85em;">({client.email})</span>
-                      {/if}
+                    <span style="flex: 1; min-width: 0;">
+                      <span>
+                        {client.displayName || client.email}
+                        {#if client.role && client.role !== 'client'}
+                          <span style="background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 8px; font-size: 0.7em; margin-left: 5px;">{client.role}</span>
+                        {/if}
+                        {#if client.displayName}
+                          <span style="color: #888; font-size: 0.85em;">({client.email})</span>
+                        {/if}
+                      </span>
+                      <div style="font-size: 0.78em; color: #bf360c; margin-top: 2px;">No cycle record</div>
                     </span>
-                    <span style="font-size: 0.75em; color: #e65100;">legacy</span>
+                    <span style="font-size: 0.75em; color: #e65100; flex-shrink: 0;">legacy</span>
                   </label>
                 {/each}
               </div>
