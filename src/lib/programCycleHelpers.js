@@ -89,6 +89,7 @@ export function buildCycleRecord({
   assignedByUserId,
   startedAt,
   durationWeeks,
+  workoutsPerWeekTarget = null,
   status = 'active'
 }) {
   // Convert startedAt to Timestamp if it's a Date
@@ -111,6 +112,9 @@ export function buildCycleRecord({
     startedAt: startTimestamp,
     durationWeeks,
     endsAt: endsAtTimestamp,
+
+    // Adherence goal (optional — null means no goal set)
+    workoutsPerWeekTarget: workoutsPerWeekTarget ?? null,
 
     // Status tracking
     status: normalizeCycleStatus(status),

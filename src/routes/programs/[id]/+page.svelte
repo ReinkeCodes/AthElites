@@ -50,6 +50,7 @@
   // Cycle assignment fields
   let cycleStartDate = $state(new Date().toISOString().split('T')[0]); // Default to today (YYYY-MM-DD format for input)
   let cycleDurationWeeks = $state(8); // Default to 8 weeks
+  let cycleWorkoutsPerWeek = $state(''); // Optional adherence goal; blank = null
   let cycleAssignError = $state('');
 
   // Cycle state for user categorization
@@ -303,6 +304,15 @@
       return;
     }
 
+    // Validate workouts per week (optional — blank is fine)
+    if (cycleWorkoutsPerWeek !== '' && cycleWorkoutsPerWeek !== null) {
+      const wpw = parseFloat(cycleWorkoutsPerWeek);
+      if (isNaN(wpw) || wpw <= 0 || (wpw * 2) !== Math.round(wpw * 2)) {
+        cycleAssignError = 'Workouts / week must be a positive number in 0.5 increments (e.g. 2, 2.5, 3)';
+        return;
+      }
+    }
+
     // Parse start date
     const startDate = new Date(cycleStartDate + 'T00:00:00');
     if (isNaN(startDate.getTime())) {
@@ -334,6 +344,11 @@
     const endsAtDate = new Date(startDate);
     endsAtDate.setDate(endsAtDate.getDate() + (durationNum * 7));
 
+    // Parse workouts per week — blank or empty string becomes null
+    const wpwValue = (cycleWorkoutsPerWeek !== '' && cycleWorkoutsPerWeek !== null)
+      ? parseFloat(cycleWorkoutsPerWeek)
+      : null;
+
     // Use assignedToUids as canonical, fall back to assignedTo for legacy data
     const currentAssigned = program.assignedToUids || program.assignedTo || [];
     const currentList = Array.isArray(currentAssigned) ? currentAssigned : [currentAssigned];
@@ -349,7 +364,8 @@
           await updateDoc(cycleDocRef, {
             startedAt: startDate,
             durationWeeks: durationNum,
-            endsAt: endsAtDate
+            endsAt: endsAtDate,
+            workoutsPerWeekTarget: wpwValue
           });
           console.log(`[Cycle] Updated active cycle ${existingActiveCycle.id} for user ${clientId}`);
         } else {
@@ -361,6 +377,7 @@
             assignedByUserId: currentUserId,
             startedAt: startDate,
             durationWeeks: durationNum,
+            workoutsPerWeekTarget: wpwValue,
             status: 'active'
           });
           await createProgramCycle(cycleData);
@@ -1394,6 +1411,17 @@
                 type="number"
                 bind:value={cycleDurationWeeks}
                 min="1"
+                style="width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em;"
+              />
+            </label>
+            <label style="flex: 1; min-width: 140px;">
+              <span style="display: block; font-size: 0.85em; color: #666; margin-bottom: 3px;">Workouts / week target <span style="color: #aaa; font-weight: 400;">(optional)</span></span>
+              <input
+                type="number"
+                bind:value={cycleWorkoutsPerWeek}
+                min="0.5"
+                step="0.5"
+                placeholder="e.g. 3 or 2.5"
                 style="width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em;"
               />
             </label>
