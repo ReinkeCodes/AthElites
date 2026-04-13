@@ -2,7 +2,8 @@
   import { auth, db } from '$lib/firebase.js';
   import { collection, addDoc, onSnapshot, deleteDoc, doc, getDoc, getDocs, query, where, updateDoc } from 'firebase/firestore';
   import { onAuthStateChanged } from 'firebase/auth';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
+  import { beforeNavigate, afterNavigate } from '$app/navigation';
   import { listProgramCycles, normalizeExpiredCyclesIfNeeded, getEndOfDay } from '$lib/programCycleHelpers.js';
 
   let programs = $state([]);
@@ -35,6 +36,70 @@
   // Admin/coach program cycle state (for status indicators)
   let allProgramCycles = $state([]);
   let statusLoading = $state(false);
+
+  // Section open/collapsed state — persisted to sessionStorage so navigating back restores it
+  const SECTION_STATE_KEY = 'programs_section_state';
+  let performOpen = $state(true);  // default: expanded
+  let libraryOpen = $state(false); // default: collapsed
+  let savedScrollY = $state(null); // null = nothing to restore
+
+  // Capture fresh scrollY right before leaving this page
+  beforeNavigate(() => {
+    saveSectionState();
+  });
+
+  // afterNavigate fires after SvelteKit has applied its own scroll-to-top behavior.
+  // Setting savedScrollY here means the $effect below will always run after that reset.
+  afterNavigate(() => {
+    try {
+      const saved = sessionStorage.getItem(SECTION_STATE_KEY);
+      if (saved) {
+        const { scrollY } = JSON.parse(saved);
+        if (typeof scrollY === 'number') savedScrollY = scrollY;
+      }
+    } catch {}
+  });
+
+  // Apply scroll once programs are in the DOM (loading = false).
+  // By the time this fires, SvelteKit's scroll-to-top has already run (afterNavigate guarantee).
+  $effect(() => {
+    if (savedScrollY !== null && !loading) {
+      const y = savedScrollY;
+      savedScrollY = null;
+      tick().then(() => window.scrollTo({ top: y, behavior: 'instant' }));
+    }
+  });
+
+  function saveSectionState() {
+    try {
+      sessionStorage.setItem(SECTION_STATE_KEY, JSON.stringify({
+        perform: performOpen,
+        library: libraryOpen,
+        scrollY: window.scrollY
+      }));
+    } catch {}
+  }
+
+  function handlePerformToggle(e) {
+    performOpen = e.currentTarget.open;
+    saveSectionState();
+  }
+
+  function handleLibraryToggle(e) {
+    libraryOpen = e.currentTarget.open;
+    saveSectionState();
+  }
+
+  // Derived: programs the logged-in admin/coach has any self-cycle on.
+  // Computed reactively so it can be referenced directly in markup without {@const}.
+  let myPerformablePrograms = $derived(
+    (() => {
+      const myProgramIds = new Set(
+        allProgramCycles.filter(c => c.userId === currentUserId).map(c => c.programId)
+      );
+      return getFilteredPrograms().filter(p => myProgramIds.has(p.id));
+    })()
+  );
 
   // Delete confirmation modal state
   let deleteConfirmProgram = $state(null);
@@ -150,6 +215,16 @@
   }
 
   onMount(() => {
+    // Restore section state saved before last navigation away
+    try {
+      const saved = sessionStorage.getItem(SECTION_STATE_KEY);
+      if (saved) {
+        const { perform, library } = JSON.parse(saved);
+        if (typeof perform === 'boolean') performOpen = perform;
+        if (typeof library === 'boolean') libraryOpen = library;
+      }
+    } catch {}
+
     const authUnsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUserId = user.uid;
@@ -443,6 +518,28 @@
       c => c.programId === programId && c.userId === currentUserId && isEffectivelyActive(c)
     );
   }
+
+  // Programs the logged-in admin/coach has any self-cycle on (active or past)
+  function getMyPerformablePrograms() {
+    const myProgramIds = new Set(
+      allProgramCycles
+        .filter(c => c.userId === currentUserId)
+        .map(c => c.programId)
+    );
+    return getFilteredPrograms().filter(p => myProgramIds.has(p.id));
+  }
+
+  // Self-cycle status for the "Programs I Can Perform" section
+  // 'current' = has an effectively active self-cycle
+  // 'archived' = has self-cycles but none are currently active
+  function getMySelfStatus(programId) {
+    const selfCycles = allProgramCycles.filter(
+      c => c.programId === programId && c.userId === currentUserId
+    );
+    if (selfCycles.length === 0) return 'none';
+    if (selfCycles.some(isEffectivelyActive)) return 'current';
+    return 'archived';
+  }
 </script>
 
 <h1>Programs</h1>
@@ -562,98 +659,130 @@
     {/if}
   {/if}
 {:else}
-  <!-- Admin/Coach unified program library -->
-  <h2 style="margin-bottom: 12px;">All Programs</h2>
-  {#if getFilteredPrograms().length === 0}
-    <p style="color: #888;">No programs created yet.</p>
-  {:else}
-    {#each getFilteredPrograms() as program}
-      {@const primaryStatus = getPrimaryStatus(program)}
-      {@const isMine = isMineActive(program.id)}
-      {#if editingProgramId === program.id}
-        <!-- Inline rename form -->
-        <div class="program-card" style="border: 1px solid #2196F3; padding: 15px; margin: 10px 0; border-radius: 5px; background: #f5faff;">
-          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-            <input
-              type="text"
-              bind:value={editingProgramName}
-              style="flex: 1; min-width: 150px; padding: 8px; border: 1px solid {renameError ? '#f44336' : '#ccc'}; border-radius: 4px; font-size: 1em;"
-              placeholder="Program name"
-              onkeydown={(e) => e.key === 'Enter' && saveRenameProgram(program)}
-            />
-            <button
-              onclick={() => saveRenameProgram(program)}
-              style="padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;"
-            >Save</button>
-            <button
-              onclick={cancelRenameProgram}
-              style="padding: 8px 16px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;"
-            >Cancel</button>
+  <!-- Admin/Coach: two-section layout -->
+
+  <!-- Section 1: Programs I Can Perform (expanded by default) -->
+  <details open={performOpen} ontoggle={handlePerformToggle} style="margin-bottom: 24px;">
+    <summary style="cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 2px solid #e0e0e0; margin-bottom: 14px; user-select: none;">
+      <span style="font-size: 1.15em; font-weight: 600; color: #222;">Programs I Can Perform</span>
+      <span style="font-size: 0.82em; color: #999; font-weight: 400;">{myPerformablePrograms.length} program{myPerformablePrograms.length !== 1 ? 's' : ''}</span>
+    </summary>
+    {#if myPerformablePrograms.length === 0}
+      <p style="color: #aaa; font-size: 0.92em; padding: 10px 0;">No programs assigned to you yet. Use <em>All Programs</em> below to edit and assign yourself a cycle.</p>
+    {:else}
+      {#each myPerformablePrograms as program}
+        {@const selfStatus = getMySelfStatus(program.id)}
+        <a
+          href="/programs/{program.id}/days"
+          class="program-card"
+          style="display: block; text-decoration: none; color: inherit; border: 1px solid {selfStatus === 'current' ? '#bbf7d0' : '#e5e7eb'}; padding: 12px 14px; margin: 8px 0; border-radius: 5px; background: {selfStatus === 'current' ? '#f0fdf4' : '#fafafa'};"
+        >
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <strong style="font-size: 1.05em;">{program.name}</strong>
+            {#if selfStatus === 'current'}
+              <span style="background: #dcfce7; color: #15803d; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Current</span>
+            {:else}
+              <span style="background: #f3f4f6; color: #6b7280; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Archived</span>
+            {/if}
           </div>
-          {#if renameError}
-            <p style="margin: 8px 0 0 0; color: #f44336; font-size: 0.85em;">{renameError}</p>
+          {#if program.description}
+            <p style="margin: 4px 0 0 0; color: #666; font-size: 0.87em;">{program.description}</p>
           {/if}
-        </div>
-      {:else}
-        <!-- Unified program card: explicit Perform + Edit, status chips, no click-anywhere-edit -->
-        <div class="program-card" style="border: 1px solid #ddd; padding: 14px 15px; margin: 10px 0; border-radius: 5px; background: white;">
-          <!-- Top row: name, status chips, utility actions -->
-          <div style="display: flex; justify-content: space-between; align-items: start; gap: 10px;">
-            <div style="flex: 1; min-width: 0;">
-              <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-                <strong style="font-size: 1.1em;">{program.name}</strong>
-                {#if primaryStatus === 'current'}
-                  <span style="background: #dcfce7; color: #15803d; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Current</span>
-                {:else if primaryStatus === 'archived'}
-                  <span style="background: #f3f4f6; color: #6b7280; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Archived</span>
-                {:else}
-                  <span style="background: #f9fafb; color: #9ca3af; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; border: 1px solid #e5e7eb;">No Active Cycle</span>
+          <p style="margin: 3px 0 0 0; font-size: 0.8em; color: #999;">
+            {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+          </p>
+        </a>
+      {/each}
+    {/if}
+  </details>
+
+  <!-- Section 2: All Programs (collapsed by default) -->
+  <details open={libraryOpen} ontoggle={handleLibraryToggle}>
+    <summary style="cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 2px solid #e0e0e0; margin-bottom: 14px; user-select: none;">
+      <span style="font-size: 1.15em; font-weight: 600; color: #222;">All Programs</span>
+      <span style="font-size: 0.82em; color: #999; font-weight: 400;">{getFilteredPrograms().length} program{getFilteredPrograms().length !== 1 ? 's' : ''}</span>
+    </summary>
+    {#if getFilteredPrograms().length === 0}
+      <p style="color: #888;">No programs created yet.</p>
+    {:else}
+      {#each getFilteredPrograms() as program}
+        {@const primaryStatus = getPrimaryStatus(program)}
+        {#if editingProgramId === program.id}
+          <!-- Inline rename form -->
+          <div class="program-card" style="border: 1px solid #2196F3; padding: 15px; margin: 10px 0; border-radius: 5px; background: #f5faff;">
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <input
+                type="text"
+                bind:value={editingProgramName}
+                style="flex: 1; min-width: 150px; padding: 8px; border: 1px solid {renameError ? '#f44336' : '#ccc'}; border-radius: 4px; font-size: 1em;"
+                placeholder="Program name"
+                onkeydown={(e) => e.key === 'Enter' && saveRenameProgram(program)}
+              />
+              <button
+                onclick={() => saveRenameProgram(program)}
+                style="padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;"
+              >Save</button>
+              <button
+                onclick={cancelRenameProgram}
+                style="padding: 8px 16px; background: #f5f5f5; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;"
+              >Cancel</button>
+            </div>
+            {#if renameError}
+              <p style="margin: 8px 0 0 0; color: #f44336; font-size: 0.85em;">{renameError}</p>
+            {/if}
+          </div>
+        {:else}
+          <!-- Library card: Edit button, rename/delete, no Perform, no Mine chip -->
+          <div class="program-card" style="border: 1px solid #ddd; padding: 14px 15px; margin: 10px 0; border-radius: 5px; background: white;">
+            <div style="display: flex; justify-content: space-between; align-items: start; gap: 10px;">
+              <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                  <strong style="font-size: 1.1em;">{program.name}</strong>
+                  {#if primaryStatus === 'current'}
+                    <span style="background: #dcfce7; color: #15803d; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Current</span>
+                  {:else if primaryStatus === 'archived'}
+                    <span style="background: #f3f4f6; color: #6b7280; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Archived</span>
+                  {:else}
+                    <span style="background: #f9fafb; color: #9ca3af; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; border: 1px solid #e5e7eb;">No Active Cycle</span>
+                  {/if}
+                </div>
+                {#if program.description}
+                  <p style="margin: 4px 0 0 0; color: #666; font-size: 0.88em;">{program.description}</p>
                 {/if}
-                {#if isMine}
-                  <span style="background: #dbeafe; color: #1d4ed8; padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500;">Mine</span>
-                {/if}
+                <p style="margin: 3px 0 0 0; font-size: 0.82em; color: #999;">
+                  {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+                  {#if (program.assignedToUids?.length || 0) > 0}
+                    · {program.assignedToUids.length} assigned
+                  {:else if Array.isArray(program.assignedTo) && program.assignedTo.length > 0}
+                    · {program.assignedTo.length} assigned
+                  {/if}
+                </p>
               </div>
-              {#if program.description}
-                <p style="margin: 4px 0 0 0; color: #666; font-size: 0.88em;">{program.description}</p>
-              {/if}
-              <p style="margin: 3px 0 0 0; font-size: 0.82em; color: #999;">
-                {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
-                {#if (program.assignedToUids?.length || 0) > 0}
-                  · {program.assignedToUids.length} assigned
-                {:else if Array.isArray(program.assignedTo) && program.assignedTo.length > 0}
-                  · {program.assignedTo.length} assigned
-                {/if}
-              </p>
+              <!-- Utility actions: rename + delete -->
+              <div style="display: flex; gap: 2px; align-items: center; flex-shrink: 0;">
+                <button
+                  onclick={() => startRenameProgram(program)}
+                  style="background: none; border: none; color: #888; font-size: 0.9em; cursor: pointer; padding: 4px 7px; line-height: 1; border-radius: 4px;"
+                  title="Rename program"
+                >✎</button>
+                <button
+                  onclick={() => deleteProgram(program.id)}
+                  style="background: none; border: none; color: #bbb; font-size: 1.1em; cursor: pointer; padding: 4px 7px; line-height: 1; border-radius: 4px;"
+                  title="Delete program"
+                >×</button>
+              </div>
             </div>
-            <!-- Utility actions: rename + delete -->
-            <div style="display: flex; gap: 2px; align-items: center; flex-shrink: 0;">
-              <button
-                onclick={() => startRenameProgram(program)}
-                style="background: none; border: none; color: #888; font-size: 0.9em; cursor: pointer; padding: 4px 7px; line-height: 1; border-radius: 4px;"
-                title="Rename program"
-              >✎</button>
-              <button
-                onclick={() => deleteProgram(program.id)}
-                style="background: none; border: none; color: #bbb; font-size: 1.1em; cursor: pointer; padding: 4px 7px; line-height: 1; border-radius: 4px;"
-                title="Delete program"
-              >×</button>
+            <div style="margin-top: 11px;">
+              <a
+                href="/programs/{program.id}"
+                style="padding: 6px 14px; background: #f5f5f5; border: 1px solid #ddd; color: #444; text-decoration: none; border-radius: 4px; font-size: 0.87em;"
+              >Edit</a>
             </div>
           </div>
-          <!-- Primary + secondary action buttons -->
-          <div style="display: flex; gap: 8px; margin-top: 11px;">
-            <a
-              href="/programs/{program.id}/days"
-              style="padding: 6px 14px; background: #4CAF50; color: white; text-decoration: none; border-radius: 4px; font-size: 0.87em; font-weight: 500;"
-            >Perform</a>
-            <a
-              href="/programs/{program.id}"
-              style="padding: 6px 14px; background: #f5f5f5; border: 1px solid #ddd; color: #444; text-decoration: none; border-radius: 4px; font-size: 0.87em;"
-            >Edit</a>
-          </div>
-        </div>
-      {/if}
-    {/each}
-  {/if}
+        {/if}
+      {/each}
+    {/if}
+  </details>
 {/if}
 
 <!-- Client Create Program Section -->
