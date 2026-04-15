@@ -665,7 +665,7 @@
       {#each currentPrograms as program}
         {@const activeCycle = getActiveCycleForProgram(program.id)}
         <div class="program-card" style="display: block; border: 1px solid {isOwnClientProgram(program) ? '#4CAF50' : program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {isOwnClientProgram(program) ? 'border-left: 4px solid #4CAF50;' : program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white; position: relative;">
-          <div style="display: flex; align-items: flex-start; gap: 12px;">
+          <div class="cycle-card-row" style="display: flex; align-items: flex-start; gap: 12px;">
 
             <!-- Left: title / status / helper / days -->
             <a href="/programs/{program.id}/days" style="flex: 1; text-decoration: none; color: inherit; cursor: pointer; min-width: 0;">
@@ -699,9 +699,9 @@
                   <p style="margin: 4px 0 0 0; font-size: 0.78em; color: #bbb; font-style: italic;">No weekly goal set yet</p>
                 {/if}
 
-                <!-- Days count (lighter, secondary) -->
+                <!-- Workouts available (lighter, secondary) -->
                 <p style="margin: 5px 0 0 0; font-size: 0.88em; color: #aaa;">
-                  {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+                  {countDays(program)} Workout{countDays(program) !== 1 ? 's' : ''} available
                 </p>
               {:else}
                 <!-- No active cycle: original layout -->
@@ -730,7 +730,7 @@
                 {@const hasGoal2 = activeCycle.workoutsPerWeekTarget != null}
                 {#if hasGoal2}
                   <!-- Three-metric scoreboard -->
-                  <div style="margin-top: 6px;">
+                  <div class="cycle-metrics" style="margin-top: 6px;">
                     <div style="font-size: 0.65em; font-weight: 500; color: #bbb; text-align: right; margin-bottom: 5px; letter-spacing: 0.02em;">Metrics This Cycle</div>
                     <div style="display: flex; gap: 14px; align-items: flex-end;">
                       <div style="text-align: center;">
@@ -1031,5 +1031,24 @@
   }
   .program-card:active {
     filter: brightness(0.94);
+  }
+
+  /* On narrow / portrait widths, wrap the card row so metrics drop below main content */
+  @media (max-width: 480px) {
+    .cycle-card-row {
+      flex-wrap: wrap;
+    }
+    /* Right column (metrics + edit buttons) becomes full-width, left-aligned */
+    .cycle-card-row > :last-child {
+      width: 100%;
+      align-items: flex-start;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #f0f0f0;
+    }
+    /* Umbrella header left-aligned on narrow */
+    .cycle-metrics > div:first-child {
+      text-align: left;
+    }
   }
 </style>
