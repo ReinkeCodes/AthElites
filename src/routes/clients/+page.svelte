@@ -508,6 +508,51 @@
       default: return '#888';
     }
   }
+
+  // =============================================================================
+  // Active cycle adherence helpers
+  // =============================================================================
+
+  // Format a number compactly: integer → no decimal, otherwise 1 decimal place
+  function formatAdherenceNum(n) {
+    if (n === null || n === undefined || isNaN(n)) return '—';
+    const rounded = Math.round(n * 10) / 10;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  }
+
+  // Expected sessions completed by now, based on elapsed fraction of cycle window
+  function getCycleExpectedByNow(cycle) {
+    if (cycle.workoutsPerWeekTarget == null) return null;
+    const startedAt = cycle.startedAt?.toDate ? cycle.startedAt.toDate() : new Date(cycle.startedAt);
+    const endsAt = cycle.endsAt?.toDate ? cycle.endsAt.toDate() : new Date(cycle.endsAt);
+    const totalMs = getEndOfDay(endsAt) - startedAt;
+    if (totalMs <= 0) return 0;
+    const elapsedMs = Math.min(Date.now() - startedAt.getTime(), totalMs);
+    const fraction = elapsedMs / totalMs;
+    const expectedTotal = cycle.durationWeeks * cycle.workoutsPerWeekTarget;
+    return Math.round(fraction * expectedTotal * 10) / 10;
+  }
+
+  // Adherence status chip label
+  function getAdherenceStatus(sessionCount, expectedByNow) {
+    if (expectedByNow === null) return null;
+    const diff = sessionCount - expectedByNow;
+    if (diff > 0.5) return 'Ahead';
+    if (diff >= -0.5) return 'On Track';
+    if (diff >= -1.5) return 'Slightly Behind';
+    return 'Behind';
+  }
+
+  // Chip color pairs for each adherence status
+  function adherenceChipStyle(status) {
+    switch (status) {
+      case 'Ahead':          return 'background:#dcfce7;color:#15803d;';
+      case 'On Track':       return 'background:#dbeafe;color:#1565c0;';
+      case 'Slightly Behind':return 'background:#fff3e0;color:#e65100;';
+      case 'Behind':         return 'background:#ffebee;color:#c62828;';
+      default:               return 'background:#f3f4f6;color:#6b7280;';
+    }
+  }
 </script>
 
 {#if loading}
@@ -580,26 +625,56 @@
             {@const sessionCount = getCycleSessionCount(cycle, true)}
             {@const avgPerWeek = getCycleAvgPerWeek(cycle, true)}
             {@const weeksRemaining = getWeeksRemaining(cycle)}
+            {@const hasGoal = cycle.workoutsPerWeekTarget != null}
+            {@const expectedByNow = getCycleExpectedByNow(cycle)}
+            {@const adherenceStatus = getAdherenceStatus(sessionCount, expectedByNow)}
+            {@const expectedTotal = hasGoal ? cycle.durationWeeks * cycle.workoutsPerWeekTarget : null}
             <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px 15px;">
-              <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px;">
+              <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 10px;">
+
+                <!-- Left: title + chip · dates · expected total -->
                 <div style="flex: 1; min-width: 150px;">
-                  <strong style="font-size: 0.95em; color: #333;">{cycle.programNameSnapshot || 'Unknown Program'}</strong>
+                  <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                    <strong style="font-size: 0.95em; color: #333;">{cycle.programNameSnapshot || 'Unknown Program'}</strong>
+                    {#if hasGoal && adherenceStatus}
+                      <span style="padding: 2px 7px; border-radius: 10px; font-size: 0.72em; font-weight: 500; {adherenceChipStyle(adherenceStatus)}">{adherenceStatus}</span>
+                    {/if}
+                  </div>
                   <div style="margin-top: 4px; font-size: 0.85em; color: #666;">
                     Ends {formatCycleDate(cycle.endsAt)} · {weeksRemaining} wk{weeksRemaining !== 1 ? 's' : ''} remaining
                   </div>
+                  {#if hasGoal}
+                    <div style="margin-top: 2px; font-size: 0.8em; color: #999;">Expected total: {formatAdherenceNum(expectedTotal)}</div>
+                  {:else}
+                    <div style="margin-top: 3px; font-size: 0.78em; color: #bbb; font-style: italic;">No adherence goal yet</div>
+                  {/if}
                 </div>
-                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-                  <div style="text-align: center; min-width: 50px;">
-                    <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
-                    <div style="font-size: 0.75em; color: #888;">Sessions</div>
-                  </div>
-                  <div style="text-align: center; min-width: 50px;">
-                    <div style="font-size: 1.1em; font-weight: 600; color: #667eea;">{avgPerWeek}</div>
-                    <div style="font-size: 0.75em; color: #888;">Avg/wk</div>
+
+                <!-- Right: 2×2 metrics grid · button (button vertically centered against grid) -->
+                <div style="display: flex; gap: 12px; align-items: center; flex-shrink: 0;">
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px;">
+                    <div style="text-align: center;">
+                      <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
+                      <div style="font-size: 0.75em; color: #888;">Sessions</div>
+                    </div>
+                    <div style="text-align: center;">
+                      <div style="font-size: 1.1em; font-weight: 600; color: #667eea;">{avgPerWeek}</div>
+                      <div style="font-size: 0.75em; color: #888;">Avg/wk</div>
+                    </div>
+                    {#if hasGoal}
+                      <div style="text-align: center; padding-top: 5px;">
+                        <div style="font-size: 0.85em; font-weight: 500; color: #777;">{formatAdherenceNum(expectedByNow)}</div>
+                        <div style="font-size: 0.7em; color: #aaa;">Exp. by now</div>
+                      </div>
+                      <div style="text-align: center; padding-top: 5px;">
+                        <div style="font-size: 0.85em; font-weight: 500; color: #777;">{formatAdherenceNum(cycle.workoutsPerWeekTarget)}/wk</div>
+                        <div style="font-size: 0.7em; color: #aaa;">Goal/wk</div>
+                      </div>
+                    {/if}
                   </div>
                   <button
                     onclick={() => goto(`/programs/${cycle.programId}`)}
-                    style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
+                    style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em; white-space: nowrap;"
                   >
                     Open Program
                   </button>
