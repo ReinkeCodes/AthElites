@@ -32,6 +32,7 @@
   // Client program cycle state (for current/archived grouping)
   let clientCycles = $state([]);
   let cyclesLoading = $state(false);
+  let clientSessions = $state([]); // completed sessions for the logged-in client
 
   // Admin/coach program cycle state (for status indicators)
   let allProgramCycles = $state([]);
@@ -242,6 +243,7 @@
               // Load cycles for client program grouping
               if (role === 'client') {
                 loadClientCycles(user.uid);
+                loadClientSessions(user.uid);
               }
               // Load all cycles for admin/coach status indicators
               if (role === 'admin' || role === 'coach') {
@@ -446,6 +448,19 @@
     cyclesLoading = false;
   }
 
+  async function loadClientSessions(uid) {
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'workoutSessions'), where('userId', '==', uid))
+      );
+      clientSessions = snap.docs
+        .map(d => ({ id: d.id, ...d.data() }))
+        .filter(s => s.finishedAt);
+    } catch (e) {
+      clientSessions = [];
+    }
+  }
+
   function isEffectivelyActive(cycle) {
     if (cycle.status !== 'active') return false;
     const now = new Date();
@@ -467,6 +482,76 @@
       clientCycles.filter(isEffectivelyActive).map(c => c.programId)
     );
     return getFilteredPrograms().filter(p => !activeProgramIds.has(p.id));
+  }
+
+  // =============================================================================
+  // Client-facing adherence helpers (Current Cycle Programs cards)
+  // =============================================================================
+
+  // Find the effectively active cycle for a given programId
+  function getActiveCycleForProgram(programId) {
+    return clientCycles.find(c => c.programId === programId && isEffectivelyActive(c)) || null;
+  }
+
+  // Count completed sessions within the cycle window (same logic as dashboard)
+  function getClientCycleSessionCount(cycle) {
+    const startedAt = cycle.startedAt?.toDate ? cycle.startedAt.toDate() : new Date(cycle.startedAt);
+    const now = new Date();
+    return clientSessions.filter(s => {
+      if (s.programId !== cycle.programId) return false;
+      const sessionDate = s.finishedAt.toDate ? s.finishedAt.toDate() : new Date(s.finishedAt);
+      return sessionDate >= startedAt && sessionDate <= now;
+    }).length;
+  }
+
+  // Expected sessions completed by now (same formula as dashboard getCycleExpectedByNow)
+  function getClientExpectedByNow(cycle) {
+    if (cycle.workoutsPerWeekTarget == null) return null;
+    const startedAt = cycle.startedAt?.toDate ? cycle.startedAt.toDate() : new Date(cycle.startedAt);
+    const endsAt = cycle.endsAt?.toDate ? cycle.endsAt.toDate() : new Date(cycle.endsAt);
+    const totalMs = getEndOfDay(endsAt) - startedAt;
+    if (totalMs <= 0) return 0;
+    const elapsedMs = Math.min(Date.now() - startedAt.getTime(), totalMs);
+    const fraction = elapsedMs / totalMs;
+    const expectedTotal = cycle.durationWeeks * cycle.workoutsPerWeekTarget;
+    return Math.round(fraction * expectedTotal * 10) / 10;
+  }
+
+  // Same thresholds as dashboard, mapped to client-facing labels
+  function getClientAdherenceStatus(sessionCount, expectedByNow) {
+    if (expectedByNow === null) return null;
+    const diff = sessionCount - expectedByNow;
+    if (diff > 0.5) return 'Ahead';
+    if (diff >= -0.5) return 'On Track';
+    if (diff >= -1.5) return 'A Little Behind';
+    return 'Needs Attention';
+  }
+
+  function getAdherenceHelperText(status) {
+    switch (status) {
+      case 'Ahead':           return "You're ahead of pace.";
+      case 'On Track':        return 'Keep your current pace.';
+      case 'A Little Behind': return 'One more session this week would help.';
+      case 'Needs Attention': return "Let's work back toward your weekly goal.";
+      default: return '';
+    }
+  }
+
+  // Compact number formatting: integers without .0, else 1 decimal
+  function formatAdherenceNum(n) {
+    if (n === null || n === undefined || isNaN(n)) return '—';
+    const rounded = Math.round(n * 10) / 10;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  }
+
+  function clientChipStyle(status) {
+    switch (status) {
+      case 'Ahead':           return 'background:#dcfce7;color:#15803d;';
+      case 'On Track':        return 'background:#dbeafe;color:#1565c0;';
+      case 'A Little Behind': return 'background:#fff3e0;color:#e65100;';
+      case 'Needs Attention': return 'background:#ffebee;color:#c62828;';
+      default:                return 'background:#f3f4f6;color:#6b7280;';
+    }
   }
 
   // =============================================================================
@@ -578,39 +663,112 @@
       <p style="color: #888; padding: 15px; background: #f9f9f9; border-radius: 8px; margin-bottom: 12px;">No active programs right now.</p>
     {:else}
       {#each currentPrograms as program}
+        {@const activeCycle = getActiveCycleForProgram(program.id)}
         <div class="program-card" style="display: block; border: 1px solid {isOwnClientProgram(program) ? '#4CAF50' : program.isClientCopy ? '#2196F3' : '#ccc'}; padding: 15px; margin: 10px 0; border-radius: 5px; {isOwnClientProgram(program) ? 'border-left: 4px solid #4CAF50;' : program.isClientCopy ? 'border-left: 4px solid #2196F3;' : ''} background: white; position: relative;">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-            <a href="/programs/{program.id}/days" style="flex: 1; text-decoration: none; color: inherit; cursor: pointer;">
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                <strong style="font-size: 1.2em;">{program.name}</strong>
-                {#if isOwnClientProgram(program)}
-                  <span style="background: #e8f5e9; color: #388E3C; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Self-made</span>
-                {:else if program.isClientCopy}
-                  <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+          <div style="display: flex; align-items: flex-start; gap: 12px;">
+
+            <!-- Left: title / status / helper / days -->
+            <a href="/programs/{program.id}/days" style="flex: 1; text-decoration: none; color: inherit; cursor: pointer; min-width: 0;">
+              {#if activeCycle}
+                {@const sessionCount = getClientCycleSessionCount(activeCycle)}
+                {@const expectedByNow = getClientExpectedByNow(activeCycle)}
+                {@const hasGoal = activeCycle.workoutsPerWeekTarget != null}
+                {@const adherenceStatus = hasGoal ? getClientAdherenceStatus(sessionCount, expectedByNow) : null}
+
+                <!-- Title + status chip -->
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                  <strong style="font-size: 1.2em;">{program.name}</strong>
+                  {#if isOwnClientProgram(program)}
+                    <span style="background: #e8f5e9; color: #388E3C; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Self-made</span>
+                  {:else if program.isClientCopy}
+                    <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+                  {/if}
+                  {#if hasGoal && adherenceStatus}
+                    <span style="padding: 2px 8px; border-radius: 10px; font-size: 0.72em; font-weight: 500; {clientChipStyle(adherenceStatus)}">{adherenceStatus}</span>
+                  {/if}
+                </div>
+
+                {#if program.description}
+                  <p style="margin: 4px 0 0 0; color: #666; font-size: 0.9em;">{program.description}</p>
                 {/if}
-              </div>
-              {#if program.description}
-                <p style="margin: 5px 0; color: #666;">{program.description}</p>
+
+                {#if hasGoal && adherenceStatus}
+                  <!-- Helper message -->
+                  <p style="margin: 4px 0 0 0; font-size: 0.82em; color: #777; font-style: italic;">{getAdherenceHelperText(adherenceStatus)}</p>
+                {:else if !hasGoal}
+                  <p style="margin: 4px 0 0 0; font-size: 0.78em; color: #bbb; font-style: italic;">No weekly goal set yet</p>
+                {/if}
+
+                <!-- Days count (lighter, secondary) -->
+                <p style="margin: 5px 0 0 0; font-size: 0.88em; color: #aaa;">
+                  {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+                </p>
+              {:else}
+                <!-- No active cycle: original layout -->
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                  <strong style="font-size: 1.2em;">{program.name}</strong>
+                  {#if isOwnClientProgram(program)}
+                    <span style="background: #e8f5e9; color: #388E3C; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Self-made</span>
+                  {:else if program.isClientCopy}
+                    <span style="background: #e3f2fd; color: #1976D2; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">Custom</span>
+                  {/if}
+                </div>
+                {#if program.description}
+                  <p style="margin: 5px 0; color: #666;">{program.description}</p>
+                {/if}
+                <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
+                  {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
+                </p>
               {/if}
-              <p style="margin: 5px 0; font-size: 0.9em; color: #888;">
-                {countDays(program)} day{countDays(program) !== 1 ? 's' : ''}
-              </p>
             </a>
-            {#if isOwnClientProgram(program)}
-              <div style="display: flex; gap: 6px; align-items: center;">
-                <a
-                  href="/programs/{program.id}"
-                  onclick={(e) => e.stopPropagation()}
-                  style="background: none; border: none; color: #64B5F6; font-size: 1.1em; cursor: pointer; padding: 4px; line-height: 1; text-decoration: none;"
-                  title="Edit program"
-                >✎</a>
-                <button
-                  onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteClientProgram(program); }}
-                  style="background: none; border: none; color: #ef5350; font-size: 1.1em; cursor: pointer; padding: 4px; line-height: 1;"
-                  title="Delete program"
-                >✕</button>
-              </div>
-            {/if}
+
+            <!-- Right: metric scoreboard + edit/delete -->
+            <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0;">
+              {#if activeCycle}
+                {@const sessionCount2 = getClientCycleSessionCount(activeCycle)}
+                {@const expectedByNow2 = getClientExpectedByNow(activeCycle)}
+                {@const hasGoal2 = activeCycle.workoutsPerWeekTarget != null}
+                {#if hasGoal2}
+                  <!-- Three-metric scoreboard -->
+                  <div style="margin-top: 6px;">
+                    <div style="font-size: 0.65em; font-weight: 500; color: #bbb; text-align: right; margin-bottom: 5px; letter-spacing: 0.02em;">Metrics This Cycle</div>
+                    <div style="display: flex; gap: 14px; align-items: flex-end;">
+                      <div style="text-align: center;">
+                        <div style="font-size: 0.72em; font-weight: 600; color: #888; line-height: 1.2;">Goal</div>
+                        <div style="font-size: 0.58em; color: #ccc; line-height: 1.1;">per week</div>
+                        <div style="font-size: 1em; font-weight: 600; color: #444; line-height: 1.3; margin-top: 3px;">{formatAdherenceNum(activeCycle.workoutsPerWeekTarget)}</div>
+                      </div>
+                      <div style="text-align: center;">
+                        <div style="font-size: 0.72em; font-weight: 600; color: #888; line-height: 1.2;">Expected</div>
+                        <div style="font-size: 0.58em; color: #ccc; line-height: 1.1;">sessions</div>
+                        <div style="font-size: 1em; font-weight: 600; color: #444; line-height: 1.3; margin-top: 3px;">{formatAdherenceNum(expectedByNow2)}</div>
+                      </div>
+                      <div style="text-align: center;">
+                        <div style="font-size: 0.72em; font-weight: 600; color: #888; line-height: 1.2;">Completed</div>
+                        <div style="font-size: 0.58em; color: #ccc; line-height: 1.1;">sessions</div>
+                        <div style="font-size: 1em; font-weight: 600; color: #444; line-height: 1.3; margin-top: 3px;">{sessionCount2}</div>
+                      </div>
+                    </div>
+                  </div>
+                {/if}
+              {/if}
+              {#if isOwnClientProgram(program)}
+                <div style="display: flex; gap: 6px; align-items: center;">
+                  <a
+                    href="/programs/{program.id}"
+                    onclick={(e) => e.stopPropagation()}
+                    style="background: none; border: none; color: #64B5F6; font-size: 1.1em; cursor: pointer; padding: 4px; line-height: 1; text-decoration: none;"
+                    title="Edit program"
+                  >✎</a>
+                  <button
+                    onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteClientProgram(program); }}
+                    style="background: none; border: none; color: #ef5350; font-size: 1.1em; cursor: pointer; padding: 4px; line-height: 1;"
+                    title="Delete program"
+                  >✕</button>
+                </div>
+              {/if}
+            </div>
+
           </div>
         </div>
       {/each}
