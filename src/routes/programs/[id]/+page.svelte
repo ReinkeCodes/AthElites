@@ -37,7 +37,21 @@
   let editDayName = $state('');
 
   // Section management
-  let expandedDay = $state(null);
+  let expandedDays = $state(new Set());     // set of open day indices
+  let expandedSections = $state(new Set()); // set of open "dayIndex-sectionIndex" keys
+
+  function toggleDay(dayIndex) {
+    const next = new Set(expandedDays);
+    if (next.has(dayIndex)) next.delete(dayIndex); else next.add(dayIndex);
+    expandedDays = next;
+  }
+
+  function toggleSection(dayIndex, sectionIndex) {
+    const key = `${dayIndex}-${sectionIndex}`;
+    const next = new Set(expandedSections);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    expandedSections = next;
+  }
   let newSectionName = $state('');
   let newSectionMode = $state('full'); // 'full' or 'checkbox'
   let editingSectionIndex = $state(null);
@@ -632,11 +646,13 @@
   async function addDay(e) {
     e.preventDefault();
     if (!newDayName.trim()) return;
+    const newDayIndex = (program.days || []).length;
     const newDay = { workoutTemplateId: generateId(), name: newDayName, sections: [] };
     await updateDoc(doc(db, 'programs', program.id), {
       days: [...(program.days || []), newDay]
     });
     newDayName = '';
+    expandedDays = new Set([...expandedDays, newDayIndex]);
   }
 
   async function deleteDay(dayIndex) {
@@ -661,6 +677,7 @@
   // Section functions
   async function addSection(dayIndex) {
     if (!newSectionName.trim()) return;
+    const newSectionIndex = (program.days[dayIndex].sections || []).length;
     const updatedDays = [...program.days];
     updatedDays[dayIndex].sections = [...(updatedDays[dayIndex].sections || []), {
       sectionTemplateId: generateId(),
@@ -671,6 +688,7 @@
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
     newSectionName = '';
     newSectionMode = 'full';
+    expandedSections = new Set([...expandedSections, `${dayIndex}-${newSectionIndex}`]);
   }
 
   async function deleteSection(dayIndex, sectionIndex) {
@@ -1778,8 +1796,8 @@
           {:else}
             <h3 style="margin: 0;">{day.name}</h3>
             <div>
-              <button onclick={() => expandedDay = expandedDay === dayIndex ? null : dayIndex}>
-                {expandedDay === dayIndex ? 'Collapse' : 'Expand'}
+              <button onclick={() => toggleDay(dayIndex)}>
+                {expandedDays.has(dayIndex) ? 'Collapse' : 'Expand'}
               </button>
               {#if userRole === 'admin' || userRole === 'coach'}
                 <button onclick={() => openCopyDayModal(dayIndex)} style="background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
@@ -1791,7 +1809,7 @@
         </div>
 
         <!-- Day Content (expanded) -->
-        {#if expandedDay === dayIndex}
+        {#if expandedDays.has(dayIndex)}
           <!-- Add Section -->
           <div style="margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px;">
             <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
@@ -1843,7 +1861,10 @@
                         {section.mode === 'checkbox' ? 'Checkbox' : 'Full Tracking'}
                       </span>
                     </div>
-                    <div style="display: flex; gap: 5px;">
+                    <div style="display: flex; gap: 5px; align-items: center;">
+                      <button onclick={() => toggleSection(dayIndex, sectionIndex)} style="font-size: 0.8em; padding: 2px 7px;" title={expandedSections.has(`${dayIndex}-${sectionIndex}`) ? 'Collapse section' : 'Expand section'}>
+                        {expandedSections.has(`${dayIndex}-${sectionIndex}`) ? '▲' : '▼'}
+                      </button>
                       <button onclick={() => startEditSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Edit</button>
                       {#if userRole === 'admin' || userRole === 'coach'}
                         <button onclick={() => openCopySectionModal(dayIndex, sectionIndex)} style="font-size: 0.8em; background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
@@ -1853,6 +1874,7 @@
                   </div>
                 {/if}
 
+                {#if expandedSections.has(`${dayIndex}-${sectionIndex}`)}
                 <!-- Exercises in Section -->
                 {#if section.exercises && section.exercises.length > 0}
                   {#each section.exercises as ex, exIndex}
@@ -2075,6 +2097,7 @@
                   <button onclick={() => addingExerciseToSection = `${dayIndex}-${sectionIndex}`} style="margin-top: 8px;">
                     + Add Exercise
                   </button>
+                {/if}
                 {/if}
               </div>
             {/each}
