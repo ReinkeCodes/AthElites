@@ -11,7 +11,7 @@ export const APP_VERSION = '0.16.4';
 // Format: { v: version_number, date: 'YYYY-MM-DD' }
 export const FEATURE_VERSIONS = {
   appVersioning: { v: 1, date: '02 - 25 - 2026' },
-  clientDashboard: { v: 1, date: '04 - 15 - 2026' }
+  clientDashboard: { v: 1, date: '04 - 15 - 2026' },
   exerciseCreateFlow: { v: 1, date: '02 - 25 - 2026' },
   exerciseHistoryModalFormat: { v: 5, date: '04 - 03 - 2026' },
   exerciseLaterality: { v: 1, date: '03 - 10 - 2026' },
@@ -24,7 +24,7 @@ export const FEATURE_VERSIONS = {
   prCelebration: { v: 1, date: '02 - 25 - 2026' },
   prPageConsolidation: { v: 2, date: '02 - 25 - 2026' },
   programCyclesFoundation: { v: 11, date: '04 - 12 - 2026' },
-  programEditor: { v: 1, date: '04 - 15 - 2026' }
+  programEditor: { v: 1, date: '04 - 15 - 2026' },
   restTimerFeedback: { v: 1, date: '02 - 25 - 2026' },
   restTimerToast: { v: 1, date: '02 - 25 - 2026' },
   settingsEmailActions: { v: 1, date: '03 - 04 - 2026' },
