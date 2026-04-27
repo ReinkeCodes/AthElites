@@ -55,6 +55,7 @@
   let newSectionName = $state('');
   let newSectionMode = $state('full'); // 'full' or 'checkbox'
   let editingSectionIndex = $state(null);
+  let highlightedSectionId = $state(null);
   let editSectionName = $state('');
   let editSectionMode = $state('full');
 
@@ -696,12 +697,14 @@
 
   async function deleteSection(dayIndex, sectionIndex) {
     if (!confirm('Delete this section?')) return;
+    highlightedSectionId = null;
     const updatedDays = [...program.days];
     updatedDays[dayIndex].sections = updatedDays[dayIndex].sections.filter((_, i) => i !== sectionIndex);
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
   }
 
   function startEditSection(dayIndex, sectionIndex) {
+    highlightedSectionId = null;
     const section = program.days[dayIndex].sections[sectionIndex];
     editingSectionIndex = `${dayIndex}-${sectionIndex}`;
     editSectionName = section.name;
@@ -709,6 +712,7 @@
   }
 
   async function saveEditSection(dayIndex, sectionIndex) {
+    highlightedSectionId = null;
     const updatedDays = [...program.days];
     updatedDays[dayIndex].sections[sectionIndex].name = editSectionName;
     updatedDays[dayIndex].sections[sectionIndex].mode = editSectionMode;
@@ -719,9 +723,44 @@
   }
 
   function cancelEditSection() {
+    highlightedSectionId = null;
     editingSectionIndex = null;
     editSectionName = '';
     editSectionMode = 'full';
+  }
+
+  async function duplicateSection(dayIndex, sectionIndex) {
+    const original = program.days[dayIndex].sections[sectionIndex];
+    const newSectionId = generateId();
+    const duplicate = {
+      sectionTemplateId: newSectionId,
+      name: original.name,
+      mode: original.mode || 'full',
+      exercises: (original.exercises || []).map(ex => ({
+        workoutExerciseId: generateId(),
+        exerciseId: ex.exerciseId,
+        name: ex.name,
+        type: ex.type,
+        sets: ex.sets,
+        reps: ex.reps,
+        weight: ex.weight,
+        rir: ex.rir,
+        notes: ex.notes,
+        customReqs: ex.customReqs ? ex.customReqs.map(r => ({ ...r })) : [],
+        repsMetric: ex.repsMetric || 'reps',
+        weightMetric: ex.weightMetric || 'weight',
+        restSeconds: ex.restSeconds ?? null
+      }))
+    };
+    const updatedDays = [...program.days];
+    const sections = [...updatedDays[dayIndex].sections];
+    sections.splice(sectionIndex + 1, 0, duplicate);
+    updatedDays[dayIndex].sections = sections;
+    await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
+    highlightedSectionId = newSectionId;
+    await tick();
+    const el = document.querySelector(`[data-section-id="${newSectionId}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   // Exercise in section functions
@@ -1843,7 +1882,8 @@
           {:else}
             {#each day.sections as section, sectionIndex}
               <div
-                style="border: 1px solid #dde1e7; border-left: 3px solid #bdbdbd; padding: 10px; margin: 8px 0; border-radius: 6px; background: {dropTargetSection === `${dayIndex}-${sectionIndex}` ? '#e3f2fd' : '#f5f7fa'}; transition: background 0.2s; {dropTargetSection === `${dayIndex}-${sectionIndex}` ? 'border: 2px dashed #2196F3;' : ''} {dropTargetSectionIndex === sectionIndex && draggedSection && draggedSection.sectionIndex !== sectionIndex ? 'border-top: 3px solid #2196F3;' : ''} {draggedSection?.sectionIndex === sectionIndex ? 'opacity: 0.5;' : ''}"
+                data-section-id={section.sectionTemplateId}
+                style="border: 1px solid #dde1e7; border-left: 3px solid {highlightedSectionId === section.sectionTemplateId ? '#2196F3' : '#bdbdbd'}; padding: 10px; margin: 8px 0; border-radius: 6px; background: {dropTargetSection === `${dayIndex}-${sectionIndex}` ? '#e3f2fd' : (highlightedSectionId === section.sectionTemplateId ? '#e3f2fd' : '#f5f7fa')}; transition: background 0.2s; {dropTargetSection === `${dayIndex}-${sectionIndex}` ? 'border: 2px dashed #2196F3;' : ''} {dropTargetSectionIndex === sectionIndex && draggedSection && draggedSection.sectionIndex !== sectionIndex ? 'border-top: 3px solid #2196F3;' : ''} {draggedSection?.sectionIndex === sectionIndex ? 'opacity: 0.5;' : ''}"
                 ondragover={(e) => { handleDragOver(e, dayIndex, sectionIndex); handleSectionDragOver(e, dayIndex, sectionIndex); }}
                 ondragenter={() => { if (draggedExercise && (draggedExercise.dayIndex !== dayIndex || draggedExercise.sectionIndex !== sectionIndex)) dropTargetExerciseIndex = null; }}
                 ondragleave={(e) => { handleDragLeave(e); if (!e.currentTarget.contains(e.relatedTarget)) dropTargetSectionIndex = null; }}
@@ -1878,6 +1918,7 @@
                       {section.mode === 'checkbox' ? 'Checkbox' : 'Full Tracking'}
                     </span>
                     <button onclick={() => startEditSection(dayIndex, sectionIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1.1em; line-height: 1;" title="Rename">✎</button>
+                    <button onclick={() => duplicateSection(dayIndex, sectionIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em; line-height: 1;" title="Duplicate Section">⧉</button>
                     <button onclick={() => deleteSection(dayIndex, sectionIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em;" title="Delete">✕</button>
                   </div>
                 {/if}
