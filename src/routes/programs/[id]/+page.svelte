@@ -103,6 +103,9 @@
   let videoModalExercise = $state(null);
   let pendingVideoExercise = $state(null);
 
+  // Duplicate exercise highlight
+  let highlightedExerciseId = $state(null);
+
   // Editing exercise in section
   let editingExercise = $state(null); // format: "dayIndex-sectionIndex-exerciseIndex"
   let editExerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' });
@@ -752,17 +755,49 @@
     exerciseSearchQuery = '';
     exerciseTypeFilter = '';
     isPickerOpen = false;
+    highlightedExerciseId = null;
     addingExerciseToSection = null;
   }
 
   async function deleteExerciseFromSection(dayIndex, sectionIndex, exerciseIndex) {
+    highlightedExerciseId = null;
     const updatedDays = [...program.days];
     updatedDays[dayIndex].sections[sectionIndex].exercises =
       updatedDays[dayIndex].sections[sectionIndex].exercises.filter((_, i) => i !== exerciseIndex);
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
   }
 
+  async function duplicateExercise(dayIndex, sectionIndex, exerciseIndex) {
+    const original = program.days[dayIndex].sections[sectionIndex].exercises[exerciseIndex];
+    const newId = generateId();
+    const duplicate = {
+      workoutExerciseId: newId,
+      exerciseId: original.exerciseId,
+      name: original.name,
+      type: original.type,
+      sets: original.sets,
+      reps: original.reps,
+      weight: original.weight,
+      rir: original.rir,
+      notes: original.notes,
+      customReqs: original.customReqs ? original.customReqs.map(r => ({ ...r })) : [],
+      repsMetric: original.repsMetric || 'reps',
+      weightMetric: original.weightMetric || 'weight',
+      restSeconds: original.restSeconds ?? null
+    };
+    const updatedDays = [...program.days];
+    const exList = [...updatedDays[dayIndex].sections[sectionIndex].exercises];
+    exList.splice(exerciseIndex + 1, 0, duplicate);
+    updatedDays[dayIndex].sections[sectionIndex].exercises = exList;
+    await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
+    highlightedExerciseId = newId;
+    await tick();
+    const el = document.querySelector(`[data-exercise-id="${newId}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
   function startEditExercise(dayIndex, sectionIndex, exerciseIndex) {
+    highlightedExerciseId = null;
     const ex = program.days[dayIndex].sections[sectionIndex].exercises[exerciseIndex];
     editingExercise = `${dayIndex}-${sectionIndex}-${exerciseIndex}`;
     editExerciseDetails = {
@@ -779,11 +814,13 @@
   }
 
   function cancelEditExercise() {
+    highlightedExerciseId = null;
     editingExercise = null;
     editExerciseDetails = { sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' };
   }
 
   async function saveEditExercise(dayIndex, sectionIndex, exerciseIndex) {
+    highlightedExerciseId = null;
     const updatedDays = [...program.days];
     const ex = updatedDays[dayIndex].sections[sectionIndex].exercises[exerciseIndex];
     ex.sets = editExerciseDetails.sets;
@@ -1851,12 +1888,13 @@
                   {#each section.exercises as ex, exIndex}
                     <div
                       draggable="true"
+                      data-exercise-id={ex.workoutExerciseId}
                       ondragstart={(e) => handleDragStart(e, dayIndex, sectionIndex, exIndex)}
                       ondragend={handleDragEnd}
                       ondragover={(e) => handleExerciseDragOver(e, dayIndex, sectionIndex, exIndex)}
                       ondragleave={() => { if (dropTargetExerciseIndex === exIndex) dropTargetExerciseIndex = null; }}
                       ondrop={(e) => handleExerciseReorder(e, dayIndex, sectionIndex, exIndex)}
-                      style="padding: 10px; margin: 5px 0; background: #f9f9f9; border-left: 3px solid #4CAF50; cursor: grab; {draggedExercise?.dayIndex === dayIndex && draggedExercise?.sectionIndex === sectionIndex && draggedExercise?.exerciseIndex === exIndex ? 'opacity: 0.5;' : ''} {dropTargetExerciseIndex === exIndex && draggedExercise && draggedExercise.exerciseIndex !== exIndex ? 'border-top: 3px solid #2196F3;' : ''}"
+                      style="padding: 10px; margin: 5px 0; background: {highlightedExerciseId === ex.workoutExerciseId ? '#e3f2fd' : '#f9f9f9'}; border-left: 3px solid {highlightedExerciseId === ex.workoutExerciseId ? '#2196F3' : '#4CAF50'}; cursor: grab; transition: background 0.2s; {draggedExercise?.dayIndex === dayIndex && draggedExercise?.sectionIndex === sectionIndex && draggedExercise?.exerciseIndex === exIndex ? 'opacity: 0.5;' : ''} {dropTargetExerciseIndex === exIndex && draggedExercise && draggedExercise.exerciseIndex !== exIndex ? 'border-top: 3px solid #2196F3;' : ''}"
                     >
                       {#if editingExercise === `${dayIndex}-${sectionIndex}-${exIndex}`}
                         <!-- Edit Mode -->
@@ -1976,6 +2014,7 @@
                           </div>
                           <div style="display: flex; gap: 4px; flex-shrink: 0;">
                             <button onclick={() => startEditExercise(dayIndex, sectionIndex, exIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1.1em; line-height: 1;" title="Edit Exercise">✎</button>
+                            <button onclick={() => duplicateExercise(dayIndex, sectionIndex, exIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em; line-height: 1;" title="Duplicate Exercise">⧉</button>
                             <button onclick={() => deleteExerciseFromSection(dayIndex, sectionIndex, exIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em;" title="Remove">✕</button>
                           </div>
                         </div>
