@@ -1772,55 +1772,33 @@
     {/if}
   {/if}
 
-  <!-- Add Day -->
+  <!-- Days -->
   <h2>Days</h2>
-  <form onsubmit={addDay} style="margin-bottom: 15px;">
-    <input type="text" bind:value={newDayName} placeholder="Day name (e.g. Leg Day, Push A)" style="padding: 8px; margin-right: 5px;" />
-    <button type="submit">Add Day</button>
-  </form>
 
   <!-- Days List -->
   {#if !program.days || program.days.length === 0}
     <p>No days added yet. Add a day to get started.</p>
   {:else}
     {#each program.days as day, dayIndex}
-      <div style="border: 2px solid #333; padding: 15px; margin: 15px 0; border-radius: 8px;">
+      <div style="border: 2px solid #333; padding: 15px; margin: 15px 0; border-radius: 8px; background: #fff;">
         <!-- Day Header -->
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
           {#if editingDayIndex === dayIndex}
-            <input type="text" bind:value={editDayName} style="padding: 5px; font-size: 1.1em;" />
-            <div>
-              <button onclick={saveEditDay}>Save</button>
-              <button onclick={() => editingDayIndex = null}>Cancel</button>
-            </div>
+            <input type="text" bind:value={editDayName} style="padding: 5px; font-size: 1.1em; flex: 1;" />
+            <button onclick={saveEditDay}>Save</button>
+            <button onclick={() => editingDayIndex = null}>Cancel</button>
           {:else}
-            <h3 style="margin: 0;">{day.name}</h3>
-            <div>
-              <button onclick={() => toggleDay(dayIndex)}>
-                {expandedDays.has(dayIndex) ? 'Collapse' : 'Expand'}
-              </button>
-              {#if userRole === 'admin' || userRole === 'coach'}
-                <button onclick={() => openCopyDayModal(dayIndex)} style="background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
-              {/if}
-              <button onclick={() => startEditDay(dayIndex)}>Rename</button>
-              <button onclick={() => deleteDay(dayIndex)}>Delete</button>
-            </div>
+            <button onclick={() => toggleDay(dayIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #555; font-size: 0.95em; flex-shrink: 0;" title={expandedDays.has(dayIndex) ? 'Collapse' : 'Expand'}>
+              {expandedDays.has(dayIndex) ? '▼' : '▶'}
+            </button>
+            <h3 style="margin: 0; flex: 1;">{day.name}</h3>
+            <button onclick={() => startEditDay(dayIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1.1em; line-height: 1;" title="Rename">✎</button>
+            <button onclick={() => deleteDay(dayIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em;" title="Delete">✕</button>
           {/if}
         </div>
 
         <!-- Day Content (expanded) -->
         {#if expandedDays.has(dayIndex)}
-          <!-- Add Section -->
-          <div style="margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px;">
-            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-              <input type="text" bind:value={newSectionName} placeholder="Section name (e.g. Warm-up, Main)" style="padding: 8px; flex: 1; min-width: 150px;" />
-              <select bind:value={newSectionMode} style="padding: 8px;">
-                <option value="full">Full Tracking (sets, reps, weight)</option>
-                <option value="checkbox">Checkbox Only (just complete)</option>
-              </select>
-              <button onclick={() => addSection(dayIndex)}>Add Section</button>
-            </div>
-          </div>
 
           <!-- Sections -->
           {#if !day.sections || day.sections.length === 0}
@@ -1828,7 +1806,7 @@
           {:else}
             {#each day.sections as section, sectionIndex}
               <div
-                style="border: 1px solid #ccc; padding: 10px; margin: 10px 0; background: {dropTargetSection === `${dayIndex}-${sectionIndex}` ? '#e3f2fd' : 'white'}; transition: background 0.2s; {dropTargetSection === `${dayIndex}-${sectionIndex}` ? 'border: 2px dashed #2196F3;' : ''} {dropTargetSectionIndex === sectionIndex && draggedSection && draggedSection.sectionIndex !== sectionIndex ? 'border-top: 3px solid #2196F3;' : ''} {draggedSection?.sectionIndex === sectionIndex ? 'opacity: 0.5;' : ''}"
+                style="border: 1px solid #dde1e7; border-left: 3px solid #bdbdbd; padding: 10px; margin: 8px 0; border-radius: 6px; background: {dropTargetSection === `${dayIndex}-${sectionIndex}` ? '#e3f2fd' : '#f5f7fa'}; transition: background 0.2s; {dropTargetSection === `${dayIndex}-${sectionIndex}` ? 'border: 2px dashed #2196F3;' : ''} {dropTargetSectionIndex === sectionIndex && draggedSection && draggedSection.sectionIndex !== sectionIndex ? 'border-top: 3px solid #2196F3;' : ''} {draggedSection?.sectionIndex === sectionIndex ? 'opacity: 0.5;' : ''}"
                 ondragover={(e) => { handleDragOver(e, dayIndex, sectionIndex); handleSectionDragOver(e, dayIndex, sectionIndex); }}
                 ondragenter={() => { if (draggedExercise && (draggedExercise.dayIndex !== dayIndex || draggedExercise.sectionIndex !== sectionIndex)) dropTargetExerciseIndex = null; }}
                 ondragleave={(e) => { handleDragLeave(e); if (!e.currentTarget.contains(e.relatedTarget)) dropTargetSectionIndex = null; }}
@@ -1846,31 +1824,24 @@
                     <button onclick={cancelEditSection}>Cancel</button>
                   </div>
                 {:else}
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                      <!-- Section drag handle -->
-                      <span
-                        draggable="true"
-                        ondragstart={(e) => handleSectionDragStart(e, dayIndex, sectionIndex)}
-                        ondragend={handleSectionDragEnd}
-                        style="cursor: grab; color: #999; font-size: 1.1em; padding: 4px; user-select: none;"
-                        title="Drag to reorder section"
-                      >⋮⋮</span>
-                      <strong>{section.name}</strong>
-                      <span style="background: {section.mode === 'checkbox' ? '#fff3e0' : '#e8f5e9'}; padding: 2px 8px; border-radius: 10px; font-size: 0.75em;">
-                        {section.mode === 'checkbox' ? 'Checkbox' : 'Full Tracking'}
-                      </span>
-                    </div>
-                    <div style="display: flex; gap: 5px; align-items: center;">
-                      <button onclick={() => toggleSection(dayIndex, sectionIndex)} style="font-size: 0.8em; padding: 2px 7px;" title={expandedSections.has(`${dayIndex}-${sectionIndex}`) ? 'Collapse section' : 'Expand section'}>
-                        {expandedSections.has(`${dayIndex}-${sectionIndex}`) ? '▲' : '▼'}
-                      </button>
-                      <button onclick={() => startEditSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Edit</button>
-                      {#if userRole === 'admin' || userRole === 'coach'}
-                        <button onclick={() => openCopySectionModal(dayIndex, sectionIndex)} style="font-size: 0.8em; background: #e3f2fd; border: 1px solid #2196F3; color: #1976D2;">Copy to…</button>
-                      {/if}
-                      <button onclick={() => deleteSection(dayIndex, sectionIndex)} style="font-size: 0.8em;">Remove</button>
-                    </div>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <!-- Section drag handle -->
+                    <span
+                      draggable="true"
+                      ondragstart={(e) => handleSectionDragStart(e, dayIndex, sectionIndex)}
+                      ondragend={handleSectionDragEnd}
+                      style="cursor: grab; color: #999; font-size: 1.1em; padding: 4px; user-select: none; flex-shrink: 0;"
+                      title="Drag to reorder section"
+                    >⋮⋮</span>
+                    <button onclick={() => toggleSection(dayIndex, sectionIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #555; font-size: 0.9em; flex-shrink: 0;" title={expandedSections.has(`${dayIndex}-${sectionIndex}`) ? 'Collapse' : 'Expand'}>
+                      {expandedSections.has(`${dayIndex}-${sectionIndex}`) ? '▼' : '▶'}
+                    </button>
+                    <strong style="flex: 1;">{section.name}</strong>
+                    <span style="background: {section.mode === 'checkbox' ? '#fff3e0' : '#e8f5e9'}; padding: 2px 8px; border-radius: 10px; font-size: 0.75em; flex-shrink: 0;">
+                      {section.mode === 'checkbox' ? 'Checkbox' : 'Full Tracking'}
+                    </span>
+                    <button onclick={() => startEditSection(dayIndex, sectionIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1.1em; line-height: 1;" title="Rename">✎</button>
+                    <button onclick={() => deleteSection(dayIndex, sectionIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em;" title="Delete">✕</button>
                   </div>
                 {/if}
 
@@ -1889,8 +1860,16 @@
                     >
                       {#if editingExercise === `${dayIndex}-${sectionIndex}-${exIndex}`}
                         <!-- Edit Mode -->
-                        <strong>{ex.name}</strong>
-                        <span style="color: #888; font-size: 0.8em;">({ex.type})</span>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                          <div>
+                            <strong>{ex.name}</strong>
+                            <span style="color: #888; font-size: 0.8em;">({ex.type})</span>
+                          </div>
+                          <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                            <button onclick={() => saveEditExercise(dayIndex, sectionIndex, exIndex)} style="padding: 5px 12px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em; font-weight: 600;">Save</button>
+                            <button onclick={cancelEditExercise} style="padding: 5px 12px; background: #f5f5f5; color: #555; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; font-size: 0.85em;">Cancel</button>
+                          </div>
+                        </div>
                         <!-- Metric selectors -->
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0; padding: 10px; background: #f0f7ff; border-radius: 5px;">
                           <div>
@@ -1943,9 +1922,9 @@
                           <button onclick={addEditCustomReq} style="margin-top: 8px; font-size: 0.85em;">+ Add Requirement</button>
                         </div>
 
-                        <div style="margin-top: 10px;">
-                          <button onclick={() => saveEditExercise(dayIndex, sectionIndex, exIndex)}>Save</button>
-                          <button onclick={cancelEditExercise}>Cancel</button>
+                        <div style="margin-top: 10px; display: flex; gap: 6px;">
+                          <button onclick={() => saveEditExercise(dayIndex, sectionIndex, exIndex)} style="padding: 8px 18px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">Save</button>
+                          <button onclick={cancelEditExercise} style="padding: 8px 18px; background: #f5f5f5; color: #555; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;">Cancel</button>
                         </div>
                       {:else}
                         <!-- View Mode -->
@@ -1995,9 +1974,9 @@
                               {/if}
                             </div>
                           </div>
-                          <div style="display: flex; gap: 5px;">
-                            <button onclick={() => startEditExercise(dayIndex, sectionIndex, exIndex)} style="font-size: 0.8em;">Edit</button>
-                            <button onclick={() => deleteExerciseFromSection(dayIndex, sectionIndex, exIndex)} style="font-size: 0.8em;">Remove</button>
+                          <div style="display: flex; gap: 4px; flex-shrink: 0;">
+                            <button onclick={() => startEditExercise(dayIndex, sectionIndex, exIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1.1em; line-height: 1;" title="Edit Exercise">✎</button>
+                            <button onclick={() => deleteExerciseFromSection(dayIndex, sectionIndex, exIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em;" title="Remove">✕</button>
                           </div>
                         </div>
                       {/if}
@@ -2090,22 +2069,44 @@
                       <button onclick={addCustomReq} style="margin-top: 8px; font-size: 0.85em;">+ Add Requirement</button>
                     </div>
 
-                    <button onclick={() => addExerciseToSection(dayIndex, sectionIndex)}>Add Exercise</button>
-                    <button onclick={() => { exerciseSearchQuery = ''; exerciseTypeFilter = ''; isPickerOpen = false; addingExerciseToSection = null; }}>Cancel</button>
+                    <div style="display: flex; gap: 6px; margin-top: 4px;">
+                      <button onclick={() => addExerciseToSection(dayIndex, sectionIndex)} style="padding: 8px 18px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">Save</button>
+                      <button onclick={() => { exerciseSearchQuery = ''; exerciseTypeFilter = ''; isPickerOpen = false; addingExerciseToSection = null; }} style="padding: 8px 18px; background: #f5f5f5; color: #555; border: 1px solid #ccc; border-radius: 4px; cursor: pointer;">Cancel</button>
+                    </div>
                   </div>
                 {:else}
-                  <button onclick={() => addingExerciseToSection = `${dayIndex}-${sectionIndex}`} style="margin-top: 8px;">
-                    + Add Exercise
-                  </button>
+                  <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+                    <button onclick={() => addingExerciseToSection = `${dayIndex}-${sectionIndex}`} style="padding: 6px 14px; background: white; border: 1px solid #4CAF50; color: #388E3C; border-radius: 4px; cursor: pointer; font-size: 0.9em; font-weight: 500;">+ Add Exercise</button>
+                  </div>
                 {/if}
                 {/if}
               </div>
             {/each}
           {/if}
+
+          <!-- Add Section -->
+          <div style="margin-top: 12px; padding: 10px 12px; background: #f0f0f0; border-radius: 6px; border: 1px dashed #ccc;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+              <input type="text" bind:value={newSectionName} placeholder="New section name (e.g. Warm-up, Main)" style="padding: 8px; flex: 1; min-width: 150px; border: 1px solid #ccc; border-radius: 4px;" />
+              <select bind:value={newSectionMode} style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                <option value="full">Full Tracking (sets, reps, weight)</option>
+                <option value="checkbox">Checkbox Only (just complete)</option>
+              </select>
+              <button onclick={() => addSection(dayIndex)} style="padding: 7px 14px; background: white; border: 1px solid #4CAF50; color: #388E3C; border-radius: 4px; cursor: pointer; font-size: 0.9em; font-weight: 500; white-space: nowrap;">+ Add Section</button>
+            </div>
+          </div>
         {/if}
       </div>
     {/each}
   {/if}
+
+  <!-- Add Day -->
+  <div style="margin-top: 15px; padding: 12px 15px; background: #f5f5f5; border-radius: 8px; border: 1px dashed #bbb;">
+    <form onsubmit={addDay} style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+      <input type="text" bind:value={newDayName} placeholder="New day name (e.g. Leg Day, Push A)" style="padding: 8px; flex: 1; min-width: 180px; border: 1px solid #ccc; border-radius: 4px;" />
+      <button type="submit" style="padding: 8px 16px; background: white; border: 1px solid #4CAF50; color: #388E3C; border-radius: 4px; cursor: pointer; font-size: 0.9em; font-weight: 500; white-space: nowrap;">+ Add Day</button>
+    </form>
+  </div>
 {:else if !program || !userRole}
   <p>Loading...</p>
 {:else}
@@ -2113,121 +2114,6 @@
   <p>Redirecting...</p>
 {/if}
 
-<!-- Copy Day Modal -->
-{#if showCopyDayModal && copyDayIndex !== null}
-  <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;" onclick={closeCopyDayModal}>
-    <div style="background: white; padding: 25px; border-radius: 10px; max-width: 450px; width: 100%;" onclick={(e) => e.stopPropagation()}>
-      <h3 style="margin: 0 0 15px 0;">Copy Day to Another Program</h3>
-      <p style="color: #666; margin-bottom: 15px;">
-        Copy "<strong>{program.days[copyDayIndex]?.name}</strong>" to another program.
-      </p>
-
-      {#if getRecentPrograms().length > 0}
-        <div style="margin-bottom: 15px;">
-          <label style="font-size: 0.85em; color: #666;">Recent Programs:</label>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px;">
-            {#each getRecentPrograms() as p}
-              <button
-                onclick={() => selectedDestinationProgram = p.id}
-                style="padding: 6px 12px; border-radius: 20px; border: 1px solid {selectedDestinationProgram === p.id ? '#2196F3' : '#ddd'}; background: {selectedDestinationProgram === p.id ? '#e3f2fd' : 'white'}; cursor: pointer; font-size: 0.85em;"
-              >
-                {p.name}
-              </button>
-            {/each}
-          </div>
-        </div>
-      {/if}
-
-      <label style="display: block; margin-bottom: 15px;">
-        <strong>Destination Program:</strong>
-        <input type="text" bind:value={programSearchQuery} placeholder="Search programs…" style="width: 100%; padding: 8px; margin-top: 5px; margin-bottom: 5px; border: 1px solid #ddd; border-radius: 5px;" />
-        <select bind:value={selectedDestinationProgram} style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
-          <option value="">-- Select program --</option>
-          {#each getFilteredPrograms() as p}
-            <option value={p.id}>{p.name}</option>
-          {/each}
-        </select>
-      </label>
-
-      {#if selectedDestinationProgram}
-        <p style="background: #e8f5e9; padding: 10px; border-radius: 5px; font-size: 0.9em; color: #2e7d32;">
-          Day will be added to the end of <strong>"{allPrograms.find(p => p.id === selectedDestinationProgram)?.name}"</strong>
-        </p>
-      {/if}
-
-      <div style="display: flex; gap: 10px; margin-top: 20px;">
-        <button
-          onclick={copyDayToProgram}
-          disabled={!selectedDestinationProgram || copyingDay}
-          style="flex: 1; padding: 12px; background: {selectedDestinationProgram && !copyingDay ? '#4CAF50' : '#ccc'}; color: white; border: none; cursor: {selectedDestinationProgram && !copyingDay ? 'pointer' : 'not-allowed'}; border-radius: 5px;"
-        >
-          {copyingDay ? 'Copying…' : 'Copy Day'}
-        </button>
-        <button onclick={closeCopyDayModal} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Copy Section Modal -->
-{#if showCopySectionModal && copySectionDayIndex !== null && copySectionIndex !== null}
-  <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;" onclick={closeCopySectionModal}>
-    <div style="background: white; padding: 25px; border-radius: 10px; max-width: 450px; width: 100%;" onclick={(e) => e.stopPropagation()}>
-      <h3 style="margin: 0 0 15px 0;">Copy Section to Another Program</h3>
-      <p style="color: #666; margin-bottom: 15px;">
-        Copy "<strong>{program.days[copySectionDayIndex]?.sections[copySectionIndex]?.name}</strong>" to another program's last day.
-      </p>
-
-      {#if getRecentPrograms().length > 0}
-        <div style="margin-bottom: 15px;">
-          <label style="font-size: 0.85em; color: #666;">Recent Programs:</label>
-          <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 5px;">
-            {#each getRecentPrograms() as p}
-              <button
-                onclick={() => selectedDestinationProgram = p.id}
-                style="padding: 6px 12px; border-radius: 20px; border: 1px solid {selectedDestinationProgram === p.id ? '#2196F3' : '#ddd'}; background: {selectedDestinationProgram === p.id ? '#e3f2fd' : 'white'}; cursor: pointer; font-size: 0.85em;"
-              >
-                {p.name}
-              </button>
-            {/each}
-          </div>
-        </div>
-      {/if}
-
-      <label style="display: block; margin-bottom: 15px;">
-        <strong>Destination Program:</strong>
-        <input type="text" bind:value={programSearchQuery} placeholder="Search programs…" style="width: 100%; padding: 8px; margin-top: 5px; margin-bottom: 5px; border: 1px solid #ddd; border-radius: 5px;" />
-        <select bind:value={selectedDestinationProgram} style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
-          <option value="">-- Select program --</option>
-          {#each getFilteredPrograms() as p}
-            <option value={p.id}>{p.name}</option>
-          {/each}
-        </select>
-      </label>
-
-      {#if selectedDestinationProgram}
-        <p style="background: #e8f5e9; padding: 10px; border-radius: 5px; font-size: 0.9em; color: #2e7d32;">
-          Section will be added to the last day of <strong>"{allPrograms.find(p => p.id === selectedDestinationProgram)?.name}"</strong>{allPrograms.find(p => p.id === selectedDestinationProgram)?.days?.length ? '' : ' (Day 1 will be created)'}
-        </p>
-      {/if}
-
-      <div style="display: flex; gap: 10px; margin-top: 20px;">
-        <button
-          onclick={copySectionToProgram}
-          disabled={!selectedDestinationProgram || copyingSection}
-          style="flex: 1; padding: 12px; background: {selectedDestinationProgram && !copyingSection ? '#4CAF50' : '#ccc'}; color: white; border: none; cursor: {selectedDestinationProgram && !copyingSection ? 'pointer' : 'not-allowed'}; border-radius: 5px;"
-        >
-          {copyingSection ? 'Copying…' : 'Copy Section'}
-        </button>
-        <button onclick={closeCopySectionModal} style="flex: 1; padding: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 5px;">
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
 
 <!-- Video Confirm Dialog -->
 {#if pendingVideoExercise}
