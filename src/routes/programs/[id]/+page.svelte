@@ -35,6 +35,7 @@
   let newDayName = $state('');
   let editingDayIndex = $state(null);
   let editDayName = $state('');
+  let highlightedDayId = $state(null);
 
   // Section management
   let expandedDays = $state(new Set());     // set of open day indices
@@ -661,21 +662,60 @@
 
   async function deleteDay(dayIndex) {
     if (!confirm('Delete this day and all its exercises?')) return;
+    highlightedDayId = null;
     const updatedDays = program.days.filter((_, i) => i !== dayIndex);
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
   }
 
   function startEditDay(dayIndex) {
+    highlightedDayId = null;
     editingDayIndex = dayIndex;
     editDayName = program.days[dayIndex].name;
   }
 
   async function saveEditDay() {
+    highlightedDayId = null;
     const updatedDays = [...program.days];
     updatedDays[editingDayIndex].name = editDayName;
     await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
     editingDayIndex = null;
     editDayName = '';
+  }
+
+  async function duplicateDay(dayIndex) {
+    const original = program.days[dayIndex];
+    const newDayId = generateId();
+    const duplicate = {
+      workoutTemplateId: newDayId,
+      name: original.name,
+      sections: (original.sections || []).map(section => ({
+        sectionTemplateId: generateId(),
+        name: section.name,
+        mode: section.mode || 'full',
+        exercises: (section.exercises || []).map(ex => ({
+          workoutExerciseId: generateId(),
+          exerciseId: ex.exerciseId,
+          name: ex.name,
+          type: ex.type,
+          sets: ex.sets,
+          reps: ex.reps,
+          weight: ex.weight,
+          rir: ex.rir,
+          notes: ex.notes,
+          customReqs: ex.customReqs ? ex.customReqs.map(r => ({ ...r })) : [],
+          repsMetric: ex.repsMetric || 'reps',
+          weightMetric: ex.weightMetric || 'weight',
+          restSeconds: ex.restSeconds ?? null
+        }))
+      }))
+    };
+    const updatedDays = [...program.days];
+    updatedDays.splice(dayIndex + 1, 0, duplicate);
+    await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
+    highlightedDayId = newDayId;
+    await tick();
+    const el = document.querySelector(`[data-day-id="${newDayId}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   // Section functions
@@ -1856,19 +1896,23 @@
     <p>No days added yet. Add a day to get started.</p>
   {:else}
     {#each program.days as day, dayIndex}
-      <div style="border: 2px solid #333; padding: 15px; margin: 15px 0; border-radius: 8px; background: #fff;">
+      <div
+        data-day-id={day.workoutTemplateId}
+        style="border: 2px solid {highlightedDayId === day.workoutTemplateId ? '#2196F3' : '#333'}; padding: 15px; margin: 15px 0; border-radius: 8px; background: {highlightedDayId === day.workoutTemplateId ? '#e3f2fd' : '#fff'}; transition: background 0.2s;"
+      >
         <!-- Day Header -->
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
           {#if editingDayIndex === dayIndex}
             <input type="text" bind:value={editDayName} style="padding: 5px; font-size: 1.1em; flex: 1;" />
             <button onclick={saveEditDay}>Save</button>
-            <button onclick={() => editingDayIndex = null}>Cancel</button>
+            <button onclick={() => { editingDayIndex = null; highlightedDayId = null; }}>Cancel</button>
           {:else}
             <button onclick={() => toggleDay(dayIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #555; font-size: 0.95em; flex-shrink: 0;" title={expandedDays.has(dayIndex) ? 'Collapse' : 'Expand'}>
               {expandedDays.has(dayIndex) ? '▼' : '▶'}
             </button>
             <h3 style="margin: 0; flex: 1;">{day.name}</h3>
             <button onclick={() => startEditDay(dayIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1.1em; line-height: 1;" title="Rename">✎</button>
+            <button onclick={() => duplicateDay(dayIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em; line-height: 1;" title="Duplicate Day">⧉</button>
             <button onclick={() => deleteDay(dayIndex)} style="background: none; border: none; cursor: pointer; padding: 4px 6px; color: #888; font-size: 1em;" title="Delete">✕</button>
           {/if}
         </div>
