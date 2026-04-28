@@ -117,6 +117,14 @@
   let copyFromExpandedExercises = $state(new Set()); // mobile tap-expand
   let copyFromHoveredExerciseKey = $state(null);    // desktop hover
 
+  // Copy Section From (section copy)
+  let showCopySectionFromModal = $state(false);
+  let copySectionFromDestDayIndex = $state(null);
+  let copySectionFromExpandedDays = $state(new Set());
+  let copySectionFromExpandedSections = $state(new Set()); // for expanding exercise list under section
+  let copySectionFromExpandedExercises = $state(new Set()); // mobile tap-expand for exercise detail
+  let copySectionFromHoveredExerciseKey = $state(null);    // desktop hover for exercise detail
+
   // Editing exercise in section
   let editingExercise = $state(null); // format: "dayIndex-sectionIndex-exerciseIndex"
   let editExerciseDetails = $state({ sets: '', reps: '', weight: '', rir: '', notes: '', customReqs: [], repsMetric: 'reps', weightMetric: 'weight', restSeconds: '' });
@@ -888,6 +896,82 @@
     closeCopyFrom();
     await tick();
     const el = document.querySelector(`[data-exercise-id="${newId}"]`);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Copy Section From functions
+  function openCopySectionFrom(dayIndex) {
+    copySectionFromDestDayIndex = dayIndex;
+    copySectionFromExpandedDays = new Set();
+    copySectionFromExpandedSections = new Set();
+    copySectionFromExpandedExercises = new Set();
+    copySectionFromHoveredExerciseKey = null;
+    showCopySectionFromModal = true;
+  }
+
+  function closeCopySectionFrom() {
+    showCopySectionFromModal = false;
+    copySectionFromDestDayIndex = null;
+    copySectionFromExpandedExercises = new Set();
+    copySectionFromHoveredExerciseKey = null;
+  }
+
+  function toggleCopySectionFromDay(dayIndex) {
+    const next = new Set(copySectionFromExpandedDays);
+    if (next.has(dayIndex)) next.delete(dayIndex); else next.add(dayIndex);
+    copySectionFromExpandedDays = next;
+  }
+
+  function toggleCopySectionFromSection(dayIndex, sectionIndex) {
+    const key = `${dayIndex}-${sectionIndex}`;
+    const next = new Set(copySectionFromExpandedSections);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    copySectionFromExpandedSections = next;
+  }
+
+  async function copySectionFrom(srcDayIndex, srcSectionIndex) {
+    const srcSection = program.days[srcDayIndex].sections[srcSectionIndex];
+    const destDayIndex = copySectionFromDestDayIndex;
+    const destDay = program.days[destDayIndex];
+    const newSectionId = generateId();
+    const copied = {
+      sectionTemplateId: newSectionId,
+      name: srcSection.name,
+      mode: srcSection.mode || 'full',
+      exercises: (srcSection.exercises || []).map(ex => ({
+        workoutExerciseId: generateId(),
+        exerciseId: ex.exerciseId,
+        name: ex.name,
+        type: ex.type,
+        sets: ex.sets,
+        reps: ex.reps,
+        weight: ex.weight,
+        rir: ex.rir,
+        notes: ex.notes,
+        customReqs: ex.customReqs ? ex.customReqs.map(r => ({ ...r })) : [],
+        repsMetric: ex.repsMetric || 'reps',
+        weightMetric: ex.weightMetric || 'weight',
+        restSeconds: ex.restSeconds ?? null
+      }))
+    };
+    const updatedDays = [...program.days];
+    updatedDays[destDayIndex].sections = [...(updatedDays[destDayIndex].sections || []), copied];
+    await updateDoc(doc(db, 'programs', program.id), { days: updatedDays });
+
+    // Auto-open destination day
+    if (!expandedDays.has(destDayIndex)) expandedDays = new Set([...expandedDays, destDayIndex]);
+
+    // Highlight
+    highlightedSectionId = newSectionId;
+
+    // Toast
+    toastMessage = `${srcSection.name} copied from ${program.name} to ${destDay.name} in ${program.name}.`;
+    setTimeout(() => { toastMessage = ''; }, 4000);
+
+    // Close modal, then scroll
+    closeCopySectionFrom();
+    await tick();
+    const el = document.querySelector(`[data-section-id="${newSectionId}"]`);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
@@ -2305,6 +2389,7 @@
                 <option value="full">Full Tracking (sets, reps, weight)</option>
                 <option value="checkbox">Checkbox Only (just complete)</option>
               </select>
+              <button onclick={() => openCopySectionFrom(dayIndex)} style="padding: 7px 14px; background: white; border: 1px solid #1976D2; color: #1565C0; border-radius: 4px; cursor: pointer; font-size: 0.9em; font-weight: 500; white-space: nowrap;">Copy From</button>
               <button onclick={() => addSection(dayIndex)} style="padding: 7px 14px; background: white; border: 1px solid #4CAF50; color: #388E3C; border-radius: 4px; cursor: pointer; font-size: 0.9em; font-weight: 500; white-space: nowrap;">+ Add Section</button>
             </div>
           </div>
@@ -2489,6 +2574,145 @@
                                 onclick={() => copyExerciseFrom(srcDayIndex, srcSectionIndex, srcExIndex)}
                                 style="padding: 4px 12px; background: #1976D2; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; font-weight: 600; white-space: nowrap; flex-shrink: 0;"
                               >Copy</button>
+                            </div>
+                            {#if showDetail && (srcEx.sets || hasReps || hasTime || hasLoad || hasDistance || customNames.length > 0 || notesPreview)}
+                              <div style="margin-top: 5px; padding-top: 5px; border-top: 1px solid #eef1f5; color: #555; font-size: 0.88em; line-height: 1.7;">
+                                <div style="display: flex; flex-wrap: wrap; gap: 2px 12px;">
+                                  {#if srcEx.sets}
+                                    <span><span style="color: #999; font-size: 0.85em;">Sets</span> {srcEx.sets}</span>
+                                  {/if}
+                                  {#if hasReps}
+                                    <span><span style="color: #999; font-size: 0.85em;">Reps</span> {srcEx.reps}</span>
+                                  {/if}
+                                  {#if hasTime}
+                                    <span><span style="color: #999; font-size: 0.85em;">Time</span> {srcEx.reps}</span>
+                                  {/if}
+                                  {#if hasLoad}
+                                    <span><span style="color: #999; font-size: 0.85em;">Load</span> {srcEx.weight}</span>
+                                  {/if}
+                                  {#if hasDistance}
+                                    <span><span style="color: #999; font-size: 0.85em;">Distance</span> {srcEx.weight}</span>
+                                  {/if}
+                                  {#if customNames.length > 0}
+                                    <span><span style="color: #999; font-size: 0.85em;">Custom</span> {customNames.join(' · ')}</span>
+                                  {/if}
+                                </div>
+                                {#if notesPreview}
+                                  <div style="margin-top: 3px; color: #888; font-style: italic;">{notesPreview}</div>
+                                {/if}
+                              </div>
+                            {/if}
+                          </div>
+                        {/each}
+                        {#if !srcSection.exercises || srcSection.exercises.length === 0}
+                          <p style="color: #aaa; font-size: 0.8em; padding: 4px 8px; margin: 0;">No exercises in this section</p>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/each}
+                {#if !srcDay.sections || srcDay.sections.length === 0}
+                  <p style="color: #aaa; font-size: 0.8em; padding: 4px 8px; margin: 0;">No sections in this day</p>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/each}
+        {#if !program.days || program.days.length === 0}
+          <p style="color: #aaa; font-size: 0.85em; padding: 8px;">No days in this program yet.</p>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Copy Section From Modal -->
+{#if showCopySectionFromModal && copySectionFromDestDayIndex !== null}
+  {@const destDayName = program.days[copySectionFromDestDayIndex]?.name ?? ''}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    role="dialog"
+    aria-modal="true"
+    aria-label="Copy section from program"
+    style="position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 1500; display: flex; align-items: flex-start; justify-content: center; padding: 16px; overflow-y: auto;"
+    onclick={closeCopySectionFrom}
+    onkeydown={(e) => { if (e.key === 'Escape') closeCopySectionFrom(); }}
+  >
+    <div
+      style="background: #f0f4f8; border-radius: 10px; width: 100%; max-width: 520px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 4px 24px rgba(0,0,0,0.3); margin: auto;"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <!-- Header -->
+      <div style="padding: 14px 18px; border-bottom: 1px solid #d0d7e0; display: flex; justify-content: space-between; align-items: flex-start; background: #e4eaf2; border-radius: 10px 10px 0 0; flex-shrink: 0;">
+        <div>
+          <strong style="font-size: 0.95em;">Copy Section From</strong>
+          <div style="font-size: 0.78em; color: #555; margin-top: 3px;">
+            Source: <em>{program.name}</em> &rarr; Destination: <em>{destDayName}</em>
+          </div>
+        </div>
+        <button onclick={closeCopySectionFrom} style="background: none; border: none; cursor: pointer; font-size: 1.2em; color: #666; padding: 2px 4px; flex-shrink: 0;" title="Close">✕</button>
+      </div>
+
+      <!-- Tree -->
+      <div style="overflow-y: auto; flex: 1; padding: 10px 14px;">
+        {#each program.days as srcDay, srcDayIndex}
+          <div style="margin-bottom: 5px;">
+            <!-- Day row -->
+            <button
+              onclick={() => toggleCopySectionFromDay(srcDayIndex)}
+              style="display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: #fff; border: 1px solid #cdd5de; border-radius: 6px; padding: 8px 12px; cursor: pointer; font-size: 0.9em;"
+            >
+              <span style="font-size: 0.75em; color: #888; flex-shrink: 0;">{copySectionFromExpandedDays.has(srcDayIndex) ? '▼' : '▶'}</span>
+              <strong style="flex: 1;">{srcDay.name}</strong>
+              <span style="font-size: 0.75em; color: #888; flex-shrink: 0;">{srcDay.sections?.length ?? 0} section{(srcDay.sections?.length ?? 0) === 1 ? '' : 's'}</span>
+            </button>
+
+            {#if copySectionFromExpandedDays.has(srcDayIndex)}
+              <div style="margin-left: 14px; margin-top: 4px;">
+                {#each srcDay.sections ?? [] as srcSection, srcSectionIndex}
+                  {@const secKey = `${srcDayIndex}-${srcSectionIndex}`}
+                  <div style="margin-bottom: 4px;">
+                    <!-- Section row with Copy button -->
+                    <div style="display: flex; align-items: center; gap: 8px; background: #f6f8fb; border: 1px solid #cdd5de; border-radius: 6px; padding: 7px 12px; font-size: 0.85em;">
+                      <button
+                        onclick={() => toggleCopySectionFromSection(srcDayIndex, srcSectionIndex)}
+                        style="display: flex; align-items: center; gap: 6px; background: none; border: none; cursor: pointer; padding: 0; flex: 1; text-align: left; min-width: 0;"
+                      >
+                        <span style="font-size: 0.75em; color: #888; flex-shrink: 0;">{copySectionFromExpandedSections.has(secKey) ? '▼' : '▶'}</span>
+                        <span style="flex: 1; min-width: 0;">{srcSection.name}</span>
+                        <span style="font-size: 0.75em; color: #888; flex-shrink: 0; margin-right: 4px;">{srcSection.exercises?.length ?? 0} exercise{(srcSection.exercises?.length ?? 0) === 1 ? '' : 's'}</span>
+                      </button>
+                      <button
+                        onclick={() => copySectionFrom(srcDayIndex, srcSectionIndex)}
+                        style="padding: 4px 12px; background: #1976D2; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; font-weight: 600; white-space: nowrap; flex-shrink: 0;"
+                      >Copy</button>
+                    </div>
+
+                    {#if copySectionFromExpandedSections.has(secKey)}
+                      <div style="margin-left: 14px; margin-top: 3px;">
+                        {#each srcSection.exercises ?? [] as srcEx, srcExIndex}
+                          {@const exKey = `${srcDayIndex}-${srcSectionIndex}-${srcExIndex}`}
+                          {@const showDetail = copySectionFromHoveredExerciseKey === exKey || copySectionFromExpandedExercises.has(exKey)}
+                          {@const hasReps = srcEx.reps && srcEx.repsMetric !== 'time'}
+                          {@const hasTime = srcEx.reps && srcEx.repsMetric === 'time'}
+                          {@const hasLoad = srcEx.weight && srcEx.weightMetric !== 'distance'}
+                          {@const hasDistance = srcEx.weight && srcEx.weightMetric === 'distance'}
+                          {@const customNames = (srcEx.customReqs || []).map(r => r.name).filter(n => n?.trim())}
+                          {@const notesPreview = srcEx.notes ? (srcEx.notes.length > 80 ? srcEx.notes.substring(0, 80) + '…' : srcEx.notes) : null}
+                          <div
+                            style="background: white; border: 1px solid #dde4ed; border-left: 3px solid #4CAF50; border-radius: 5px; padding: 6px 10px; margin-bottom: 3px; font-size: 0.85em;"
+                            onmouseenter={() => { copySectionFromHoveredExerciseKey = exKey; }}
+                            onmouseleave={() => { copySectionFromHoveredExerciseKey = null; }}
+                          >
+                            <div
+                              style="min-width: 0; cursor: pointer; user-select: none;"
+                              onclick={() => {
+                                const next = new Set(copySectionFromExpandedExercises);
+                                if (next.has(exKey)) next.delete(exKey); else next.add(exKey);
+                                copySectionFromExpandedExercises = next;
+                              }}
+                            >
+                              <strong>{srcEx.name}</strong>
                             </div>
                             {#if showDetail && (srcEx.sets || hasReps || hasTime || hasLoad || hasDistance || customNames.length > 0 || notesPreview)}
                               <div style="margin-top: 5px; padding-top: 5px; border-top: 1px solid #eef1f5; color: #555; font-size: 0.88em; line-height: 1.7;">
