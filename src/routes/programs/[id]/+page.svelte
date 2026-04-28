@@ -114,6 +114,8 @@
   let copyFromDestSectionIndex = $state(null);
   let copyFromExpandedDays = $state(new Set());
   let copyFromExpandedSections = $state(new Set());
+  let copyFromExpandedExercises = $state(new Set()); // mobile tap-expand
+  let copyFromHoveredExerciseKey = $state(null);    // desktop hover
 
   // Editing exercise in section
   let editingExercise = $state(null); // format: "dayIndex-sectionIndex-exerciseIndex"
@@ -816,6 +818,8 @@
     copyFromDestSectionIndex = sectionIndex;
     copyFromExpandedDays = new Set();
     copyFromExpandedSections = new Set();
+    copyFromExpandedExercises = new Set();
+    copyFromHoveredExerciseKey = null;
     showCopyFromModal = true;
   }
 
@@ -823,6 +827,8 @@
     showCopyFromModal = false;
     copyFromDestDayIndex = null;
     copyFromDestSectionIndex = null;
+    copyFromExpandedExercises = new Set();
+    copyFromHoveredExerciseKey = null;
   }
 
   function toggleCopyFromDay(dayIndex) {
@@ -2455,17 +2461,62 @@
                     {#if copyFromExpandedSections.has(`${srcDayIndex}-${srcSectionIndex}`)}
                       <div style="margin-left: 14px; margin-top: 3px;">
                         {#each srcSection.exercises ?? [] as srcEx, srcExIndex}
-                          <div style="display: flex; align-items: center; gap: 8px; background: white; border: 1px solid #dde4ed; border-left: 3px solid #4CAF50; border-radius: 5px; padding: 6px 10px; margin-bottom: 3px; font-size: 0.85em;">
-                            <div style="flex: 1; min-width: 0;">
-                              <strong>{srcEx.name}</strong>
-                              {#if srcEx.sets}
-                                <span style="color: #888; margin-left: 6px;">• {srcEx.sets} set{srcEx.sets === '1' || srcEx.sets === 1 ? '' : 's'}</span>
-                              {/if}
+                          {@const exKey = `${srcDayIndex}-${srcSectionIndex}-${srcExIndex}`}
+                          {@const showDetail = copyFromHoveredExerciseKey === exKey || copyFromExpandedExercises.has(exKey)}
+                          {@const hasReps = srcEx.reps && srcEx.repsMetric !== 'time'}
+                          {@const hasTime = srcEx.reps && srcEx.repsMetric === 'time'}
+                          {@const hasLoad = srcEx.weight && srcEx.weightMetric !== 'distance'}
+                          {@const hasDistance = srcEx.weight && srcEx.weightMetric === 'distance'}
+                          {@const customNames = (srcEx.customReqs || []).map(r => r.name).filter(n => n?.trim())}
+                          {@const notesPreview = srcEx.notes ? (srcEx.notes.length > 80 ? srcEx.notes.substring(0, 80) + '…' : srcEx.notes) : null}
+                          <div
+                            style="background: white; border: 1px solid #dde4ed; border-left: 3px solid #4CAF50; border-radius: 5px; padding: 6px 10px; margin-bottom: 3px; font-size: 0.85em;"
+                            onmouseenter={() => { copyFromHoveredExerciseKey = exKey; }}
+                            onmouseleave={() => { copyFromHoveredExerciseKey = null; }}
+                          >
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                              <div
+                                style="flex: 1; min-width: 0; cursor: pointer; user-select: none;"
+                                onclick={() => {
+                                  const next = new Set(copyFromExpandedExercises);
+                                  if (next.has(exKey)) next.delete(exKey); else next.add(exKey);
+                                  copyFromExpandedExercises = next;
+                                }}
+                              >
+                                <strong>{srcEx.name}</strong>
+                              </div>
+                              <button
+                                onclick={() => copyExerciseFrom(srcDayIndex, srcSectionIndex, srcExIndex)}
+                                style="padding: 4px 12px; background: #1976D2; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; font-weight: 600; white-space: nowrap; flex-shrink: 0;"
+                              >Copy</button>
                             </div>
-                            <button
-                              onclick={() => copyExerciseFrom(srcDayIndex, srcSectionIndex, srcExIndex)}
-                              style="padding: 4px 12px; background: #1976D2; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; font-weight: 600; white-space: nowrap; flex-shrink: 0;"
-                            >Copy</button>
+                            {#if showDetail && (srcEx.sets || hasReps || hasTime || hasLoad || hasDistance || customNames.length > 0 || notesPreview)}
+                              <div style="margin-top: 5px; padding-top: 5px; border-top: 1px solid #eef1f5; color: #555; font-size: 0.88em; line-height: 1.7;">
+                                <div style="display: flex; flex-wrap: wrap; gap: 2px 12px;">
+                                  {#if srcEx.sets}
+                                    <span><span style="color: #999; font-size: 0.85em;">Sets</span> {srcEx.sets}</span>
+                                  {/if}
+                                  {#if hasReps}
+                                    <span><span style="color: #999; font-size: 0.85em;">Reps</span> {srcEx.reps}</span>
+                                  {/if}
+                                  {#if hasTime}
+                                    <span><span style="color: #999; font-size: 0.85em;">Time</span> {srcEx.reps}</span>
+                                  {/if}
+                                  {#if hasLoad}
+                                    <span><span style="color: #999; font-size: 0.85em;">Load</span> {srcEx.weight}</span>
+                                  {/if}
+                                  {#if hasDistance}
+                                    <span><span style="color: #999; font-size: 0.85em;">Distance</span> {srcEx.weight}</span>
+                                  {/if}
+                                  {#if customNames.length > 0}
+                                    <span><span style="color: #999; font-size: 0.85em;">Custom</span> {customNames.join(' · ')}</span>
+                                  {/if}
+                                </div>
+                                {#if notesPreview}
+                                  <div style="margin-top: 3px; color: #888; font-style: italic;">{notesPreview}</div>
+                                {/if}
+                              </div>
+                            {/if}
                           </div>
                         {/each}
                         {#if !srcSection.exercises || srcSection.exercises.length === 0}
