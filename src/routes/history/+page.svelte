@@ -54,7 +54,13 @@
   let dotLabelMetric = $state('none'); // 'none' | 'weight' | 'volume' | 'e1rm' | 'pct_e1rm'
 
   // Axis labels (derived)
-  let yAxisLabel = $derived(analysisMetric === 'weight' ? 'Weight' : analysisMetric === 'volume' ? 'Volume' : analysisMetric === 'e1rm' ? 'Estimated 1RM' : analysisMetric === 'pct_e1rm' ? 'Intensity (%)' : (getCustomReqOptions().find(r => r.idx === analysisCustomReqIdx)?.name || 'Custom'));
+  let yAxisLabel = $derived(
+    analysisMetric === 'weight' ? 'Weight'
+    : analysisMetric === 'volume' ? 'Volume'
+    : analysisMetric === 'e1rm' ? 'Estimated 1RM'
+    : analysisMetric === 'pct_e1rm' ? 'Intensity (%)'
+    : (() => { const r = getCustomReqOptions().find(x => x.idx === analysisCustomReqIdx); return r ? (r.unit ? `${r.name} (${r.unit})` : r.name) : 'Custom'; })()
+  );
   let xAxisLabel = $derived(windowMode === 'sessions' ? 'Session' : (timeWindow === 'week' ? 'Week' : timeWindow === 'month' ? 'Month' : timeWindow === 'year' ? 'Year' : 'Date'));
 
   async function loadProgram(programId) {
@@ -1355,22 +1361,41 @@
     if (!analysisExerciseId) return [];
     const exerciseLogs = allLogs.filter(l => l.exerciseId === analysisExerciseId && l.completedWorkoutId);
     const reqMap = {};
+    // Track which indices have been confirmed via customMetrics so legacy never overwrites them.
+    const fromCustomMetrics = new Set();
+
+    // Two-pass: legacy first, then customMetrics unconditionally overwrites.
+    // Pass 1 — legacy fallback (only for logs without customMetrics).
     exerciseLogs.forEach(log => {
+      if (Array.isArray(log.customMetrics)) return; // handled in pass 2
       if (!log.customInputs) return;
       Object.entries(log.customInputs).forEach(([idx, val]) => {
         const numVal = parseFloat(val);
-        if (!isNaN(numVal)) {
-          // Try to get name from program cache
-          const prog = programsCache[log.programId];
-          const exTemplate = prog?.days?.flatMap(d => d.sections?.flatMap(s => s.exercises || []) || [])
-            .find(e => e.workoutExerciseId === log.workoutExerciseId);
-          const req = exTemplate?.customReqs?.filter(r => r.clientInput)?.[parseInt(idx)];
+        if (!isNaN(numVal) && !reqMap[idx]) {
+          const clientReqs = getCustomReqs(log.programId, log.workoutExerciseId);
+          const req = clientReqs?.[parseInt(idx)];
           const name = req?.name || `Custom ${parseInt(idx) + 1}`;
-          if (!reqMap[idx]) reqMap[idx] = { idx, name, hasNumeric: true };
+          const unit = req
+            ? (req.unit === 'other' ? (req.customUnit?.trim() || null) : (req.unit && req.unit !== 'none') ? req.unit : null)
+            : null;
+          reqMap[idx] = { idx, name, unit };
         }
       });
     });
-    return Object.values(reqMap);
+
+    // Pass 2 — customMetrics always wins over any legacy entry for the same index.
+    exerciseLogs.forEach(log => {
+      if (!Array.isArray(log.customMetrics)) return;
+      log.customMetrics.forEach(cm => {
+        if (cm.value !== null && cm.value !== undefined) {
+          const key = String(cm.index);
+          reqMap[key] = { idx: key, name: cm.label, unit: cm.unit || null };
+          fromCustomMetrics.add(key);
+        }
+      });
+    });
+
+    return Object.values(reqMap).sort((a, b) => parseInt(a.idx) - parseInt(b.idx));
   }
 
   function getChartData() {
@@ -1942,7 +1967,7 @@
           <select bind:value={analysisCustomReqIdx} style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px;">
             <option value="">Select requirement...</option>
             {#each getCustomReqOptions() as req}
-              <option value={req.idx}>{req.name}</option>
+              <option value={req.idx}>{req.unit ? `${req.name} (${req.unit})` : req.name}</option>
             {/each}
           </select>
         </div>
@@ -2036,7 +2061,11 @@
           {@const yMin = Math.max(0, minVal - padding)}
           {@const yMax = maxVal + padding}
           {@const yRange = yMax - yMin}
+          {@const analysisExerciseName = getLoggedExercises().find(e => e.id === analysisExerciseId)?.name || ''}
           <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px;">
+            {#if analysisExerciseName}
+              <div style="font-size: 0.78em; color: #999; margin-bottom: 6px;">Exercise: {analysisExerciseName}</div>
+            {/if}
             <div style="font-weight: 600; margin-bottom: 10px; color: #333; display: flex; align-items: center; gap: 6px;">
               {#if analysisMetric === 'e1rm'}
                 <span>Session Peak Estimated 1RM Over Time</span>
@@ -2051,7 +2080,8 @@
                   <span class="tooltip-text">Each session's peak compared to your best estimated lift from the previous 10 sessions at that time. Past values do not change when new records are set.</span>
                 </span>
               {:else}
-                <span>{analysisMetric === 'weight' ? 'Max Weight' : analysisMetric === 'volume' ? 'Total Volume' : (getCustomReqOptions().find(r => r.idx === analysisCustomReqIdx)?.name || 'Custom Requirement')} Over Time</span>
+                {@const selectedReq = getCustomReqOptions().find(r => r.idx === analysisCustomReqIdx)}
+                <span>{analysisMetric === 'weight' ? 'Max Weight' : analysisMetric === 'volume' ? 'Total Volume' : (selectedReq?.name || 'Custom Requirement')} Over Time</span>
               {/if}
             </div>
             <svg viewBox="0 0 400 200" style="width: 100%; height: auto;">

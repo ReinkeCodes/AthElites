@@ -4,7 +4,7 @@
  */
 
 // App version (semantic versioning)
-export const APP_VERSION = '0.16.21';
+export const APP_VERSION = '0.16.22';
 
 // Feature versions - track when specific features were last updated
 // Increment when making significant changes to a feature
@@ -24,6 +24,7 @@ export const FEATURE_VERSIONS = {
   focusModeTimer: { v: 1, date: '02 - 25 - 2026' },
   metricsV2Foundation: { v: 8, date: '03 - 10 - 2026' },
   passwordReset: { v: 1, date: '03 - 03 - 2026' },
+  performanceAnalysisCustomMetrics: { v: 1, date: '04 - 29 - 2026' },
   prCelebration: { v: 1, date: '02 - 25 - 2026' },
   prPageConsolidation: { v: 2, date: '02 - 25 - 2026' },
   programCyclesFoundation: { v: 11, date: '04 - 12 - 2026' },
