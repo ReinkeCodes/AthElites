@@ -1345,7 +1345,7 @@
       weight: ex.weight || '',
       rir: ex.rir || '',
       notes: ex.notes || '',
-      customReqs: ex.customReqs ? [...ex.customReqs] : [],
+      customReqs: ex.customReqs ? ex.customReqs.map(r => ({ ...r, unit: r.unit || 'none', customUnit: r.customUnit || '' })) : [],
       repsMetric: ex.repsMetric || 'reps',
       weightMetric: ex.weightMetric || 'weight',
       restSeconds: ex.restSeconds != null ? ex.restSeconds.toString() : ''
@@ -1379,7 +1379,7 @@
 
   // Custom requirements for adding new exercise
   function addCustomReq() {
-    exerciseDetails.customReqs = [...exerciseDetails.customReqs, { name: '', value: '' }];
+    exerciseDetails.customReqs = [...exerciseDetails.customReqs, { name: '', value: '', unit: 'none', customUnit: '' }];
   }
 
   function removeCustomReq(index) {
@@ -1388,7 +1388,7 @@
 
   // Custom requirements for editing exercise
   function addEditCustomReq() {
-    editExerciseDetails.customReqs = [...editExerciseDetails.customReqs, { name: '', value: '' }];
+    editExerciseDetails.customReqs = [...editExerciseDetails.customReqs, { name: '', value: '', unit: 'none', customUnit: '' }];
   }
 
   function removeEditCustomReq(index) {
@@ -2492,9 +2492,29 @@
                         <div style="margin: 10px 0; padding: 10px; background: #fff3e0; border-radius: 5px;">
                           <strong style="font-size: 0.9em;">Custom Requirements:</strong>
                           {#each editExerciseDetails.customReqs as req, reqIndex}
-                            <div style="display: flex; gap: 5px; margin-top: 5px; align-items: center;">
-                              <input type="text" bind:value={editExerciseDetails.customReqs[reqIndex].name} placeholder="Category (e.g. Tempo)" style="flex: 1; padding: 5px;" />
-                              <input type="text" bind:value={editExerciseDetails.customReqs[reqIndex].value} placeholder="Value (e.g. 3-1-2)" style="flex: 1; padding: 5px;" />
+                            <div style="display: flex; gap: 5px; margin-top: 5px; align-items: center; flex-wrap: wrap;">
+                              <input type="text" bind:value={editExerciseDetails.customReqs[reqIndex].name} placeholder="Label (e.g. Speed)" style="flex: 1; min-width: 80px; padding: 5px;" />
+                              <input type="text" bind:value={editExerciseDetails.customReqs[reqIndex].value} placeholder="Default/Example" style="flex: 1; min-width: 80px; padding: 5px;" />
+                              <select bind:value={editExerciseDetails.customReqs[reqIndex].unit} style="padding: 4px 5px; font-size: 0.85em;">
+                                <option value="none">none</option>
+                                <option value="lbs">lbs</option>
+                                <option value="kg">kg</option>
+                                <option value="sec">sec</option>
+                                <option value="min">min</option>
+                                <option value="ms">ms</option>
+                                <option value="m">m</option>
+                                <option value="cm">cm</option>
+                                <option value="in">in</option>
+                                <option value="mph">mph</option>
+                                <option value="km/h">km/h</option>
+                                <option value="m/s">m/s</option>
+                                <option value="W">W</option>
+                                <option value="%">%</option>
+                                <option value="other">other</option>
+                              </select>
+                              {#if editExerciseDetails.customReqs[reqIndex].unit === 'other'}
+                                <input type="text" bind:value={editExerciseDetails.customReqs[reqIndex].customUnit} placeholder="unit" style="width: 60px; padding: 5px; font-size: 0.85em;" />
+                              {/if}
                               <label style="display: flex; align-items: center; gap: 3px; font-size: 0.75em; white-space: nowrap;">
                                 <input type="checkbox" bind:checked={editExerciseDetails.customReqs[reqIndex].clientInput} />
                                 Client input
@@ -2640,9 +2660,29 @@
                     <div style="margin: 10px 0; padding: 10px; background: #fff3e0; border-radius: 5px;">
                       <strong style="font-size: 0.9em;">Custom Requirements (optional):</strong>
                       {#each exerciseDetails.customReqs as req, reqIndex}
-                        <div style="display: flex; gap: 5px; margin-top: 5px; align-items: center;">
-                          <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].name} placeholder="Category (e.g. Tempo)" style="flex: 1; padding: 5px;" />
-                          <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].value} placeholder="Value (e.g. 3-1-2)" style="flex: 1; padding: 5px;" />
+                        <div style="display: flex; gap: 5px; margin-top: 5px; align-items: center; flex-wrap: wrap;">
+                          <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].name} placeholder="Label (e.g. Speed)" style="flex: 1; min-width: 80px; padding: 5px;" />
+                          <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].value} placeholder="Default/Example" style="flex: 1; min-width: 80px; padding: 5px;" />
+                          <select bind:value={exerciseDetails.customReqs[reqIndex].unit} style="padding: 4px 5px; font-size: 0.85em;">
+                            <option value="none">none</option>
+                            <option value="lbs">lbs</option>
+                            <option value="kg">kg</option>
+                            <option value="sec">sec</option>
+                            <option value="min">min</option>
+                            <option value="ms">ms</option>
+                            <option value="m">m</option>
+                            <option value="cm">cm</option>
+                            <option value="in">in</option>
+                            <option value="mph">mph</option>
+                            <option value="km/h">km/h</option>
+                            <option value="m/s">m/s</option>
+                            <option value="W">W</option>
+                            <option value="%">%</option>
+                            <option value="other">other</option>
+                          </select>
+                          {#if exerciseDetails.customReqs[reqIndex].unit === 'other'}
+                            <input type="text" bind:value={exerciseDetails.customReqs[reqIndex].customUnit} placeholder="unit" style="width: 60px; padding: 5px; font-size: 0.85em;" />
+                          {/if}
                           <label style="display: flex; align-items: center; gap: 3px; font-size: 0.75em; white-space: nowrap;">
                             <input type="checkbox" bind:checked={exerciseDetails.customReqs[reqIndex].clientInput} />
                             Client input

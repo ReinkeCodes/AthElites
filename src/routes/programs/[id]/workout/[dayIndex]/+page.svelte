@@ -2407,7 +2407,7 @@
         {@const repsHeader = exercise.repsMetric === 'time' ? 'Time' : exercise.repsMetric === 'distance' ? 'Distance' : 'Reps'}
         {@const weightHeader = exercise.weightMetric === 'distance' ? 'Distance' : exercise.weightMetric === 'time' ? 'Time' : 'Weight'}
         {@const nonInputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && !r.clientInput)}
-        {@const inputReqs = (exercise.customReqs || []).filter(r => r.name && r.value && r.clientInput)}
+        {@const inputReqs = (exercise.customReqs || []).filter(r => r.name && r.clientInput)}
         {@const isExpanded = expandedExercise[currentSectionIndex] === exercise.workoutExerciseId}
         {@const libraryEx = exercises.find(e => e.id === exercise.exerciseId)}
         <div
@@ -2803,18 +2803,20 @@
 
                         <!-- Per-set client input fields -->
                         {#if inputReqs.length > 0}
-                          {#each inputReqs as req, reqIndex}
-                            <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 0;">
-                              <span style="font-weight: 500; color: #333;">{req.name}</span>
+                          <div style="display: grid; grid-template-columns: 1fr 80px auto; align-items: center; gap: 6px 8px; padding: 4px 0;">
+                            {#each inputReqs as req, reqIndex}
+                              {@const resolvedUnit = req.unit === 'other' ? (req.customUnit?.trim() || '') : (req.unit && req.unit !== 'none') ? req.unit : ''}
+                              <span style="font-weight: 500; color: #333; padding: 4px 0;">{req.name}</span>
                               <input
                                 type="text"
-                                placeholder={req.value}
+                                placeholder={req.value || ''}
                                 value={set.customInputs?.[reqIndex] || ''}
                                 oninput={(e) => { if (!set.customInputs) set.customInputs = {}; set.customInputs[reqIndex] = e.target.value; exerciseLogs = { ...exerciseLogs }; }}
-                                style="width: 80px; padding: 8px 0; border: none; background: transparent; font-size: 1.1em; text-align: center; outline: none; box-shadow: none !important; -webkit-appearance: none; appearance: none; border-radius: 0; text-decoration: none;"
+                                style="width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 5px; font-size: 1em; text-align: center; background: white;"
                               />
-                            </div>
-                          {/each}
+                              <span style="font-size: 0.85em; color: #666; white-space: nowrap;">{resolvedUnit}</span>
+                            {/each}
+                          </div>
                         {/if}
 
                         <!-- Skip Remaining Sets button - only show if there are remaining sets with empty fields -->
