@@ -38,6 +38,10 @@
   let videoModalExercise = $state(null);
   let pendingVideoExercise = $state(null);
 
+  // Chunked rendering
+  const CHUNK_SIZE = 25;
+  let visibleCount = $state(CHUNK_SIZE);
+
   // Toast notification
   let toastMessage = $state('');
   let toastType = $state('error'); // 'error' or 'success'
@@ -115,6 +119,24 @@
     }
   });
 
+  // Derived filtered+sorted list — computed once, used everywhere
+  let filteredExercises = $derived(getFilteredExercises());
+
+  // Total role-filtered library count (not affected by type/laterality filters)
+  let totalCount = $derived(
+    userRole === 'admin' || userRole === 'coach'
+      ? exercises.filter(e => e.createdByRole !== 'client').length
+      : userRole === 'client'
+      ? exercises.filter(e => e.createdByRole !== 'client' || (e.createdByRole === 'client' && e.createdByUserId === currentUserId)).length
+      : exercises.length
+  );
+
+  // Reset rendered chunk when sort/filter changes
+  $effect(() => {
+    sortBy; filterType; filterLaterality;
+    visibleCount = CHUNK_SIZE;
+  });
+
   // Check if exercise is owned by current client user
   function isMyExercise(exercise) {
     return exercise.createdByRole === 'client' && exercise.createdByUserId === currentUserId;
@@ -162,6 +184,15 @@
   }
 
   onMount(() => {
+    function handleScroll() {
+      const scrolledTo = window.scrollY + window.innerHeight;
+      const threshold = document.documentElement.scrollHeight - 400;
+      if (scrolledTo >= threshold && visibleCount < filteredExercises.length) {
+        visibleCount = Math.min(visibleCount + CHUNK_SIZE, filteredExercises.length);
+      }
+    }
+    window.addEventListener('scroll', handleScroll, { passive: true });
+
     onAuthStateChanged(auth, async (user) => {
       if (user) {
         currentUserId = user.uid;
@@ -199,6 +230,8 @@
         customTypes = snapshot.data().types || [];
       }
     });
+
+    return () => window.removeEventListener('scroll', handleScroll);
   });
 
   // Load programs based on role (to check exercise usage)
@@ -474,6 +507,9 @@
 {/if}
 
 <h2>All Exercises</h2>
+{#if totalCount > 0}
+  <p style="margin: -8px 0 12px 0; font-size: 0.85em; color: #888;">{totalCount} total</p>
+{/if}
 
 <div style="margin-bottom: 15px;">
   <label>
@@ -503,12 +539,16 @@
       <option value="unilateral">Unilateral</option>
     </select>
   </label>
+
+  {#if filterType !== 'all' || filterLaterality !== 'all'}
+    <span style="margin-left: 14px; font-size: 0.85em; color: #888;">{filteredExercises.length} matching</span>
+  {/if}
 </div>
 
-{#if getFilteredExercises().length === 0}
+{#if filteredExercises.length === 0}
   <p>No exercises found.</p>
 {:else}
-  {#each getFilteredExercises() as exercise}
+  {#each filteredExercises.slice(0, visibleCount) as exercise}
     <div style="border: 1px solid #ccc; padding: 15px; margin: 10px 0; border-radius: 8px;">
       {#if editingId === exercise.id}
         <!-- Edit mode -->
@@ -628,6 +668,9 @@
       {/if}
     </div>
   {/each}
+  {#if visibleCount >= filteredExercises.length}
+    <p style="text-align: center; color: #aaa; font-size: 0.82em; margin: 16px 0 8px 0;">All {filteredExercises.length} matching exercise{filteredExercises.length === 1 ? '' : 's'} loaded</p>
+  {/if}
 {/if}
 
 <!-- Video Confirm Dialog -->
