@@ -2173,6 +2173,28 @@
                   if (val !== null) metricsV2.push({ key: 'distance', value: val, unit: 'distance', role: 'secondary' });
                 }
 
+                // Build customMetrics: snapshot label/unit/index/value for client-input reqs at log time.
+                // Only client-input reqs with an entered value are included; helper/display-only fields excluded.
+                // customInputs keys are indices into this same filtered array, matching execution UI.
+                const clientReqs = (exercise.customReqs || []).filter(r => r.name && r.clientInput);
+                const customMetrics = [];
+                clientReqs.forEach((req, idx) => {
+                  const raw = set.customInputs?.[idx];
+                  if (raw == null || raw === '') return;
+                  const resolvedUnit = req.unit === 'other'
+                    ? (req.customUnit?.trim() || null)
+                    : (req.unit && req.unit !== 'none') ? req.unit : null;
+                  const parsed = parseFloat(raw);
+                  customMetrics.push({
+                    index: idx,
+                    label: req.name,
+                    unit: resolvedUnit,
+                    rawValue: String(raw),
+                    value: isNaN(parsed) ? null : parsed,
+                    clientInput: true
+                  });
+                });
+
                 logPromises.push(addDoc(collection(db, 'workoutLogs'), {
                   userId: currentUserId,
                   programId: program.id,
@@ -2194,6 +2216,7 @@
                   repsMetric: repsMetric,
                   weightMetric: weightMetric,
                   customInputs: set.customInputs || null,
+                  customMetrics: customMetrics,
                   metricsV2: metricsV2,
                   side: getLaterality(exercise) === 'unilateral' ? (set.side || 'L') : null,
                   loggedAt: loggedAt
