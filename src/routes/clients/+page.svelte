@@ -31,6 +31,11 @@
   let cyclesLoading = $state(false);
   let clientLegacyPrograms = $state([]); // assigned programs with no cycle records
 
+  // Progressive loading
+  let visibleActiveCycles = $state(4);
+  let visiblePastCycles = $state(4);
+  let visibleWorkouts = $state(10);
+
   // Compute total prescribed sets for Full Tracking exercises only
   function computePrescribedSets(dayTemplate) {
     if (!dayTemplate?.sections) return null;
@@ -106,6 +111,7 @@
   async function loadWorkoutSessions() {
     if (!selectedUserId) return;
     sessionsLoading = true;
+    visibleWorkouts = 10;
     prescribedSetsMap = {};
     loggedSetsMap = {};
 
@@ -360,6 +366,8 @@
       return;
     }
     cyclesLoading = true;
+    visibleActiveCycles = 4;
+    visiblePastCycles = 4;
     try {
       const cycles = await listProgramCycles(selectedUserId);
       // Opportunistically normalize any cycles that are stored as active but effectively expired
@@ -429,7 +437,7 @@
       });
   }
 
-  // Get past cycles (not effectively active), sorted by most recently ended first, limit 3
+  // Get past cycles (not effectively active), sorted by most recently ended first
   function getPastCycles() {
     return clientCycles
       .filter(c => !isEffectivelyActive(c))
@@ -437,8 +445,7 @@
         const aEnd = getEffectiveEndDate(a);
         const bEnd = getEffectiveEndDate(b);
         return bEnd - aEnd; // Most recently ended first
-      })
-      .slice(0, 3);
+      });
   }
 
   // Count sessions that fall within a cycle window
@@ -613,15 +620,16 @@
   {#if selectedUserId && !cyclesLoading}
     {@const activeCycles = getActiveCycles()}
     {@const pastCycles = getPastCycles()}
+    {@const allPastItems = [...pastCycles.map(c => ({ type: 'cycle', data: c })), ...clientLegacyPrograms.map(p => ({ type: 'legacy', data: p }))]}
 
     <!-- Active Program Cycles -->
     <div style="margin-bottom: 20px;">
-      <h3 style="margin: 0 0 12px 0; font-size: 1em; color: #333;">Active Program Cycles</h3>
+      <h3 style="margin: 0 0 12px 0; font-size: 1em; color: #333;">Active Program Cycles ({activeCycles.length})</h3>
       {#if activeCycles.length === 0}
         <p style="color: #888; font-size: 0.9em; padding: 15px; background: #f9f9f9; border-radius: 8px; margin: 0;">No active cycles.</p>
       {:else}
         <div style="display: flex; flex-direction: column; gap: 10px;">
-          {#each activeCycles as cycle}
+          {#each activeCycles.slice(0, visibleActiveCycles) as cycle}
             {@const sessionCount = getCycleSessionCount(cycle, true)}
             {@const avgPerWeek = getCycleAvgPerWeek(cycle, true)}
             {@const weeksRemaining = getWeeksRemaining(cycle)}
@@ -682,76 +690,88 @@
               </div>
             </div>
           {/each}
+          {#if visibleActiveCycles < activeCycles.length}
+            <button onclick={() => visibleActiveCycles += 4} style="align-self: flex-start; padding: 6px 14px; background: white; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; font-size: 0.85em; color: #555;">Load 4 more</button>
+          {:else if activeCycles.length > 0}
+            <p style="margin: 0; font-size: 0.8em; color: #aaa; text-align: center;">All {activeCycles.length} active program{activeCycles.length === 1 ? '' : 's'} loaded</p>
+          {/if}
         </div>
       {/if}
     </div>
 
     <!-- Past Program Cycles -->
     <div style="margin-bottom: 20px;">
-      <h3 style="margin: 0 0 12px 0; font-size: 1em; color: #333;">Past Program Cycles</h3>
-      {#if pastCycles.length === 0 && clientLegacyPrograms.length === 0}
+      <h3 style="margin: 0 0 12px 0; font-size: 1em; color: #333;">Past Program Cycles ({allPastItems.length})</h3>
+      {#if allPastItems.length === 0}
         <p style="color: #888; font-size: 0.9em; padding: 15px; background: #f9f9f9; border-radius: 8px; margin: 0;">No past cycles.</p>
       {:else}
         <div style="display: flex; flex-direction: column; gap: 10px;">
-          {#each pastCycles as cycle}
-            {@const sessionCount = getCycleSessionCount(cycle, false)}
-            {@const avgPerWeek = getCycleAvgPerWeek(cycle, false)}
-            {@const effectiveEnd = getEffectiveEndDate(cycle)}
-            <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px 15px;">
-              <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px;">
-                <div style="flex: 1; min-width: 150px;">
-                  <strong style="font-size: 0.95em; color: #333;">{cycle.programNameSnapshot || 'Unknown Program'}</strong>
-                  <div style="margin-top: 4px; font-size: 0.85em; color: #666;">
-                    Ended {formatCycleDate(effectiveEnd)}
+          {#each allPastItems.slice(0, visiblePastCycles) as item}
+            {#if item.type === 'cycle'}
+              {@const cycle = item.data}
+              {@const sessionCount = getCycleSessionCount(cycle, false)}
+              {@const avgPerWeek = getCycleAvgPerWeek(cycle, false)}
+              {@const effectiveEnd = getEffectiveEndDate(cycle)}
+              <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px;">
+                  <div style="flex: 1; min-width: 150px;">
+                    <strong style="font-size: 0.95em; color: #333;">{cycle.programNameSnapshot || 'Unknown Program'}</strong>
+                    <div style="margin-top: 4px; font-size: 0.85em; color: #666;">
+                      Ended {formatCycleDate(effectiveEnd)}
+                    </div>
                   </div>
-                </div>
-                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-                  <div style="text-align: center; min-width: 50px;">
-                    <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
-                    <div style="font-size: 0.75em; color: #888;">Sessions</div>
+                  <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                    <div style="text-align: center; min-width: 50px;">
+                      <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
+                      <div style="font-size: 0.75em; color: #888;">Sessions</div>
+                    </div>
+                    <div style="text-align: center; min-width: 50px;">
+                      <div style="font-size: 1.1em; font-weight: 600; color: #667eea;">{avgPerWeek}</div>
+                      <div style="font-size: 0.75em; color: #888;">Avg/wk</div>
+                    </div>
+                    <div style="text-align: center; min-width: 60px;">
+                      <div style="font-size: 0.85em; font-weight: 500; color: {getCycleStatusColor(cycle)};">{getCycleStatusLabel(cycle)}</div>
+                      <div style="font-size: 0.75em; color: #888;">Status</div>
+                    </div>
+                    <button
+                      onclick={() => goto(`/programs/${cycle.programId}`)}
+                      style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
+                    >
+                      Open Program
+                    </button>
                   </div>
-                  <div style="text-align: center; min-width: 50px;">
-                    <div style="font-size: 1.1em; font-weight: 600; color: #667eea;">{avgPerWeek}</div>
-                    <div style="font-size: 0.75em; color: #888;">Avg/wk</div>
-                  </div>
-                  <div style="text-align: center; min-width: 60px;">
-                    <div style="font-size: 0.85em; font-weight: 500; color: {getCycleStatusColor(cycle)};">{getCycleStatusLabel(cycle)}</div>
-                    <div style="font-size: 0.75em; color: #888;">Status</div>
-                  </div>
-                  <button
-                    onclick={() => goto(`/programs/${cycle.programId}`)}
-                    style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
-                  >
-                    Open Program
-                  </button>
                 </div>
               </div>
-            </div>
-          {/each}
-
-          {#each clientLegacyPrograms as program}
-            {@const sessionCount = getLegacySessionCount(program.id)}
-            <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px 15px;">
-              <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px;">
-                <div style="flex: 1; min-width: 150px;">
-                  <strong style="font-size: 0.95em; color: #333;">{program.name || 'Unknown Program'}</strong>
-                  <div style="margin-top: 4px; font-size: 0.85em; color: #888;">Legacy program</div>
-                </div>
-                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-                  <div style="text-align: center; min-width: 50px;">
-                    <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
-                    <div style="font-size: 0.75em; color: #888;">Sessions</div>
+            {:else}
+              {@const program = item.data}
+              {@const sessionCount = getLegacySessionCount(program.id)}
+              <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 12px 15px;">
+                <div style="display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px;">
+                  <div style="flex: 1; min-width: 150px;">
+                    <strong style="font-size: 0.95em; color: #333;">{program.name || 'Unknown Program'}</strong>
+                    <div style="margin-top: 4px; font-size: 0.85em; color: #888;">Legacy program</div>
                   </div>
-                  <button
-                    onclick={() => goto(`/programs/${program.id}`)}
-                    style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
-                  >
-                    Open Program
-                  </button>
+                  <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                    <div style="text-align: center; min-width: 50px;">
+                      <div style="font-size: 1.1em; font-weight: 600; color: #333;">{sessionCount}</div>
+                      <div style="font-size: 0.75em; color: #888;">Sessions</div>
+                    </div>
+                    <button
+                      onclick={() => goto(`/programs/${program.id}`)}
+                      style="padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85em;"
+                    >
+                      Open Program
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
+            {/if}
           {/each}
+          {#if visiblePastCycles < allPastItems.length}
+            <button onclick={() => visiblePastCycles += 4} style="align-self: flex-start; padding: 6px 14px; background: white; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; font-size: 0.85em; color: #555;">Load 4 more</button>
+          {:else if allPastItems.length > 0}
+            <p style="margin: 0; font-size: 0.8em; color: #aaa; text-align: center;">All {allPastItems.length} past program{allPastItems.length === 1 ? '' : 's'} loaded</p>
+          {/if}
         </div>
       {/if}
     </div>
@@ -763,16 +783,17 @@
     <p style="color: #888; text-align: center; padding: 20px 0;">Select a client to view their recent workouts.</p>
   {:else if sessionsLoading}
     <p style="color: #888;">Loading sessions...</p>
-  {:else if workoutSessions.length === 0}
+  {:else if allUserSessions.length === 0}
     <p style="color: #888; text-align: center; padding: 40px 0;">No workouts completed yet for this client.</p>
   {:else}
-    <p style="color: #888; margin-bottom: 15px;">Last {workoutSessions.length} workout{workoutSessions.length !== 1 ? 's' : ''}</p>
+    <h3 style="margin: 0 0 12px 0; font-size: 1em; color: #333;">Workouts ({allUserSessions.length})</h3>
 
-    {#each workoutSessions as session}
+    {#each allUserSessions.slice(0, visibleWorkouts) as session}
       {@const completion = getCompletionInfo(session.id)}
-      <div
+      <button
+        type="button"
         onclick={() => openSessionDetail(session)}
-        style="background: white; border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 12px; cursor: pointer; transition: all 0.2s; box-shadow: {completion.glow};"
+        style="display: block; width: 100%; text-align: left; background: white; border: 1px solid #ddd; border-radius: 10px; padding: 15px; margin-bottom: 12px; cursor: pointer; transition: all 0.2s; box-shadow: {completion.glow};"
         onmouseenter={(e) => e.currentTarget.style.borderColor = '#667eea'}
         onmouseleave={(e) => e.currentTarget.style.borderColor = '#ddd'}
       >
@@ -794,8 +815,13 @@
         <div style="margin-top: 8px; color: #888; font-size: 0.85em;">
           Prescribed Sets: {prescribedSetsMap[session.id] ?? '—'} &nbsp;&nbsp; Logged Sets: {loggedSetsMap[session.id] ?? '—'}
         </div>
-      </div>
+      </button>
     {/each}
+    {#if visibleWorkouts < allUserSessions.length}
+      <button onclick={() => visibleWorkouts += 10} style="display: block; width: 100%; padding: 8px; background: white; border: 1px solid #ddd; border-radius: 6px; cursor: pointer; font-size: 0.85em; color: #555; margin-bottom: 12px;">Load 10 more</button>
+    {:else}
+      <p style="margin: 4px 0 12px 0; font-size: 0.8em; color: #aaa; text-align: center;">All {allUserSessions.length} workout{allUserSessions.length === 1 ? '' : 's'} loaded</p>
+    {/if}
   {/if}
 {/if}
 
