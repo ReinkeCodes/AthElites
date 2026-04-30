@@ -59,6 +59,9 @@
     : analysisMetric === 'volume' ? 'Volume'
     : analysisMetric === 'e1rm' ? 'Estimated 1RM'
     : analysisMetric === 'pct_e1rm' ? 'Intensity (%)'
+    : analysisMetric === 'reps' ? 'Reps'
+    : analysisMetric === 'time' ? 'Time'
+    : analysisMetric === 'distance' ? 'Distance'
     : (() => { const r = getCustomReqOptions().find(x => x.idx === analysisCustomReqIdx); return r ? (r.unit ? `${r.name} (${r.unit})` : r.name) : 'Custom'; })()
   );
   let xAxisLabel = $derived(windowMode === 'sessions' ? 'Session' : (timeWindow === 'week' ? 'Week' : timeWindow === 'month' ? 'Month' : timeWindow === 'year' ? 'Year' : 'Date'));
@@ -537,6 +540,22 @@
   function getMetric(metricsV2, key) {
     if (!metricsV2 || !Array.isArray(metricsV2)) return null;
     return metricsV2.find(m => m.key === key) || null;
+  }
+
+  // Pick a numeric value from set.metricsV2 by key priority, then unit fallback, then role priority.
+  function pickMetricFromSet(set, wantedKey, wantedUnit) {
+    if (set.metricsV2 && Array.isArray(set.metricsV2)) {
+      const byKey = set.metricsV2.filter(m => m.key === wantedKey);
+      const candidates = byKey.length ? byKey : set.metricsV2.filter(m => m.unit === wantedUnit);
+      if (candidates.length) {
+        const match = candidates.find(m => m.role === 'primary')
+          || candidates.find(m => m.role === 'secondary')
+          || candidates[0];
+        const v = parseFloat(match.value);
+        if (!isNaN(v) && v > 0) return v;
+      }
+    }
+    return null;
   }
 
   function formatTimeValue(seconds) {
@@ -1440,8 +1459,21 @@
       let value = null;
       if (analysisMetric === 'weight') {
         session.sets.forEach(s => {
-          const w = parseFloat(s.weight) || 0;
-          if (w > 0 && (value === null || w > value)) value = w;
+          // Prefer metricsV2: key=load, then key=weight/unit=weight
+          let w = pickMetricFromSet(s, 'load', null) ?? pickMetricFromSet(s, 'weight', 'weight');
+          // Legacy fallback: only use s.weight when it is clearly load, not distance/time/etc.
+          if (w === null) {
+            const NON_WEIGHT = ['distance', 'time', 'custom', 'reps'];
+            const flaggedNonWeight = NON_WEIGHT.includes(s.weightMetric) || NON_WEIGHT.includes(s.unitMetric);
+            const mv2HasNonWeight = s.metricsV2 && Array.isArray(s.metricsV2)
+              && s.metricsV2.some(m => NON_WEIGHT.includes(m.key));
+            if (!flaggedNonWeight && !mv2HasNonWeight) {
+              const trimmed = String(s.weight ?? '').trim();
+              const legacyW = parseFloat(trimmed);
+              if (!isNaN(legacyW) && legacyW > 0 && /^[\d.]+$/.test(trimmed)) w = legacyW;
+            }
+          }
+          if (w !== null && w > 0 && (value === null || w > value)) value = w;
         });
       } else if (analysisMetric === 'volume') {
         value = 0;
@@ -1491,6 +1523,22 @@
             const v = parseFloat(s.customInputs[analysisCustomReqIdx]);
             if (!isNaN(v) && (value === null || v > value)) value = v;
           }
+        });
+      } else if (analysisMetric === 'reps') {
+        session.sets.forEach(s => {
+          let v = pickMetricFromSet(s, 'reps', 'reps');
+          if (v === null) { const r = parseInt(s.reps); if (r > 0) v = r; }
+          if (v !== null && (value === null || v > value)) value = v;
+        });
+      } else if (analysisMetric === 'time') {
+        session.sets.forEach(s => {
+          const v = pickMetricFromSet(s, 'time', 'time');
+          if (v !== null && (value === null || v > value)) value = v;
+        });
+      } else if (analysisMetric === 'distance') {
+        session.sets.forEach(s => {
+          const v = pickMetricFromSet(s, 'distance', 'distance');
+          if (v !== null && (value === null || v > value)) value = v;
         });
       }
 
@@ -1565,7 +1613,10 @@
     e1rm:     [2.5, 5, 10, 25, 50],
     volume:   [50, 100, 250, 500, 1000],
     pct_e1rm: [1, 2.5, 5, 10],
-    custom:   [0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000]
+    custom:   [0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000],
+    reps:     [1, 2, 5, 10, 25, 50, 100],
+    time:     [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800],
+    distance: [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000]
   };
 
   function pickYStep(metric, minVal, maxVal) {
@@ -2116,6 +2167,9 @@
             <option value="volume">Volume (total)</option>
             <option value="e1rm">Estimated 1RM</option>
             <option value="pct_e1rm">% of e1RM</option>
+            <option value="reps">Reps (max)</option>
+            <option value="time">Time (max)</option>
+            <option value="distance">Distance (max)</option>
             <option value="custom">Custom Requirement</option>
           </select>
         </div>
@@ -2241,7 +2295,7 @@
                 </span>
               {:else}
                 {@const selectedReq = getCustomReqOptions().find(r => r.idx === analysisCustomReqIdx)}
-                <span>{analysisMetric === 'weight' ? 'Max Weight' : analysisMetric === 'volume' ? 'Total Volume' : (selectedReq?.name || 'Custom Requirement')} Over Time</span>
+                <span>{analysisMetric === 'weight' ? 'Max Weight' : analysisMetric === 'volume' ? 'Total Volume' : analysisMetric === 'reps' ? 'Max Reps' : analysisMetric === 'time' ? 'Max Time' : analysisMetric === 'distance' ? 'Max Distance' : (selectedReq?.name || 'Custom Requirement')} Over Time</span>
               {/if}
             </div>
             <svg viewBox="0 0 400 200" style="width: 100%; height: auto;">
@@ -2251,7 +2305,7 @@
               {#each yBounds.ticks as tick}
                 {@const ty = 180 - ((tick - yMin) / yRange) * 160}
                 <line x1="40" y1={ty} x2="390" y2={ty} stroke="#eee" stroke-width="1"/>
-                <text x="35" y={ty + 4} font-size="10" fill="#888" text-anchor="end">{formatYTick(tick, yBounds.step)}</text>
+                <text x="35" y={ty + 4} font-size="10" fill="#888" text-anchor="end">{analysisMetric === 'time' ? formatTimeValue(tick) : formatYTick(tick, yBounds.step)}</text>
               {/each}
               <!-- Vertical grid lines: By Time only -->
               {#if windowMode === 'time'}
@@ -2282,7 +2336,7 @@
                   {:else if analysisMetric === 'pct_e1rm'}
                     <title>Intensity: {d.value}% (averaged)</title>
                   {:else}
-                    <title>{formatChartDate(d.date)}: {d.value}</title>
+                    <title>{formatChartDate(d.date)}: {analysisMetric === 'time' ? formatTimeValue(d.value) : d.value}</title>
                   {/if}
                 </circle>
                 {#if dotLabelMetric !== 'none' && d.dotLabel !== null && d.dotLabel !== undefined}
