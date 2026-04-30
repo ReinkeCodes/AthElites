@@ -1559,6 +1559,81 @@
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
 
+  // Y-axis step ladders per metric
+  const Y_STEP_LADDERS = {
+    weight:   [2.5, 5, 10, 25, 50],
+    e1rm:     [2.5, 5, 10, 25, 50],
+    volume:   [50, 100, 250, 500, 1000],
+    pct_e1rm: [1, 2.5, 5, 10],
+    custom:   [0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000]
+  };
+
+  function pickYStep(metric, minVal, maxVal) {
+    const steps = Y_STEP_LADDERS[metric] || Y_STEP_LADDERS.custom;
+    const range = maxVal - minVal;
+    // aim for ~6 ticks; for flat data use minVal/5 so context is visible
+    const target = range === 0 ? Math.max(minVal / 5, steps[0]) : range / 6;
+    // Find first step >= target, then enforce max tick guardrail (never exceed 8)
+    const MAX_TICKS = 8;
+    const r = (v) => Math.round(v * 1e9) / 1e9;
+    let startIdx = steps.length - 1;
+    for (let i = 0; i < steps.length; i++) { if (steps[i] >= target) { startIdx = i; break; } }
+    for (let i = startIdx; i < steps.length; i++) {
+      const s = steps[i];
+      const yMin = Math.max(0, r(Math.floor(r(minVal / s)) * s));
+      const rawMax = r(Math.ceil(r((maxVal + s * 0.5) / s)) * s);
+      const yMax = Math.max(rawMax, r(yMin + s * 2));
+      const count = Math.round((yMax - yMin) / s) + 1;
+      if (count <= MAX_TICKS) return s;
+    }
+    return steps[steps.length - 1];
+  }
+
+  function getYAxisBounds(metric, values) {
+    const minVal = Math.min(...values);
+    const maxVal = Math.max(...values);
+    const step = pickYStep(metric, minVal, maxVal);
+    const r = (v) => Math.round(v * 1e9) / 1e9; // float-drift guard
+    const yMin = Math.max(0, r(Math.floor(r(minVal / step)) * step));
+    const rawMax = r(Math.ceil(r((maxVal + step * 0.5) / step)) * step);
+    const yMax = Math.max(rawMax, r(yMin + step * 2)); // at least 3 ticks
+    const count = Math.round((yMax - yMin) / step) + 1;
+    const ticks = Array.from({ length: count }, (_, i) => r(yMin + i * step));
+    return { yMin: r(yMin), yMax: ticks[ticks.length - 1], step, ticks };
+  }
+
+  function formatYTick(val, step) {
+    if (Number.isInteger(step)) return String(Math.round(val));
+    const dotIdx = step.toString().indexOf('.');
+    const decimals = dotIdx >= 0 ? step.toString().length - dotIdx - 1 : 0;
+    // strip trailing zeros so "5.0" renders as "5"
+    return parseFloat(val.toFixed(decimals)).toString();
+  }
+
+  function getXAxisLabels(chartData) {
+    const n = chartData.length;
+    if (n === 0) return [];
+    // sessions mode: 3-5 anchors; time mode: 4-6
+    const targetCount = windowMode === 'sessions' ? Math.min(5, n) : Math.min(6, n);
+    const indices = new Set([0, n - 1]);
+    if (n > 2 && targetCount > 2) {
+      for (let i = 1; i < targetCount - 1; i++) {
+        indices.add(Math.round(i * (n - 1) / (targetCount - 1)));
+      }
+    }
+    const sorted = [...indices].sort((a, b) => a - b);
+    const toDate = (d) => d?.toDate ? d.toDate() : new Date(d);
+    const firstY = toDate(chartData[0].date).getFullYear();
+    const lastY  = toDate(chartData[n - 1].date).getFullYear();
+    const multiYear = firstY !== lastY;
+    return sorted.map(i => {
+      const d = toDate(chartData[i].date);
+      const md = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const label = multiYear ? `${md} '${String(d.getFullYear()).slice(-2)}` : md;
+      return { i, x: n === 1 ? 215 : 40 + (i / (n - 1)) * 350, label };
+    });
+  }
+
   function applyWindow(points) {
     if (points.length === 0) return points;
     if (windowMode === 'time') {
@@ -1574,6 +1649,91 @@
       // By sessions: take last N
       return points.slice(-sessionsWindow);
     }
+  }
+
+  // Returns { pointXs, ticks } for By Time mode.
+  // pointXs: x coordinate per chartData point based on actual elapsed time (with domain padding).
+  // ticks: { x, label }[] — strict clean-anchored calendar ticks, independent of point positions.
+  function getTimeXLayout(chartData) {
+    if (chartData.length === 0) return { pointXs: [], ticks: [] };
+    const DAY = 86400000;
+    const toMs = (d) => (d?.toDate ? d.toDate() : new Date(d)).getTime();
+    const dates = chartData.map(d => toMs(d.date));
+    const minMs = Math.min(...dates);
+    const maxMs = Math.max(...dates);
+    const spanMs = maxMs - minMs;
+    const spanDays = spanMs / DAY;
+
+    // Domain padding: ~7% each side, capped at 14 days; min 1 day for single-point
+    const padMs = spanMs === 0 ? DAY : Math.min(spanMs * 0.07, 14 * DAY);
+    const domainMin = minMs - padMs;
+    const domainMax = maxMs + padMs;
+    const domainSpan = domainMax - domainMin;
+    const msToX = (ms) => 40 + ((ms - domainMin) / domainSpan) * 350;
+    const pointXs = dates.map(ms => msToX(ms));
+
+    // Pick tick mode: smallest that keeps ticks ≤ ~6 over the data span
+    const mode = spanDays <= 42 ? 'week'
+      : spanDays <= 84 ? 'biweek'
+      : spanDays <= 180 ? 'month'
+      : spanDays <= 546 ? 'quarter'
+      : 'year';
+
+    // Monday-anchor: find the Monday on or before a given timestamp
+    const prevMonday = (ms) => {
+      const d = new Date(ms); d.setHours(0, 0, 0, 0);
+      const dow = d.getDay(); // 0=Sun … 6=Sat
+      d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1));
+      return d;
+    };
+
+    // Generate ticks from a strict clean anchor, covering the padded domain
+    const rawTicks = [];
+    if (mode === 'week') {
+      for (let d = prevMonday(domainMin); d.getTime() <= domainMax; d.setDate(d.getDate() + 7))
+        rawTicks.push(new Date(d));
+    } else if (mode === 'biweek') {
+      for (let d = prevMonday(domainMin); d.getTime() <= domainMax; d.setDate(d.getDate() + 14))
+        rawTicks.push(new Date(d));
+    } else if (mode === 'month') {
+      const s = new Date(domainMin);
+      for (let y = s.getFullYear(), m = s.getMonth(); ; m++) {
+        if (m > 11) { m = 0; y++; }
+        const t = new Date(y, m, 1);
+        if (t.getTime() > domainMax) break;
+        rawTicks.push(t);
+      }
+    } else if (mode === 'quarter') {
+      const s = new Date(domainMin);
+      for (let y = s.getFullYear(), q = Math.floor(s.getMonth() / 3); ; q++) {
+        if (q > 3) { q = 0; y++; }
+        const t = new Date(y, q * 3, 1);
+        if (t.getTime() > domainMax) break;
+        rawTicks.push(t);
+      }
+    } else {
+      for (let y = new Date(domainMin).getFullYear(); ; y++) {
+        const t = new Date(y, 0, 1);
+        if (t.getTime() > domainMax) break;
+        rawTicks.push(t);
+      }
+    }
+
+    // Trim to max 6 by halving interior ticks (preserves strict even spacing)
+    let filtered = [...rawTicks];
+    while (filtered.length > 6 && filtered.length > 2) {
+      filtered = [filtered[0], ...filtered.slice(1, -1).filter((_, i) => i % 2 === 0), filtered[filtered.length - 1]];
+    }
+    if (filtered.length === 0) filtered = [new Date(minMs)];
+
+    // Range-aware label formatting
+    const multiYear = new Date(minMs).getFullYear() !== new Date(maxMs).getFullYear();
+    const ticks = filtered.map(d => {
+      const md = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const label = multiYear ? `${md} '${String(d.getFullYear()).slice(-2)}` : md;
+      return { x: Math.max(42, Math.min(388, msToX(d.getTime()))), label };
+    });
+    return { pointXs, ticks };
   }
 
   function applyAggregation(points) {
@@ -2054,13 +2214,13 @@
           </div>
         {:else}
           {@const values = chartData.map(d => d.value)}
-          {@const minVal = Math.min(...values)}
-          {@const maxVal = Math.max(...values)}
-          {@const range = maxVal - minVal || 1}
-          {@const padding = range * 0.1}
-          {@const yMin = Math.max(0, minVal - padding)}
-          {@const yMax = maxVal + padding}
-          {@const yRange = yMax - yMin}
+          {@const yBounds = getYAxisBounds(analysisMetric, values)}
+          {@const yMin = yBounds.yMin}
+          {@const yMax = yBounds.yMax}
+          {@const yRange = yMax - yMin || 1}
+          {@const timeLayout = windowMode === 'time' ? getTimeXLayout(chartData) : null}
+          {@const pointXs = timeLayout?.pointXs ?? null}
+          {@const xLabels = timeLayout ? timeLayout.ticks : getXAxisLabels(chartData)}
           {@const analysisExerciseName = getLoggedExercises().find(e => e.id === analysisExerciseId)?.name || ''}
           <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px;">
             {#if analysisExerciseName}
@@ -2088,10 +2248,17 @@
               <!-- Y-axis label -->
               <text x="12" y="100" font-size="9" fill="#888" text-anchor="middle" transform="rotate(-90, 12, 100)">{yAxisLabel}</text>
               <!-- Grid lines -->
-              {#each [0, 0.25, 0.5, 0.75, 1] as t}
-                <line x1="40" y1={180 - t * 160} x2="390" y2={180 - t * 160} stroke="#eee" stroke-width="1"/>
-                <text x="35" y={184 - t * 160} font-size="10" fill="#888" text-anchor="end">{Math.round(yMin + t * yRange)}</text>
+              {#each yBounds.ticks as tick}
+                {@const ty = 180 - ((tick - yMin) / yRange) * 160}
+                <line x1="40" y1={ty} x2="390" y2={ty} stroke="#eee" stroke-width="1"/>
+                <text x="35" y={ty + 4} font-size="10" fill="#888" text-anchor="end">{formatYTick(tick, yBounds.step)}</text>
               {/each}
+              <!-- Vertical grid lines: By Time only -->
+              {#if windowMode === 'time'}
+                {#each xLabels as lbl}
+                  <line x1={lbl.x} y1="20" x2={lbl.x} y2="180" stroke="#f0f0f0" stroke-width="1"/>
+                {/each}
+              {/if}
               <!-- Line -->
               {#if chartData.length > 1}
                 <polyline
@@ -2099,7 +2266,7 @@
                   stroke="#9c27b0"
                   stroke-width="2"
                   points={chartData.map((d, i) => {
-                    const x = 40 + (i / (chartData.length - 1)) * 350;
+                    const x = pointXs ? pointXs[i] : 40 + (i / (chartData.length - 1)) * 350;
                     const y = 180 - ((d.value - yMin) / yRange) * 160;
                     return `${x},${y}`;
                   }).join(' ')}
@@ -2107,7 +2274,7 @@
               {/if}
               <!-- Points -->
               {#each chartData as d, i}
-                {@const x = chartData.length === 1 ? 215 : 40 + (i / (chartData.length - 1)) * 350}
+                {@const x = pointXs ? pointXs[i] : (chartData.length === 1 ? 215 : 40 + (i / (chartData.length - 1)) * 350)}
                 {@const y = 180 - ((d.value - yMin) / yRange) * 160}
                 <circle cx={x} cy={y} r="5" fill="#9c27b0" style="cursor: pointer;">
                   {#if analysisMetric === 'pct_e1rm' && d.pctSessionE1RM && d.pctRollingE1RM}
@@ -2121,14 +2288,11 @@
                 {#if dotLabelMetric !== 'none' && d.dotLabel !== null && d.dotLabel !== undefined}
                   <text x={x} y={y - 10} font-size="8" fill="#666" text-anchor="middle">{dotLabelMetric === 'pct_e1rm' ? `${d.dotLabel}%` : dotLabelMetric === 'volume' ? Math.round(d.dotLabel) : d.dotLabel}</text>
                 {/if}
-                {#if chartData.length <= 10}
-                  <text x={x} y="195" font-size="8" fill="#888" text-anchor="middle">{formatChartDate(d.date)}</text>
-                {/if}
               {/each}
-              {#if chartData.length > 10}
-                <text x="40" y="195" font-size="8" fill="#888" text-anchor="start">{formatChartDate(chartData[0].date)}</text>
-                <text x="390" y="195" font-size="8" fill="#888" text-anchor="end">{formatChartDate(chartData[chartData.length - 1].date)}</text>
-              {/if}
+              <!-- X-axis labels: sparse anchors, range-aware date format -->
+              {#each xLabels as lbl}
+                <text x={lbl.x} y="195" font-size="8" fill="#888" text-anchor="middle">{lbl.label}</text>
+              {/each}
             </svg>
             <div style="text-align: center; color: #888; font-size: 0.75em; margin-top: 2px;">
               {xAxisLabel}
