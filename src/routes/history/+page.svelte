@@ -51,7 +51,7 @@
   let avgByTime = $state('month'); // 'week' | 'month' | 'year'
   let avgBySessions = $state(5); // 5 | 10 | 20 | 50
   let analysisCustomReqIdx = $state('');
-  let dotLabelMetric = $state('none'); // 'none' | 'weight' | 'volume' | 'e1rm' | 'pct_e1rm'
+  let dotLabelMetric = $state('none'); // 'none' | 'reps' | 'weight' | 'time' | 'volume' | 'distance' | 'e1rm' | 'pct_e1rm'
 
   // Axis labels (derived)
   let yAxisLabel = $derived(
@@ -556,6 +556,141 @@
       }
     }
     return null;
+  }
+
+  // Safe weight/load extraction from a set (metricV2-first, no distance/time/reps misinterpretation)
+  function pickWeightFromSet(s) {
+    let w = pickMetricFromSet(s, 'load', null) ?? pickMetricFromSet(s, 'weight', 'weight');
+    if (w === null) {
+      const NON_WEIGHT = ['distance', 'time', 'custom', 'reps'];
+      const flaggedNonWeight = NON_WEIGHT.includes(s.weightMetric) || NON_WEIGHT.includes(s.unitMetric);
+      const mv2HasNonWeight = s.metricsV2 && Array.isArray(s.metricsV2)
+        && s.metricsV2.some(m => NON_WEIGHT.includes(m.key));
+      if (!flaggedNonWeight && !mv2HasNonWeight) {
+        const trimmed = String(s.weight ?? '').trim();
+        const legacyW = parseFloat(trimmed);
+        if (!isNaN(legacyW) && legacyW > 0 && /^[\d.]+$/.test(trimmed)) w = legacyW;
+      }
+    }
+    return w;
+  }
+
+  // Reps extraction from a set (metricV2-first, legacy fallback)
+  function pickRepsFromSet(s) {
+    let v = pickMetricFromSet(s, 'reps', 'reps');
+    if (v === null) { const r = parseInt(s.reps); if (r > 0) v = r; }
+    return v;
+  }
+
+  // Format a dot label value for display
+  function formatDotLabel(metric, value) {
+    if (value === null || value === undefined) return 'N/A';
+    switch (metric) {
+      case 'reps': return String(Math.round(value));
+      case 'weight': return String(Math.round(value));
+      case 'time': return formatTimeValue(value);
+      case 'volume': return String(Math.round(value));
+      case 'distance': return `${Math.round(value)}m`;
+      case 'e1rm': return String(Math.round(value));
+      case 'pct_e1rm': return `${Math.round(value)}%`;
+      default: return String(value);
+    }
+  }
+
+  // Dot-label collision layout: tighter label-box estimates, dot protection, dense x-cluster cap.
+  // Returns per-point { dy, hidden } — dy is added to the dot's y position for the label anchor.
+  function computeDotLabelOffsets(chartData, pointXs, yMin, yRange, dotLabelMetric) {
+    const n = chartData.length;
+    if (n === 0) return { offsets: [], hidden: [] };
+
+    const LABEL_H = 14, GAP = 3, DOT_R = 9, CLUSTER_X = 12;
+    // Placement ladder: above, above-higher, below, below-lower (dy relative to dot center)
+    const LADDER = [-14, -22, 18, 26];
+    // Plot area bounds (SVG viewBox 0 0 400 200; grid drawn x:40-390, y:20-180) with 4px inset
+    const PLOT = { left: 44, right: 386, top: 24, bottom: 176 };
+
+    const xs = chartData.map((d, i) => pointXs ? pointXs[i] : (n === 1 ? 215 : 40 + (i / (n - 1)) * 350));
+    const ys = chartData.map(d => 180 - ((d.value - yMin) / yRange) * 160);
+
+    // Estimated label widths based on text length
+    function labelWidth(i) {
+      const text = formatDotLabel(dotLabelMetric, chartData[i].dotLabel);
+      return text.length * 6 + 6;
+    }
+
+    // Check if two label boxes overlap (with GAP padding)
+    function boxesOverlap(ax, ady, aw, bx, bdy, bw) {
+      const aLeft = ax - aw / 2, aRight = ax + aw / 2;
+      const aTop = ady - LABEL_H / 2, aBottom = ady + LABEL_H / 2;
+      const bLeft = bx - bw / 2, bRight = bx + bw / 2;
+      const bTop = bdy - LABEL_H / 2, bBottom = bdy + LABEL_H / 2;
+      return aRight + GAP > bLeft && aLeft - GAP < bRight &&
+             aBottom + GAP > bTop && aTop - GAP < bBottom;
+    }
+
+    // Check if a label box intersects the protection radius of a non-own dot
+    function hitsOtherDot(labelX, labelAbsY, lw, ownIdx) {
+      for (let j = 0; j < n; j++) {
+        if (j === ownIdx) continue;
+        const dx = Math.abs(xs[j] - labelX), dy = Math.abs(ys[j] - labelAbsY);
+        if (dx < lw / 2 + DOT_R && dy < LABEL_H / 2 + DOT_R) return true;
+      }
+      return false;
+    }
+
+    // Step 1: dense x-cluster guard — group points within CLUSTER_X px of each other
+    const clusterOf = new Array(n).fill(-1);
+    const clusters = [];
+    for (let i = 0; i < n; i++) {
+      let found = -1;
+      for (let c = 0; c < clusters.length; c++) {
+        if (Math.abs(xs[i] - clusters[c].cx) <= CLUSTER_X) { found = c; break; }
+      }
+      if (found === -1) { clusters.push({ cx: xs[i], indices: [] }); found = clusters.length - 1; }
+      clusters[found].indices.push(i);
+      clusterOf[i] = found;
+    }
+    // For each cluster with >2 members, pick top-most (min y) and bottom-most (max y), suppress rest
+    const suppressedByCluster = new Array(n).fill(false);
+    for (const cl of clusters) {
+      if (cl.indices.length <= 2) continue;
+      const sorted = [...cl.indices].sort((a, b) => ys[a] - ys[b]); // ascending y = top in SVG
+      const keep = new Set([sorted[0], sorted[sorted.length - 1]]);
+      for (const idx of cl.indices) { if (!keep.has(idx)) suppressedByCluster[idx] = true; }
+    }
+
+    // Step 2: assign placements greedily in left-to-right order
+    const placements = []; // { x, absY, w, idx }
+    const dys = new Array(n).fill(LADDER[0]);
+    const hidden = new Array(n).fill(false);
+
+    for (let i = 0; i < n; i++) {
+      if (suppressedByCluster[i]) { hidden[i] = true; continue; }
+      const lw = labelWidth(i);
+      let placed = false;
+      for (const dy of LADDER) {
+        const absY = ys[i] + dy;
+        // Rule 1: label box must stay fully inside the plot area (4px inset)
+        if (xs[i] - lw / 2 < PLOT.left || xs[i] + lw / 2 > PLOT.right ||
+            absY - LABEL_H / 2 < PLOT.top || absY + LABEL_H / 2 > PLOT.bottom) continue;
+        // Rule 2: check against already-placed labels
+        let overlapsLabel = false;
+        for (const p of placements) {
+          if (boxesOverlap(xs[i], absY, lw, p.x, p.absY, p.w)) { overlapsLabel = true; break; }
+        }
+        if (overlapsLabel) continue;
+        // Rule 3: check against non-own dot protection radii
+        if (hitsOtherDot(xs[i], absY, lw, i)) continue;
+        // All rules passed — clean placement found
+        dys[i] = dy;
+        placements.push({ x: xs[i], absY, w: lw, idx: i });
+        placed = true;
+        break;
+      }
+      if (!placed) hidden[i] = true;
+    }
+
+    return { offsets: dys, hidden };
   }
 
   function formatTimeValue(seconds) {
@@ -1457,23 +1592,12 @@
     const points = [];
     sessions.forEach((session, idx) => {
       let value = null;
+      let sourceSet = null; // the set that produced the plotted value (for same-source dot labels)
+
       if (analysisMetric === 'weight') {
         session.sets.forEach(s => {
-          // Prefer metricsV2: key=load, then key=weight/unit=weight
-          let w = pickMetricFromSet(s, 'load', null) ?? pickMetricFromSet(s, 'weight', 'weight');
-          // Legacy fallback: only use s.weight when it is clearly load, not distance/time/etc.
-          if (w === null) {
-            const NON_WEIGHT = ['distance', 'time', 'custom', 'reps'];
-            const flaggedNonWeight = NON_WEIGHT.includes(s.weightMetric) || NON_WEIGHT.includes(s.unitMetric);
-            const mv2HasNonWeight = s.metricsV2 && Array.isArray(s.metricsV2)
-              && s.metricsV2.some(m => NON_WEIGHT.includes(m.key));
-            if (!flaggedNonWeight && !mv2HasNonWeight) {
-              const trimmed = String(s.weight ?? '').trim();
-              const legacyW = parseFloat(trimmed);
-              if (!isNaN(legacyW) && legacyW > 0 && /^[\d.]+$/.test(trimmed)) w = legacyW;
-            }
-          }
-          if (w !== null && w > 0 && (value === null || w > value)) value = w;
+          const w = pickWeightFromSet(s);
+          if (w !== null && w > 0 && (value === null || w > value)) { value = w; sourceSet = s; }
         });
       } else if (analysisMetric === 'volume') {
         value = 0;
@@ -1483,13 +1607,14 @@
           if (w > 0 && r > 0) value += w * r;
         });
         if (value === 0) value = null;
+        // volume has no single source set
       } else if (analysisMetric === 'e1rm') {
         session.sets.forEach(s => {
-          const w = parseFloat(s.weight) || 0;
-          const r = parseInt(s.reps) || 0;
-          if (w > 0 && r > 0) {
+          const w = pickWeightFromSet(s);
+          const r = pickRepsFromSet(s);
+          if (w !== null && r !== null && w > 0 && r > 0) {
             const e = Math.round(w * (1 + r / 30));
-            if (value === null || e > value) value = e;
+            if (value === null || e > value) { value = e; sourceSet = s; }
           }
         });
       } else if (analysisMetric === 'pct_e1rm') {
@@ -1517,58 +1642,36 @@
             session._pctRollingE1RM = Math.round(rollingPeakE1RM);
           }
         }
+        // pct_e1rm has no single source set
       } else if (analysisMetric === 'custom' && analysisCustomReqIdx !== '') {
         session.sets.forEach(s => {
           if (s.customInputs && s.customInputs[analysisCustomReqIdx] !== undefined) {
             const v = parseFloat(s.customInputs[analysisCustomReqIdx]);
-            if (!isNaN(v) && (value === null || v > value)) value = v;
+            if (!isNaN(v) && (value === null || v > value)) { value = v; sourceSet = s; }
           }
         });
       } else if (analysisMetric === 'reps') {
         session.sets.forEach(s => {
-          let v = pickMetricFromSet(s, 'reps', 'reps');
-          if (v === null) { const r = parseInt(s.reps); if (r > 0) v = r; }
-          if (v !== null && (value === null || v > value)) value = v;
+          const v = pickRepsFromSet(s);
+          if (v !== null && (value === null || v > value)) { value = v; sourceSet = s; }
         });
       } else if (analysisMetric === 'time') {
         session.sets.forEach(s => {
           const v = pickMetricFromSet(s, 'time', 'time');
-          if (v !== null && (value === null || v > value)) value = v;
+          if (v !== null && (value === null || v > value)) { value = v; sourceSet = s; }
         });
       } else if (analysisMetric === 'distance') {
         session.sets.forEach(s => {
           const v = pickMetricFromSet(s, 'distance', 'distance');
-          if (v !== null && (value === null || v > value)) value = v;
+          if (v !== null && (value === null || v > value)) { value = v; sourceSet = s; }
         });
       }
 
-      // Compute dot label value (independent of main metric)
-      let dotLabel = null;
+      // Compute dot label from the same source set that produced the plotted value
+      let dotLabel = null; // null = N/A when a label is selected
       if (dotLabelMetric !== 'none') {
-        if (dotLabelMetric === 'weight') {
-          session.sets.forEach(s => {
-            const w = parseFloat(s.weight) || 0;
-            if (w > 0 && (dotLabel === null || w > dotLabel)) dotLabel = w;
-          });
-        } else if (dotLabelMetric === 'volume') {
-          dotLabel = 0;
-          session.sets.forEach(s => {
-            const w = parseFloat(s.weight) || 0;
-            const r = parseInt(s.reps) || 0;
-            if (w > 0 && r > 0) dotLabel += w * r;
-          });
-          if (dotLabel === 0) dotLabel = null;
-        } else if (dotLabelMetric === 'e1rm') {
-          session.sets.forEach(s => {
-            const w = parseFloat(s.weight) || 0;
-            const r = parseInt(s.reps) || 0;
-            if (w > 0 && r > 0) {
-              const e = Math.round(w * (1 + r / 30));
-              if (dotLabel === null || e > dotLabel) dotLabel = e;
-            }
-          });
-        } else if (dotLabelMetric === 'pct_e1rm') {
-          // For dot label, use same rolling peak calculation with 2-prior-sessions guardrail
+        if (dotLabelMetric === 'pct_e1rm') {
+          // Preserve existing rolling-peak % of e1RM behavior
           const allPrevSessions = sessions.slice(0, idx);
           const validPrevCount = allPrevSessions.filter(ps => ps.sessionPeakE1RM !== null && ps.sessionPeakE1RM > 0).length;
           if (validPrevCount >= 2) {
@@ -1585,7 +1688,27 @@
               dotLabel = Math.round(100 * session.sessionPeakE1RM / rollingPeakE1RM);
             }
           }
+        } else if (sourceSet !== null) {
+          // Extract dot label value from the same set that produced the main metric value
+          if (dotLabelMetric === 'reps') {
+            dotLabel = pickRepsFromSet(sourceSet);
+          } else if (dotLabelMetric === 'weight') {
+            dotLabel = pickWeightFromSet(sourceSet);
+          } else if (dotLabelMetric === 'time') {
+            dotLabel = pickMetricFromSet(sourceSet, 'time', 'time');
+          } else if (dotLabelMetric === 'distance') {
+            dotLabel = pickMetricFromSet(sourceSet, 'distance', 'distance');
+          } else if (dotLabelMetric === 'volume') {
+            const w = pickWeightFromSet(sourceSet);
+            const r = pickRepsFromSet(sourceSet);
+            if (w !== null && r !== null) dotLabel = Math.round(w * r);
+          } else if (dotLabelMetric === 'e1rm') {
+            const w = pickWeightFromSet(sourceSet);
+            const r = pickRepsFromSet(sourceSet);
+            if (w !== null && r !== null) dotLabel = Math.round(w * (1 + r / 30));
+          }
         }
+        // sourceSet === null (volume/pct_e1rm main metrics): dotLabel stays null → N/A
       }
 
       if (value !== null) {
@@ -2239,8 +2362,11 @@
         <label style="font-size: 0.85em; color: #666; display: block; margin-bottom: 4px;">Dot Label</label>
         <select bind:value={dotLabelMetric} style="padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.85em;">
           <option value="none">None</option>
+          <option value="reps">Reps</option>
           <option value="weight">Weight</option>
+          <option value="time">Time</option>
           <option value="volume">Volume</option>
+          <option value="distance">Distance</option>
           <option value="e1rm">e1RM</option>
           <option value="pct_e1rm">% of e1RM</option>
         </select>
@@ -2275,6 +2401,7 @@
           {@const timeLayout = windowMode === 'time' ? getTimeXLayout(chartData) : null}
           {@const pointXs = timeLayout?.pointXs ?? null}
           {@const xLabels = timeLayout ? timeLayout.ticks : getXAxisLabels(chartData)}
+          {@const labelLayout = dotLabelMetric !== 'none' ? computeDotLabelOffsets(chartData, pointXs, yMin, yRange, dotLabelMetric) : null}
           {@const analysisExerciseName = getLoggedExercises().find(e => e.id === analysisExerciseId)?.name || ''}
           <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px;">
             {#if analysisExerciseName}
@@ -2339,8 +2466,8 @@
                     <title>{formatChartDate(d.date)}: {analysisMetric === 'time' ? formatTimeValue(d.value) : d.value}</title>
                   {/if}
                 </circle>
-                {#if dotLabelMetric !== 'none' && d.dotLabel !== null && d.dotLabel !== undefined}
-                  <text x={x} y={y - 10} font-size="8" fill="#666" text-anchor="middle">{dotLabelMetric === 'pct_e1rm' ? `${d.dotLabel}%` : dotLabelMetric === 'volume' ? Math.round(d.dotLabel) : d.dotLabel}</text>
+                {#if dotLabelMetric !== 'none' && labelLayout && !labelLayout.hidden[i]}
+                  <text x={x} y={y + labelLayout.offsets[i]} font-size="8" fill="#666" text-anchor="middle">{formatDotLabel(dotLabelMetric, d.dotLabel)}</text>
                 {/if}
               {/each}
               <!-- X-axis labels: sparse anchors, range-aware date format -->
