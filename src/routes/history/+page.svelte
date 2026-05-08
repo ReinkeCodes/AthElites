@@ -597,6 +597,47 @@
     }
   }
 
+  // Build per-point dot render info: detects overlapping series points and assigns concentric radii.
+  // Points within 2px on both axes are treated as overlapping.
+  // allChartData is ordered [...chartNone, ...chartRight, ...chartLeft] (draw order: outer → inner).
+  function buildDotRenderInfo(allChartData, allPointXs, yMin, yRange, seriesDefs) {
+    const n = allChartData.length;
+    const xs = allPointXs;
+    const ys = allChartData.map(d => 180 - ((d.value - yMin) / yRange) * 160);
+    // Map global index → series color
+    const colors = new Array(n);
+    for (const { data, color, off } of seriesDefs) {
+      for (let i = 0; i < data.length; i++) colors[off + i] = color;
+    }
+    // Detect overlap groups (O(n²) is fine for small n)
+    const groupOf = new Array(n).fill(-1);
+    const groups = [];
+    for (let i = 0; i < n; i++) {
+      if (groupOf[i] !== -1) continue;
+      const g = groups.length;
+      groups.push([i]);
+      groupOf[i] = g;
+      for (let j = i + 1; j < n; j++) {
+        if (groupOf[j] !== -1) continue;
+        if (Math.abs(xs[i] - xs[j]) <= 2 && Math.abs(ys[i] - ys[j]) <= 2) {
+          groups[g].push(j);
+          groupOf[j] = g;
+        }
+      }
+    }
+    // Assign radii per group; draw-order position within group determines ring assignment.
+    // group[0] (drawn first) → outermost; group[last] (drawn last) → innermost.
+    const RADII = [[4], [5, 3], [6, 4, 2.5]];
+    const dotInfo = new Array(n);
+    for (const group of groups) {
+      const radii = RADII[Math.min(group.length, 3) - 1];
+      for (let k = 0; k < group.length; k++) {
+        dotInfo[group[k]] = { radius: radii[Math.min(k, radii.length - 1)], overlapping: group.length > 1 };
+      }
+    }
+    return { xs, ys, colors, dotInfo };
+  }
+
   // Dot-label collision layout: tighter label-box estimates, dot protection, dense x-cluster cap.
   // Returns per-point { dy, hidden } — dy is added to the dot's y position for the label anchor.
   function computeDotLabelOffsets(chartData, pointXs, yMin, yRange, dotLabelMetric) {
@@ -1552,16 +1593,28 @@
     return Object.values(reqMap).sort((a, b) => parseInt(a.idx) - parseInt(b.idx));
   }
 
+  // Classify a log entry's side: 'left', 'right', or 'none' (bilateral/missing/other)
+  function classifySide(log) {
+    const s = (log.side ?? '').toString().toLowerCase().trim();
+    const l = (log.laterality ?? '').toString().toLowerCase().trim();
+    if (s === 'l' || s === 'left') return 'left';
+    if (s === 'r' || s === 'right') return 'right';
+    if (l === 'l' || l === 'left') return 'left';
+    if (l === 'r' || l === 'right') return 'right';
+    return 'none';
+  }
+
   function getChartData() {
     if (!analysisExerciseId) return [];
     const exerciseLogs = allLogs.filter(l => l.exerciseId === analysisExerciseId && l.completedWorkoutId);
 
-    // Group by session
+    // Group by session + side so left/right produce independent series
     const sessionMap = {};
     exerciseLogs.forEach(log => {
-      const sid = log.completedWorkoutId;
+      const side = classifySide(log);
+      const sid = log.completedWorkoutId + '-' + side;
       if (!sessionMap[sid]) {
-        sessionMap[sid] = { date: log.loggedAt, sets: [] };
+        sessionMap[sid] = { date: log.loggedAt, sets: [], side };
       }
       sessionMap[sid].sets.push(log);
     });
@@ -1712,7 +1765,7 @@
       }
 
       if (value !== null) {
-        const point = { date: session.date, value, dotLabel };
+        const point = { date: session.date, value, dotLabel, side: session.side };
         // Include tooltip data for pct_e1rm metric
         if (analysisMetric === 'pct_e1rm' && session._pctSessionE1RM && session._pctRollingE1RM) {
           point.pctSessionE1RM = session._pctSessionE1RM;
@@ -2381,27 +2434,35 @@
           <p>Select a requirement to view trends</p>
         </div>
       {:else}
-        {@const rawData = getChartData()}
-        {@const windowedData = applyWindow(rawData)}
-        {@const chartData = applyAggregation(windowedData)}
-        {#if rawData.length === 0}
+        {@const allRawData = getChartData()}
+        {@const chartNone  = applyAggregation(applyWindow(allRawData.filter(p => p.side === 'none')))}
+        {@const chartRight = applyAggregation(applyWindow(allRawData.filter(p => p.side === 'right')))}
+        {@const chartLeft  = applyAggregation(applyWindow(allRawData.filter(p => p.side === 'left')))}
+        {@const allChartData = [...chartNone, ...chartRight, ...chartLeft]}
+        {#if allRawData.length === 0}
           <div style="text-align: center; padding: 40px 20px; color: #888;">
             <p>No data for this metric</p>
           </div>
-        {:else if chartData.length === 0}
+        {:else if allChartData.length === 0}
           <div style="text-align: center; padding: 40px 20px; color: #888;">
             <p>No data in this window</p>
           </div>
         {:else}
-          {@const values = chartData.map(d => d.value)}
-          {@const yBounds = getYAxisBounds(analysisMetric, values)}
+          {@const allValues = allChartData.map(d => d.value)}
+          {@const yBounds = getYAxisBounds(analysisMetric, allValues)}
           {@const yMin = yBounds.yMin}
           {@const yMax = yBounds.yMax}
           {@const yRange = yMax - yMin || 1}
-          {@const timeLayout = windowMode === 'time' ? getTimeXLayout(chartData) : null}
-          {@const pointXs = timeLayout?.pointXs ?? null}
-          {@const xLabels = timeLayout ? timeLayout.ticks : getXAxisLabels(chartData)}
-          {@const labelLayout = dotLabelMetric !== 'none' ? computeDotLabelOffsets(chartData, pointXs, yMin, yRange, dotLabelMetric) : null}
+          {@const timeLayout = getTimeXLayout(allChartData)}
+          {@const allPointXs = timeLayout.pointXs}
+          {@const xLabels = windowMode === 'time' ? timeLayout.ticks : getXAxisLabels(allChartData)}
+          {@const noneOff  = 0}
+          {@const rightOff = chartNone.length}
+          {@const leftOff  = chartNone.length + chartRight.length}
+          {@const showLegend = (chartNone.length > 0 ? 1 : 0) + (chartRight.length > 0 ? 1 : 0) + (chartLeft.length > 0 ? 1 : 0) > 1}
+          {@const labelLayout = dotLabelMetric !== 'none' ? computeDotLabelOffsets(allChartData, allPointXs, yMin, yRange, dotLabelMetric) : null}
+          {@const seriesDefs = [{ data: chartNone, color: '#42a5f5', off: noneOff }, { data: chartRight, color: '#9575cd', off: rightOff }, { data: chartLeft, color: '#9ccc65', off: leftOff }]}
+          {@const dri = buildDotRenderInfo(allChartData, allPointXs, yMin, yRange, seriesDefs)}
           {@const analysisExerciseName = getLoggedExercises().find(e => e.id === analysisExerciseId)?.name || ''}
           <div style="background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px;">
             {#if analysisExerciseName}
@@ -2425,6 +2486,28 @@
                 <span>{analysisMetric === 'weight' ? 'Max Weight' : analysisMetric === 'volume' ? 'Total Volume' : analysisMetric === 'reps' ? 'Max Reps' : analysisMetric === 'time' ? 'Max Time' : analysisMetric === 'distance' ? 'Max Distance' : (selectedReq?.name || 'Custom Requirement')} Over Time</span>
               {/if}
             </div>
+            {#if showLegend}
+              <div style="display: flex; gap: 12px; flex-wrap: wrap; font-size: 0.75em; color: #555; margin-bottom: 6px;">
+                {#if chartRight.length > 0}
+                  <span style="display: flex; align-items: center; gap: 4px;">
+                    <svg width="14" height="14"><circle cx="7" cy="7" r="4" stroke="#9575cd" stroke-width="1.5" fill="white"/></svg>
+                    Right
+                  </span>
+                {/if}
+                {#if chartLeft.length > 0}
+                  <span style="display: flex; align-items: center; gap: 4px;">
+                    <svg width="14" height="14"><circle cx="7" cy="7" r="4" stroke="#9ccc65" stroke-width="1.5" fill="white"/></svg>
+                    Left
+                  </span>
+                {/if}
+                {#if chartNone.length > 0}
+                  <span style="display: flex; align-items: center; gap: 4px;">
+                    <svg width="14" height="14"><circle cx="7" cy="7" r="4" stroke="#42a5f5" stroke-width="1.5" fill="white"/></svg>
+                    No side assigned
+                  </span>
+                {/if}
+              </div>
+            {/if}
             <svg viewBox="0 0 400 200" style="width: 100%; height: auto;">
               <!-- Y-axis label -->
               <text x="12" y="100" font-size="9" fill="#888" text-anchor="middle" transform="rotate(-90, 12, 100)">{yAxisLabel}</text>
@@ -2440,24 +2523,31 @@
                   <line x1={lbl.x} y1="20" x2={lbl.x} y2="180" stroke="#f0f0f0" stroke-width="1"/>
                 {/each}
               {/if}
-              <!-- Line -->
-              {#if chartData.length > 1}
-                <polyline
-                  fill="none"
-                  stroke="#9c27b0"
-                  stroke-width="2"
-                  points={chartData.map((d, i) => {
-                    const x = pointXs ? pointXs[i] : 40 + (i / (chartData.length - 1)) * 350;
-                    const y = 180 - ((d.value - yMin) / yRange) * 160;
-                    return `${x},${y}`;
-                  }).join(' ')}
-                />
-              {/if}
-              <!-- Points -->
-              {#each chartData as d, i}
-                {@const x = pointXs ? pointXs[i] : (chartData.length === 1 ? 215 : 40 + (i / (chartData.length - 1)) * 350)}
-                {@const y = 180 - ((d.value - yMin) / yRange) * 160}
-                <circle cx={x} cy={y} r="5" fill="#9c27b0" style="cursor: pointer;">
+
+              <!-- Series rendered in draw order: none → right → left -->
+              <!-- Lines only (per series) -->
+              {#each seriesDefs as series}
+                {#if series.data.length > 1}
+                  <polyline
+                    fill="none"
+                    stroke={series.color}
+                    stroke-width="2"
+                    opacity="0.85"
+                    points={series.data.map((d, i) => {
+                      const x = allPointXs[series.off + i];
+                      const y = 180 - ((d.value - yMin) / yRange) * 160;
+                      return `${x},${y}`;
+                    }).join(' ')}
+                  />
+                {/if}
+              {/each}
+              <!-- Dots: flat draw-order pass with concentric-ring overlap support -->
+              {#each allChartData as d, gi}
+                {@const info = dri.dotInfo[gi]}
+                {@const x = dri.xs[gi]}
+                {@const y = dri.ys[gi]}
+                {@const sc = dri.colors[gi]}
+                <circle cx={x} cy={y} r={info.radius} fill="white" stroke={sc} stroke-width="1.5" style="cursor: pointer;">
                   {#if analysisMetric === 'pct_e1rm' && d.pctSessionE1RM && d.pctRollingE1RM}
                     <title>Intensity: {d.value}%&#10;Session Peak e1RM: {d.pctSessionE1RM}&#10;Rolling Peak (prev 10): {d.pctRollingE1RM}</title>
                   {:else if analysisMetric === 'pct_e1rm'}
@@ -2466,10 +2556,12 @@
                     <title>{formatChartDate(d.date)}: {analysisMetric === 'time' ? formatTimeValue(d.value) : d.value}</title>
                   {/if}
                 </circle>
-                {#if dotLabelMetric !== 'none' && labelLayout && !labelLayout.hidden[i]}
-                  <text x={x} y={y + labelLayout.offsets[i]} font-size="8" fill="#666" text-anchor="middle">{formatDotLabel(dotLabelMetric, d.dotLabel)}</text>
+                {#if dotLabelMetric !== 'none' && labelLayout && !labelLayout.hidden[gi]}
+                  {@const labelColor = d.side === 'right' ? '#9575cd' : d.side === 'left' ? '#7cb342' : '#1976d2'}
+                  <text x={x} y={y + labelLayout.offsets[gi]} font-size="8" fill={labelColor} text-anchor="middle">{formatDotLabel(dotLabelMetric, d.dotLabel)}</text>
                 {/if}
               {/each}
+
               <!-- X-axis labels: sparse anchors, range-aware date format -->
               {#each xLabels as lbl}
                 <text x={lbl.x} y="195" font-size="8" fill="#888" text-anchor="middle">{lbl.label}</text>
@@ -2479,7 +2571,7 @@
               {xAxisLabel}
             </div>
             <div style="text-align: center; color: #888; font-size: 0.85em; margin-top: 3px;">
-              {chartData.length} session{chartData.length !== 1 ? 's' : ''}
+              {allChartData.length} session{allChartData.length !== 1 ? 's' : ''}
             </div>
           </div>
         {/if}
